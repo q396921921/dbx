@@ -1973,9 +1973,14 @@ function extendQueryEditorSelectionForView(currentView: EditorViewType): boolean
 }
 
 function acceptCompletionOrNextSnippetField(view: EditorViewType): boolean {
-  const completionStatus = codeMirrorCompletionStatus?.(view.state) ?? null;
-  if (completionStatus === "active" && (codeMirrorAcceptCompletion?.(view) ?? false)) return true;
-  if (completionStatus) return waitForCompletionTab(view);
+  // A non-empty selection means Tab is being used for block indent, not word
+  // completion. A completion popup can still appear as a side effect of the
+  // indent edit itself, so it must never hijack this (or a following) Tab press.
+  if (view.state.selection.main.empty) {
+    const completionStatus = codeMirrorCompletionStatus?.(view.state) ?? null;
+    if (completionStatus === "active" && (codeMirrorAcceptCompletion?.(view) ?? false)) return true;
+    if (completionStatus) return waitForCompletionTab(view);
+  }
   return codeMirrorNextSnippetField?.(view) ?? false;
 }
 

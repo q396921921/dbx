@@ -117,8 +117,8 @@ function createHarness(options: {
   ) as TabHarness;
 }
 
-function createView(text = "SELECT", position = text.length): MockView {
-  const selection: MockSelection = { anchor: position, head: position, from: position, empty: true };
+function createView(text = "SELECT", position = text.length, selectionOverrides: Partial<MockSelection> = {}): MockView {
+  const selection: MockSelection = { anchor: position, head: position, from: position, empty: true, ...selectionOverrides };
   const state: MockState = {
     doc: {
       lineAt: () => ({ from: 0, text }),
@@ -128,6 +128,10 @@ function createView(text = "SELECT", position = text.length): MockView {
     update: vi.fn((change: unknown, options: unknown) => ({ change, options })),
   };
   return { state, dispatch: vi.fn() };
+}
+
+function createMultiLineSelectionView(text = "SELECT 1\nSELECT 2"): MockView {
+  return createView(text, 0, { anchor: 0, head: text.length, from: 0, empty: false });
 }
 
 afterEach(() => {
@@ -279,6 +283,33 @@ describe("QueryEditor completion Tab keymap", () => {
 
     expect(harness.handleTab(view)).toBe(true);
     expect(acceptCompletion).toHaveBeenCalledWith(view);
+  });
+
+  it("keeps indenting a multi-line selection instead of letting a completion popup hijack Tab (#5419)", () => {
+    const acceptCompletion = vi.fn(() => true);
+    const indentMore = vi.fn(() => true);
+    const harness = createHarness({ completionStatus: () => "active", acceptCompletion, indentMore });
+    const view = createMultiLineSelectionView();
+
+    expect(harness.handleTab(view)).toBe(true);
+    expect(indentMore).toHaveBeenCalledWith(view);
+    expect(acceptCompletion).not.toHaveBeenCalled();
+  });
+
+  it("does not let a pending completion hijack a second Tab press while indenting a selection (#5419)", async () => {
+    vi.useFakeTimers();
+    let status: "active" | "pending" | null = "pending";
+    const acceptCompletion = vi.fn(() => true);
+    const indentMore = vi.fn(() => true);
+    const harness = createHarness({ completionStatus: () => status, acceptCompletion, indentMore });
+    const view = createMultiLineSelectionView();
+
+    expect(harness.handleTab(view)).toBe(true);
+    status = "active";
+    await vi.advanceTimersByTimeAsync(32);
+
+    expect(indentMore).toHaveBeenCalledWith(view);
+    expect(acceptCompletion).not.toHaveBeenCalled();
   });
 
   it("falls back to normal Tab when pending completion has no candidate", async () => {
