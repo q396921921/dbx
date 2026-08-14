@@ -2000,6 +2000,7 @@ pub fn run() {
             commands::mongo_cmd::mongo_collection_stats,
             commands::mongo_cmd::mongo_aggregate_documents,
             commands::mongo_cmd::mongo_distinct,
+            commands::mongo_cmd::mongo_list_index_specs,
             commands::mongo_cmd::mongo_create_index,
             commands::mongo_cmd::mongo_create_user,
             commands::mongo_cmd::mongo_run_command,

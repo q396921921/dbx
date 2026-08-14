@@ -15,6 +15,7 @@ import {
   evaluateMongoWriteSafety,
   mongoCollectionStatsToQueryResult,
   mongoCountToQueryResult,
+  mongoDatabasesToQueryResult,
   mongoDistinctToQueryResult,
   mongoCreateIndexToQueryResult,
   mongoDocumentsToQueryResult,
@@ -4092,6 +4093,7 @@ export const useQueryStore = defineStore("query", () => {
         queryExecutionLog("info", "mongo:start", { traceId, commandCount: mongoCommands.length, sqlLength: sql.length });
 
         const allResults: QueryResult[] = [];
+        const mongoResultMaxRows = effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows);
         // Track the effective db as we walk the batch so later commands observe
         // earlier `use ...` statements in the same editor selection.
         let currentDatabase = executionTarget?.database ?? tab.database;
@@ -4171,6 +4173,19 @@ export const useQueryStore = defineStore("query", () => {
                   traceId,
                   database: currentDatabase,
                   version,
+                  elapsed: elapsed(),
+                });
+                break;
+              }
+              case "showDatabases": {
+                queryExecutionLog("info", "mongo-show-databases:start", { traceId });
+                const result = await api.mongoRunCommand(executionConnectionId, "admin", '{"listDatabases":1}', executionId);
+                const queryResult = mongoDatabasesToQueryResult(result.documents, performance.now() - commandStartedAt, agentProtocolQueryResultMaxRows(mongoResultMaxRows));
+                allResults.push(markQueryResultRowsRaw(annotateMongoResult(queryResult)));
+                mongoEditTarget = undefined;
+                queryExecutionLog("info", "mongo-show-databases:done", {
+                  traceId,
+                  databaseCount: queryResult.affected_rows,
                   elapsed: elapsed(),
                 });
                 break;

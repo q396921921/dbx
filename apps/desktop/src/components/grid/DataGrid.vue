@@ -1910,15 +1910,15 @@ const {
   invertColumnVisibility,
   showColumn,
   persistColumnOrder,
-  moveDisplayableColumn,
-  resetColumnOrder,
+  moveDisplayableColumn: moveDisplayableColumnInLayout,
+  resetColumnOrder: resetColumnOrderInLayout,
   toggleAllNullColumns,
   resetColumnVisibility,
   onTableDataGridColumnOrderChanged,
   frozenColumnCount,
   freezeToColumn,
-  freezeSelectedColumns,
-  unfreezeAllColumns,
+  freezeSelectedColumns: freezeSelectedColumnsInLayout,
+  unfreezeAllColumns: unfreezeAllColumnsInLayout,
 } = useDataGridColumnLayoutState({
   columns: computed(() => props.result.columns),
   sourceColumns: computed(() => props.sourceColumns),
@@ -2136,13 +2136,36 @@ let gridScrollLeftBeforeTranspose = 0;
 let gridScrollTopBeforeKeyboardTranspose: number | null = null;
 let restoreGridScrollTopAfterTranspose = false;
 
-function persistDraggedColumnOrder(indexes: number[]) {
+function applyColumnOrderChange(change: () => void) {
   const previousVisibleColumnIndexes = [...visibleColumnIndexes.value];
-  persistColumnOrder(indexes);
-  selection.remapColumnSelection(
-    previousVisibleColumnIndexes,
-    indexes.filter((index) => !hiddenColumnIndexes.value.has(index)),
-  );
+  change();
+  const nextVisibleColumnIndexes = [...visibleColumnIndexes.value];
+  if (previousVisibleColumnIndexes.length === nextVisibleColumnIndexes.length && previousVisibleColumnIndexes.every((index, position) => index === nextVisibleColumnIndexes[position])) return;
+  selection.reconcileSelectionAfterColumnReorder(previousVisibleColumnIndexes, nextVisibleColumnIndexes);
+}
+
+function onSynchronizedTableDataGridColumnOrderChanged(event: Event) {
+  applyColumnOrderChange(() => onTableDataGridColumnOrderChanged(event));
+}
+
+function persistDraggedColumnOrder(indexes: number[]) {
+  applyColumnOrderChange(() => persistColumnOrder(indexes));
+}
+
+function moveDisplayableColumn(fromDisplayableIndex: number, toDisplayableIndex: number) {
+  applyColumnOrderChange(() => moveDisplayableColumnInLayout(fromDisplayableIndex, toDisplayableIndex));
+}
+
+function resetColumnOrder() {
+  applyColumnOrderChange(resetColumnOrderInLayout);
+}
+
+function freezeSelectedColumns(selectedVisibleColumnIndexes: number[]) {
+  applyColumnOrderChange(() => freezeSelectedColumnsInLayout(selectedVisibleColumnIndexes));
+}
+
+function unfreezeAllColumns() {
+  applyColumnOrderChange(unfreezeAllColumnsInLayout);
 }
 
 const {
@@ -4305,6 +4328,7 @@ const {
   selectionFocus,
   finishCellSelection,
   extendCellSelection,
+  isCellSelectionDragConfirmed,
   restoreCellSelectionState,
   cellIsSelected,
   columnIsSelected,
@@ -4482,7 +4506,7 @@ function onCellMouseenter(rowIndex: number, visibleColIdx: number, actualColIdx:
     quickDownloadMenuCell.value = retainBinaryCellDownloadMenuForHover(quickDownloadMenuCell.value, { rowIndex, col: actualColIdx });
     if (!isScrolling.value) hoveredDetailCell.value = { rowIndex, col: actualColIdx };
   }
-  extendCellSelection(rowIndex, visibleColIdx);
+  if (isCellSelectionDragConfirmed()) extendCellSelection(rowIndex, visibleColIdx);
 }
 
 function onCellMouseleave(rowIndex: number, actualColIdx: number) {
@@ -6304,7 +6328,7 @@ onMounted(() => {
   window.addEventListener("resize", refreshDataGridViewportMetrics);
   window.visualViewport?.addEventListener("resize", refreshDataGridViewportMetrics);
   window.addEventListener("dbx:ui-scale-applied", refreshDataGridViewportMetrics);
-  window.addEventListener(TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, onTableDataGridColumnOrderChanged);
+  window.addEventListener(TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, onSynchronizedTableDataGridColumnOrderChanged);
   window.addEventListener("blur", clearInternalClipboardCopy);
   document.addEventListener("visibilitychange", clearInternalClipboardCopy);
 });
@@ -6326,7 +6350,7 @@ onUnmounted(() => {
   window.removeEventListener("resize", refreshDataGridViewportMetrics);
   window.visualViewport?.removeEventListener("resize", refreshDataGridViewportMetrics);
   window.removeEventListener("dbx:ui-scale-applied", refreshDataGridViewportMetrics);
-  window.removeEventListener(TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, onTableDataGridColumnOrderChanged);
+  window.removeEventListener(TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, onSynchronizedTableDataGridColumnOrderChanged);
   window.removeEventListener("blur", clearInternalClipboardCopy);
   document.removeEventListener("visibilitychange", clearInternalClipboardCopy);
 });

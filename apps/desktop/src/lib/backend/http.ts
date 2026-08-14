@@ -102,6 +102,7 @@ import type {
   MongoCollectionStatsResult,
   MongoCloneCollectionResult,
   MongoDropIndexesResult,
+  MongoIndexSpec,
   MongoGridFsBucketInfo,
   HistoryEntry,
   HistorySearchRequest,
@@ -3622,6 +3623,14 @@ export async function mongoCollectionStats(connectionId: string, database: strin
     collection,
     scale,
     executionId,
+  });
+}
+
+export async function mongoListIndexSpecs(connectionId: string, database: string, collection: string): Promise<MongoIndexSpec[]> {
+  return post("/api/mongo/list-index-specs", {
+    connectionId,
+    database,
+    collection,
   });
 }
 

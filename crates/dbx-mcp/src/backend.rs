@@ -1006,6 +1006,23 @@ impl DbxBackend for WebBackend {
                 Ok(scalar_query_result("version", Value::String(version)))
             }
             MongoCommand::Use { database } => Ok(scalar_query_result("database", Value::String(database.clone()))),
+            MongoCommand::ShowDatabases => {
+                let result = self
+                    .request(
+                        reqwest::Method::POST,
+                        "/api/mongo/run-command",
+                        Some(json!({
+                            "connectionId": connection_id,
+                            "database": dbx_core::mongo_ops::MONGO_SHOW_DATABASES_DATABASE,
+                            "commandJson": dbx_core::mongo_ops::MONGO_SHOW_DATABASES_COMMAND_JSON,
+                        })),
+                    )
+                    .await?
+                    .json::<WebMongoDocuments>()
+                    .await
+                    .map_err(|error| format!("Invalid MongoDB listDatabases response: {error}"))?;
+                dbx_core::mongo_ops::mongo_show_databases_query_result(result.documents, 100)
+            }
             MongoCommand::RunCommand { .. } => {
                 Err("MongoDB runCommand is not available through the DBX MCP backend".to_string())
             }
@@ -1861,6 +1878,86 @@ mod tests {
             ]]
         );
         assert_eq!(result.affected_rows, 1);
+    }
+
+    #[tokio::test]
+    async fn web_mongo_show_databases_uses_one_admin_read_command() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_sender, request_receiver) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let header_end = loop {
+                let count = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(position) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break position + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length").then_some(value.trim())
+                })
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let count = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..count]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            request_sender
+                .send((
+                    request.lines().next().unwrap().to_string(),
+                    request[header_end..header_end + content_length].to_string(),
+                ))
+                .unwrap();
+
+            let response_body = r#"{"documents":[{"databases":[{"name":"admin","sizeOnDisk":40960,"empty":false},{"name":"app","sizeOnDisk":8192,"empty":true}],"ok":1}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response_body.len(),
+                response_body
+            )
+            .unwrap();
+        });
+
+        let backend = WebBackend::new(format!("http://{address}"), String::new()).unwrap();
+        backend.auth.lock().await.checked = true;
+        let connection = new_connection_config(
+            "legacy".to_string(),
+            "Legacy MongoDB".to_string(),
+            DatabaseType::MongoDb,
+            "localhost".to_string(),
+            27017,
+            String::new(),
+            String::new(),
+            Some("app".to_string()),
+            false,
+            Some("mongodb-legacy".to_string()),
+        )
+        .unwrap();
+        backend.connected.lock().await.insert(connection.id.clone(), connection.clone());
+
+        let result = backend.execute_mongo_command(&connection, "app", &MongoCommand::ShowDatabases).await.unwrap();
+
+        server.join().unwrap();
+        let (request_line, body) = request_receiver.recv().unwrap();
+        assert_eq!(request_line, "POST /api/mongo/run-command HTTP/1.1");
+        let request: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(request["connectionId"], "legacy");
+        assert_eq!(request["database"], "admin");
+        assert_eq!(request["commandJson"], r#"{"listDatabases":1}"#);
+        assert_eq!(result.columns, ["name", "sizeOnDisk", "empty"]);
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.affected_rows, 2);
     }
 
     #[tokio::test]
