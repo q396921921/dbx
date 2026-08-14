@@ -385,8 +385,32 @@ pub(crate) fn quote_transfer_identifier(name: &str, database_type: &DatabaseType
         | DatabaseType::Spark
         | DatabaseType::Questdb => format!("`{}`", name.replace('`', "``")),
         DatabaseType::SqlServer => format!("[{}]", name.replace(']', "]]")),
+        _ if needs_conditional_quoting_for_gaussdb_family(database_type) => {
+            if is_simple_lower_identifier(name) && !is_postgres_reserved_identifier(name) {
+                name.to_string()
+            } else {
+                format!("\"{}\"", name.replace('\"', "\"\""))
+            }
+        }
         _ => format!("\"{}\"", name.replace('\"', "\"\"")),
     }
+}
+
+/// GaussDB/OpenGauss can run in an Oracle-compatible mode where *unquoted*
+/// identifiers fold to uppercase instead of Postgres' lowercase. Transfer
+/// always quoting every identifier therefore locks in the source's exact
+/// (often lowercase) case; a later unquoted reference from the user's own
+/// tooling then folds to a different case and the target reports "column
+/// does not exist" even though the migrated column is right there
+/// (t8y2/dbx#6205). Only quote when the name actually needs it (mixed case,
+/// special characters, or a reserved word) — matching the same heuristic
+/// already used for GaussDB JDBC identifier quoting in
+/// `quote_gaussdb_jdbc_identifier` above. Deliberately scoped to just
+/// GaussDB/OpenGauss rather than the wider Postgres family (see
+/// `transfer::is_postgres_family_target`): those other engines have no
+/// reported case-folding quirk, and always-quoting them is harmless.
+fn needs_conditional_quoting_for_gaussdb_family(database_type: &DatabaseType) -> bool {
+    matches!(database_type, DatabaseType::Gaussdb | DatabaseType::OpenGauss)
 }
 
 /// Qualified table name for transfer SQL.

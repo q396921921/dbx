@@ -8828,6 +8828,83 @@ mod tests {
     }
 
     #[test]
+    fn gaussdb_create_table_does_not_quote_simple_lowercase_identifiers() {
+        // Regression test for t8y2/dbx#6205: migrating a MySQL table with plain
+        // lowercase/snake_case identifiers to GaussDB used to quote every column
+        // and the table/schema name, which locks in exact case. GaussDB can fold
+        // *unquoted* references to a different case (e.g. its Oracle-compatible
+        // mode), so a later unquoted query against the migrated table fails with
+        // "column does not exist" even though the column is right there.
+        let cols = vec![
+            db::ColumnInfo { is_primary_key: true, ..test_column("id", "bigint") },
+            test_column("created_at", "datetime"),
+            test_column("updated_at", "datetime"),
+            test_column("deleted_at", "datetime"),
+            test_column("categories_id", "bigint"),
+            test_column("background_image_id", "text"),
+            test_column("level", "int"),
+            test_column("parent_id", "bigint"),
+        ];
+
+        let ddl = generate_create_table_ddl(
+            &cols,
+            "background_categories_img",
+            "",
+            "public",
+            &DatabaseType::Gaussdb,
+            &DatabaseType::Mysql,
+            None,
+            None,
+        );
+
+        assert!(
+            ddl.starts_with("CREATE TABLE IF NOT EXISTS public.background_categories_img ("),
+            "table/schema must be unquoted, ddl: {ddl}"
+        );
+        for column in ["id", "created_at", "updated_at", "deleted_at", "categories_id", "background_image_id", "level", "parent_id"]
+        {
+            assert!(ddl.contains(&format!("  {column} ")), "column `{column}` must be unquoted, ddl: {ddl}");
+        }
+        assert!(ddl.contains("PRIMARY KEY (id)"), "primary key must be unquoted, ddl: {ddl}");
+        assert!(!ddl.contains('"'), "no identifier should need quoting, ddl: {ddl}");
+    }
+
+    #[test]
+    fn gaussdb_create_table_still_quotes_identifiers_that_need_it() {
+        let cols = vec![
+            test_column("Order", "int"),   // mixed case
+            test_column("select", "text"), // reserved word
+        ];
+
+        let ddl = generate_create_table_ddl(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::Gaussdb,
+            &DatabaseType::Mysql,
+            None,
+            None,
+        );
+
+        assert!(ddl.contains("\"Order\""), "mixed-case column must stay quoted, ddl: {ddl}");
+        assert!(ddl.contains("\"select\""), "reserved-word column must stay quoted, ddl: {ddl}");
+    }
+
+    #[test]
+    fn postgres_create_table_still_quotes_simple_lowercase_identifiers() {
+        // Unlike GaussDB, plain Postgres has no reported case-folding quirk, so
+        // the fix is deliberately scoped to Gaussdb/OpenGauss only — Postgres
+        // itself keeps quoting everything, unchanged.
+        let cols = vec![test_column("id", "int")];
+
+        let ddl =
+            generate_create_table_ddl(&cols, "t", "", "public", &DatabaseType::Postgres, &DatabaseType::Mysql, None, None);
+
+        assert!(ddl.contains("\"id\""), "ddl: {ddl}");
+    }
+
+    #[test]
     fn postgres_create_table_preserves_defaults_identity_and_exact_types() {
         let cols = vec![
             db::ColumnInfo {
