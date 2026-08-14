@@ -190,6 +190,7 @@ import {
   isLoadingStructurePreview,
   showEmptyTableConfirm,
   showTruncateTableConfirm,
+  showMysqlAutoIncrementConfirm,
   showRenameObjectDialog,
   renameObjectName,
   renameObjectError,
@@ -200,6 +201,8 @@ import {
   emptyTablePreviewSql,
   truncateTablePreviewSql,
   truncateTableCascade,
+  mysqlAutoIncrementValue,
+  mysqlAutoIncrementPreviewSql,
   dropObjectPreviewSql,
   showDropObjectConfirm,
   dropTableChildObjectPreviewSql,
@@ -462,7 +465,25 @@ const {
   confirmDropAllMongoIndexes,
 } = useSidebarDatabaseSpecificMutationRuntime({ activeNode, connectionStore });
 
-const { isTableNotView, supportsTruncate, canDropTableCascade, canTruncateTableCascade, refreshDropTablePreviewSql, refreshTruncateTablePreviewSql, dropTable, refreshTableList, confirmDropTable, emptyTable, confirmEmptyTable, truncateTable, confirmTruncateTable } = useSidebarTableMutationRuntime({
+const {
+  isTableNotView,
+  supportsTruncate,
+  supportsMysqlAutoIncrement,
+  canDropTableCascade,
+  canTruncateTableCascade,
+  refreshDropTablePreviewSql,
+  refreshTruncateTablePreviewSql,
+  dropTable,
+  refreshTableList,
+  confirmDropTable,
+  emptyTable,
+  confirmEmptyTable,
+  truncateTable,
+  confirmTruncateTable,
+  mysqlAutoIncrement,
+  refreshMysqlAutoIncrementPreviewSql,
+  confirmMysqlAutoIncrement,
+} = useSidebarTableMutationRuntime({
   activeNode,
   releaseActiveNodeReference,
   connectionStore,
@@ -502,6 +523,10 @@ function routeTreeItemDialogController() {
 }
 
 const sidebarTreeContext = inject(sidebarTreeContextKey, null);
+
+function shouldReleaseCollapsedTreeNodeChildren(): boolean {
+  return !connectionStore.sidebarSearchQuery && !sidebarTreeContext?.isSearchProjectionActive?.();
+}
 
 function currentDatabaseType(): DatabaseType | undefined {
   return activeNode.value.connectionId ? effectiveDatabaseTypeForConnection(connectionStore.getConfig(activeNode.value.connectionId)) : undefined;
@@ -584,7 +609,7 @@ async function toggle() {
   if (node.isLoading) {
     if (node.isExpanded) {
       node.isExpanded = false;
-      if (!connectionStore.sidebarSearchQuery) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+      if (shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
       connectionStore.cancelTreeNodeLoad(node.id);
       emitNodeToggled(node, true, false);
     } else {
@@ -621,7 +646,7 @@ async function toggle() {
   const databaseObjectGroup = !!objectTypesForGroupNode(node.type);
   if (databaseObjectGroup && connectionStore.canUseLoadedTreeNodeToggle(node)) {
     node.isExpanded = !node.isExpanded;
-    if (wasExpanded && !connectionStore.sidebarSearchQuery) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+    if (wasExpanded && shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
     emitNodeToggled(node, wasExpanded);
     return;
   }
@@ -640,20 +665,20 @@ async function toggle() {
 
   if (node.type === "group-extensions" && connectionStore.canUseLoadedTreeNodeToggle(node)) {
     node.isExpanded = !node.isExpanded;
-    if (wasExpanded && !connectionStore.sidebarSearchQuery) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+    if (wasExpanded && shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
     emitNodeToggled(node, wasExpanded);
     return;
   }
 
   if (isXuguTypeMemberContainer(node, connectionStore.getConfig(node.connectionId || "")?.db_type)) {
-    await connectionStore.loadXuguTypeMembers(node);
+    await connectionStore.loadXuguTypeMembers(node, { preserveCollapsedChildren: !shouldReleaseCollapsedTreeNodeChildren() });
     emitNodeToggled(node, wasExpanded);
     return;
   }
 
   if (node.isExpanded) {
     node.isExpanded = false;
-    if (!connectionStore.sidebarSearchQuery) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+    if (shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
     emitNodeToggled(node, wasExpanded, false);
     return;
   }
@@ -3773,6 +3798,13 @@ function dangerRequest(request: Omit<SidebarDangerDialogRequest, "target">): Sid
       await onChange(checked);
     };
   }
+  if (request.textInput?.onInput) {
+    const onInput = request.textInput.onInput;
+    request.textInput.onInput = async (value) => {
+      activateActionTarget(target);
+      await onInput(value);
+    };
+  }
   routedRequest.target = target;
   sidebarDangerTarget.value = routedRequest.target;
   return routedRequest;
@@ -3865,6 +3897,30 @@ routeDangerDialog(showTruncateTableConfirm, () =>
         }
       : undefined,
     confirm: confirmTruncateTable,
+  }),
+);
+
+routeDangerDialog(showMysqlAutoIncrementConfirm, () =>
+  dangerRequest({
+    title: t("contextMenu.mysqlAutoIncrementTitle"),
+    message: t("contextMenu.mysqlAutoIncrementMessage", { name: activeNode.value.label }),
+    detailsText: t("contextMenu.mysqlAutoIncrementNonemptyHint"),
+    get sql() {
+      return mysqlAutoIncrementPreviewSql.value;
+    },
+    confirmLabel: t("contextMenu.mysqlAutoIncrement"),
+    textInput: {
+      value: mysqlAutoIncrementValue.value,
+      label: t("contextMenu.mysqlAutoIncrementValue"),
+      placeholder: "1",
+      inputMode: "numeric",
+      async onInput(value) {
+        mysqlAutoIncrementValue.value = value;
+        if (sidebarDangerTarget.value) activateActionTarget(sidebarDangerTarget.value);
+        await refreshMysqlAutoIncrementPreviewSql();
+      },
+    },
+    confirm: confirmMysqlAutoIncrement,
   }),
 );
 
@@ -4894,6 +4950,9 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
       items.push({ label: t("contextMenu.duplicateStructure"), action: duplicateStructure, icon: CopyPlus });
       // Keep menu copy aligned with keyboard copy so frozen multi-selection and single-row fallback stay compatible.
       items.push(...treeTableClipboardMenuItems(node));
+      if (supportsMysqlAutoIncrement.value) {
+        items.push({ label: t("contextMenu.mysqlAutoIncrement"), action: mysqlAutoIncrement, icon: Gauge });
+      }
       if (supportsTruncate.value) {
         destructiveActions.push({
           label: truncateMenuLabel(t("contextMenu.truncateTable")),

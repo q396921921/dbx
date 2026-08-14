@@ -223,6 +223,7 @@ export const buildDropTableSql = forward("buildDropTableSql");
 export const buildDropTableChildObjectSql = forward("buildDropTableChildObjectSql");
 export const buildEmptyTableSql = forward("buildEmptyTableSql");
 export const buildTruncateTableSql = forward("buildTruncateTableSql");
+export const buildMysqlAutoIncrementSql = forward("buildMysqlAutoIncrementSql");
 export const buildDropDatabaseSql = forward("buildDropDatabaseSql");
 export const buildCreateSchemaSql = forward("buildCreateSchemaSql");
 export const buildUpdateDatabasePropertiesSql = forward("buildUpdateDatabasePropertiesSql");
