@@ -81,6 +81,13 @@ pub struct PostgresTablePartitionInfo {
     pub parent_table: Option<String>,
     pub bound: Option<String>,
     pub key: Option<String>,
+    /// True when this relation is itself a foreign table (relkind 'f'),
+    /// whether or not it is also a partition. A partition backed by a
+    /// foreign server must be declared with `CREATE FOREIGN TABLE ...
+    /// SERVER`, not `CREATE TABLE`.
+    pub is_foreign: bool,
+    pub foreign_server: Option<String>,
+    pub foreign_options: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -88,6 +95,16 @@ pub struct PostgresTablePartitionLocalObjects {
     pub has_primary_key: bool,
     pub foreign_keys: BTreeSet<String>,
     pub indexes: BTreeSet<String>,
+    /// CHECK constraints declared directly on this partition (coninhcount =
+    /// 0), as opposed to ones propagated from the parent's own CHECK
+    /// constraints — CHECK constraints use the legacy inheritance-count
+    /// mechanism rather than the conparentid tracking PK/FK use.
+    pub check_constraints: BTreeSet<String>,
+    /// Columns whose default expression on this partition differs from (or
+    /// has no counterpart in) the parent's default for the same column —
+    /// PostgreSQL lets a partition override a column's DEFAULT independently
+    /// of its parent via `column WITH OPTIONS DEFAULT ...`.
+    pub column_defaults: BTreeSet<String>,
 }
 
 fn pg_temporal_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
@@ -2798,7 +2815,8 @@ pub async fn get_table_partition_info(
     };
     let relkind = relation.try_get::<_, String>(0).unwrap_or_default();
     let is_partition = relation.try_get::<_, bool>(1).unwrap_or(false);
-    if relkind != "p" && !is_partition {
+    let is_foreign = relkind == "f";
+    if relkind != "p" && !is_foreign && !is_partition {
         return Ok(PostgresTablePartitionInfo::default());
     }
 
@@ -2806,14 +2824,25 @@ pub async fn get_table_partition_info(
         .await
         .map_err(|e| e.to_string())?;
     let Some(row) = rows.first() else {
-        return Ok(PostgresTablePartitionInfo { is_partition, ..Default::default() });
+        return Ok(PostgresTablePartitionInfo { is_partition, is_foreign, ..Default::default() });
     };
+    let foreign_options = row
+        .try_get::<_, Option<Vec<String>>>(5)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|option| option.split_once('=').map(|(key, value)| (key.to_string(), value.to_string())))
+        .collect();
     Ok(PostgresTablePartitionInfo {
         is_partition,
         parent_schema: row.try_get::<_, Option<String>>(0).ok().flatten().filter(|value| !value.is_empty()),
         parent_table: row.try_get::<_, Option<String>>(1).ok().flatten().filter(|value| !value.is_empty()),
         bound: row.try_get::<_, Option<String>>(2).ok().flatten().filter(|value| !value.is_empty()),
         key: row.try_get::<_, Option<String>>(3).ok().flatten().filter(|value| !value.is_empty()),
+        is_foreign,
+        foreign_server: row.try_get::<_, Option<String>>(4).ok().flatten().filter(|value| !value.is_empty()),
+        foreign_options,
     })
 }
 
@@ -2858,13 +2887,46 @@ pub async fn get_table_partition_local_objects(
             "constraint" if object_type == "f" && !object_name.is_empty() => {
                 result.foreign_keys.insert(object_name);
             }
+            "check" if !object_name.is_empty() => {
+                result.check_constraints.insert(object_name);
+            }
             "index" if !object_name.is_empty() => {
                 result.indexes.insert(object_name);
+            }
+            "column_default" if !object_name.is_empty() => {
+                result.column_defaults.insert(object_name);
             }
             _ => {}
         }
     }
     Ok(result)
+}
+
+/// CHECK constraints on a table, as (name, definition) pairs (definition
+/// includes the leading `CHECK` keyword, e.g. `CHECK (id > 0)`).
+pub async fn list_check_constraints(pool: &Pool, schema: &str, table: &str) -> Result<Vec<(String, String)>, String> {
+    let schema = if schema.is_empty() { "public" } else { schema };
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_check_constraints_sql(), &[&schema, &table])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let name = row.try_get::<_, String>(0).ok()?;
+            let definition = row.try_get::<_, String>(1).ok()?;
+            (!name.is_empty() && !definition.is_empty()).then_some((name, definition))
+        })
+        .collect())
+}
+
+fn postgres_check_constraints_sql() -> &'static str {
+    "SELECT con.conname, pg_catalog.pg_get_constraintdef(con.oid, true) AS definition \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 AND con.contype = 'c' \
+     ORDER BY con.conname"
 }
 
 fn postgres_table_partition_relation_sql() -> &'static str {
@@ -2876,7 +2938,7 @@ fn postgres_table_partition_relation_sql() -> &'static str {
             ) AS is_partition \
      FROM pg_catalog.pg_class c \
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p') \
+     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f') \
      LIMIT 1"
 }
 
@@ -2884,13 +2946,17 @@ fn postgres_table_partition_info_sql() -> &'static str {
     "SELECT CASE WHEN c.relispartition THEN pn.nspname ELSE NULL END AS parent_schema, \
             CASE WHEN c.relispartition THEN pc.relname ELSE NULL END AS parent_table, \
             CASE WHEN c.relispartition THEN pg_catalog.pg_get_expr(c.relpartbound, c.oid, true) ELSE NULL END AS partition_bound, \
-            CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) ELSE NULL END AS partition_key \
+            CASE WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) ELSE NULL END AS partition_key, \
+            CASE WHEN c.relkind = 'f' THEN fs.srvname ELSE NULL END AS foreign_server, \
+            CASE WHEN c.relkind = 'f' THEN ft.ftoptions ELSE NULL END AS foreign_options \
      FROM pg_catalog.pg_class c \
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
      LEFT JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid \
      LEFT JOIN pg_catalog.pg_class pc ON pc.oid = i.inhparent \
      LEFT JOIN pg_catalog.pg_namespace pn ON pn.oid = pc.relnamespace \
-     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p') \
+     LEFT JOIN pg_catalog.pg_foreign_table ft ON ft.ftrelid = c.oid \
+     LEFT JOIN pg_catalog.pg_foreign_server fs ON fs.oid = ft.ftserver \
+     WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f') \
      ORDER BY i.inhseqno NULLS LAST \
      LIMIT 1"
 }
@@ -2914,6 +2980,12 @@ fn postgres_table_partition_local_objects_sql() -> &'static str {
      WHERE n.nspname = $1 AND c.relname = $2 AND con.contype IN ('p','f') \
        AND COALESCE(NULLIF(pg_catalog.row_to_json(con)->>'conparentid', '')::oid, 0) = 0 \
      UNION ALL \
+     SELECT 'check'::text AS object_kind, con.conname AS object_name, NULL::text AS object_type \
+     FROM pg_catalog.pg_constraint con \
+     JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 AND con.contype = 'c' AND con.coninhcount = 0 \
+     UNION ALL \
      SELECT 'index'::text AS object_kind, idx.relname AS object_name, NULL::text AS object_type \
      FROM pg_catalog.pg_index ix \
      JOIN pg_catalog.pg_class c ON c.oid = ix.indrelid \
@@ -2921,6 +2993,20 @@ fn postgres_table_partition_local_objects_sql() -> &'static str {
      JOIN pg_catalog.pg_class idx ON idx.oid = ix.indexrelid \
      WHERE n.nspname = $1 AND c.relname = $2 \
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid = idx.oid) \
+     UNION ALL \
+     SELECT 'column_default'::text AS object_kind, a.attname AS object_name, NULL::text AS object_type \
+     FROM pg_catalog.pg_class c \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
+     JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+     JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid \
+     JOIN pg_catalog.pg_attribute pa \
+       ON pa.attrelid = i.inhparent AND pa.attname = a.attname AND pa.attnum > 0 AND NOT pa.attisdropped \
+     LEFT JOIN pg_catalog.pg_attrdef pad ON pad.adrelid = pa.attrelid AND pad.adnum = pa.attnum \
+     WHERE n.nspname = $1 AND c.relname = $2 \
+       AND (pad.oid IS NULL \
+            OR pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) \
+               IS DISTINCT FROM pg_catalog.pg_get_expr(pad.adbin, pad.adrelid)) \
      ORDER BY object_kind, object_name"
 }
 
@@ -5631,11 +5717,26 @@ pub async fn list_triggers(pool: &Pool, schema: &str, table: &str) -> Result<Vec
         .collect())
 }
 
+// A trigger declared on a partitioned table is automatically cloned onto each
+// partition (tracked via pg_trigger.tgparentid since PostgreSQL 13); such
+// clones are not independently creatable statements — attaching/creating the
+// partition already recreates them — so they must be excluded here, or the
+// partition's own DDL would re-declare (and fail to create, or duplicate) a
+// trigger the parent's DDL already installs. PostgreSQL servers older than 13
+// lack the tgparentid column, so fall back to the pre-13 query on that error;
+// those servers never clone triggers onto partitions, so tgisinternal alone
+// is sufficient there.
 pub async fn list_trigger_definitions(pool: &Pool, schema: &str, table: &str) -> Result<Vec<String>, String> {
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    let rows = postgres_query_cached(&client, postgres_trigger_definitions_sql(), &[&schema, &table])
-        .await
-        .map_err(|e| e.to_string())?;
+    let rows = match postgres_query_cached(&client, postgres_trigger_definitions_sql(), &[&schema, &table]).await {
+        Ok(rows) => rows,
+        Err(error) if postgres_missing_tgparentid_error(&error.to_string()) => {
+            postgres_query_cached(&client, postgres_trigger_definitions_sql_without_tgparentid(), &[&schema, &table])
+                .await
+                .map_err(|e| e.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
 
     Ok(rows.iter().map(|row| pg_row_try_string(row, 0)).filter(|definition| !definition.trim().is_empty()).collect())
 }
@@ -5645,8 +5746,25 @@ fn postgres_trigger_definitions_sql() -> &'static str {
      FROM pg_catalog.pg_trigger t \
      JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+     WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal AND t.tgparentid = 0 \
+     ORDER BY t.tgname, t.oid"
+}
+
+fn postgres_trigger_definitions_sql_without_tgparentid() -> &'static str {
+    "SELECT pg_catalog.pg_get_triggerdef(t.oid, true) AS trigger_definition \
+     FROM pg_catalog.pg_trigger t \
+     JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid \
+     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
      WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal \
      ORDER BY t.tgname, t.oid"
+}
+
+fn postgres_missing_tgparentid_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("does not exist")
+        && (lower.contains("column t.tgparentid")
+            || lower.contains("column \"t\".\"tgparentid\"")
+            || lower.contains("column \"tgparentid\""))
 }
 
 fn postgres_functions_sql(has_proc_prokind: bool) -> &'static str {
@@ -8118,15 +8236,36 @@ mod tests {
         assert!(relation_sql.contains("pg_catalog.pg_inherits"));
         assert!(relation_sql.contains("parent.oid = i.inhparent"));
         assert!(relation_sql.contains(") = 'p'"));
-        assert!(relation_sql.contains("c.relkind IN ('r','p')"));
+        // Foreign tables (relkind 'f') must be reachable here too, or a
+        // foreign partition looked up directly (not via recursion from its
+        // parent) would never be classified as a partition at all.
+        assert!(relation_sql.contains("c.relkind IN ('r','p','f')"));
         assert!(info_sql.contains("pg_catalog.pg_get_expr(c.relpartbound, c.oid, true)"));
         assert!(info_sql.contains("pg_catalog.pg_get_partkeydef(c.oid)"));
         assert!(info_sql.contains("pg_catalog.pg_inherits"));
         assert!(info_sql.contains("parent_schema"));
         assert!(info_sql.contains("parent_table"));
+        assert!(info_sql.contains("pg_catalog.pg_foreign_table"));
+        assert!(info_sql.contains("pg_catalog.pg_foreign_server"));
+        assert!(info_sql.contains("fs.srvname"));
+        assert!(info_sql.contains("ft.ftoptions"));
+        assert!(info_sql.contains("c.relkind IN ('r','p','f')"));
         assert!(local_objects_sql.contains("row_to_json(con)->>'conparentid'"));
         assert!(local_objects_sql.contains("con.contype IN ('p','f')"));
         assert!(local_objects_sql.contains("i.inhrelid = idx.oid"));
+        // CHECK constraints propagated from the parent use the legacy
+        // inheritance-count mechanism (coninhcount), not conparentid.
+        assert!(local_objects_sql.contains("con.contype = 'c' AND con.coninhcount = 0"));
+        assert!(local_objects_sql.contains("pg_catalog.pg_attrdef"));
+    }
+
+    #[test]
+    fn postgres_check_constraints_sql_selects_definitions_for_relation() {
+        let sql = postgres_check_constraints_sql();
+        assert!(sql.contains("con.contype = 'c'"));
+        assert!(sql.contains("pg_catalog.pg_get_constraintdef(con.oid, true)"));
+        assert!(sql.contains("n.nspname = $1 AND c.relname = $2"));
+        assert!(sql.contains("ORDER BY con.conname"));
     }
 
     #[test]
@@ -8455,7 +8594,8 @@ mod tests {
     async fn postgres_partition_metadata_renders_replayable_children_and_subpartitions() {
         let url = std::env::var("DBX_TEST_POSTGRES_URL").expect("DBX_TEST_POSTGRES_URL");
         let pool = connect(&url, Duration::from_secs(5)).await.expect("connect postgres");
-        let schema = format!("dbx_partition_meta_{}", std::process::id());
+        let pid = std::process::id();
+        let schema = format!("dbx_partition_meta_{pid}");
         let schema_ident = pg_quote_ident(&schema);
         let replay_schema = format!("{schema}_replay");
         let replay_schema_ident = pg_quote_ident(&replay_schema);
@@ -8465,16 +8605,28 @@ mod tests {
         let subpartition = format!("{schema_ident}.subpartition");
         let inherited_parent = format!("{schema_ident}.inherited_parent");
         let inherited_child = format!("{schema_ident}.inherited_child");
+        // Declared in "public" (not the per-test schema) so the same
+        // qualified name keeps resolving after `schema_ident` substrings are
+        // rewritten to `replay_schema_ident` for the replay pass below.
+        let trigger_fn = format!("public.dbx_partition_meta_trigger_fn_{pid}");
 
         execute_query(&pool, &format!("CREATE SCHEMA {schema_ident}")).await.expect("create schema");
         let client = pool.get().await.expect("get postgres client");
         client
             .batch_execute(&format!(
-                "CREATE TABLE {parent} (id integer, payload text) PARTITION BY RANGE (id); \
-                 CREATE TABLE {child} PARTITION OF {parent} (PRIMARY KEY (id)) FOR VALUES FROM (1) TO (10); \
+                "CREATE OR REPLACE FUNCTION {trigger_fn}() RETURNS trigger LANGUAGE plpgsql AS \
+                 $$ BEGIN RETURN NEW; END $$; \
+                 CREATE TABLE {parent} (id integer, payload text, status text DEFAULT 'pending') PARTITION BY RANGE (id); \
+                 CREATE TABLE {child} PARTITION OF {parent} ( \
+                   PRIMARY KEY (id), \
+                   CONSTRAINT child_payload_not_blank CHECK (payload <> ''), \
+                   status WITH OPTIONS DEFAULT 'child-status' \
+                 ) FOR VALUES FROM (1) TO (10); \
                  CREATE INDEX child_payload_idx ON {child} (payload); \
                  CREATE TABLE {default_child} PARTITION OF {parent} DEFAULT; \
                  CREATE TABLE {subpartition} PARTITION OF {parent} FOR VALUES FROM (10) TO (20) PARTITION BY HASH (payload); \
+                 ALTER TABLE {parent} ADD CONSTRAINT parent_id_positive CHECK (id > 0); \
+                 CREATE TRIGGER parent_biu BEFORE INSERT ON {parent} FOR EACH ROW EXECUTE FUNCTION {trigger_fn}(); \
                  CREATE TABLE {inherited_parent} (id integer, bucket integer, PRIMARY KEY (id, bucket)) PARTITION BY RANGE (bucket); \
                  CREATE TABLE {inherited_child} PARTITION OF {inherited_parent} FOR VALUES FROM (1) TO (10)"
             ))
@@ -8500,20 +8652,27 @@ mod tests {
         let inherited_child_ddl =
             crate::schema::pg_ddl(&pool, &schema, "inherited_child").await.expect("inherited child ddl");
 
+        // `parent_ddl`/`inherited_parent_ddl` already embed their full
+        // partition subtree (that's the fix under test), so replaying the
+        // per-partition ddl strings on top would recreate the same relations
+        // twice. Only the two top-level requests need replaying; the
+        // individually-fetched partition ddls above are still asserted on
+        // for shape without being replayed a second time.
         execute_query(&pool, &format!("CREATE SCHEMA {replay_schema_ident}")).await.expect("create replay schema");
-        for ddl in
-            [&parent_ddl, &child_ddl, &default_ddl, &subpartition_ddl, &inherited_parent_ddl, &inherited_child_ddl]
-        {
+        for ddl in [&parent_ddl, &inherited_parent_ddl] {
             client
-                .batch_execute(&ddl.replace(&schema_ident, &replay_schema_ident))
+                .batch_execute(&ddl.replace(&schema, &replay_schema))
                 .await
-                .unwrap_or_else(|error| panic!("replay partition ddl failed: {error}; ddl: {ddl}"));
+                .unwrap_or_else(|error| panic!("replay partition ddl failed: {error:?}; ddl: {ddl}"));
         }
 
         client
-            .batch_execute(&format!("DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE; \
+                 DROP FUNCTION IF EXISTS {trigger_fn}()"
+            ))
             .await
-            .expect("drop schemas");
+            .expect("drop schemas and trigger function");
 
         assert_eq!(parent_info.key.as_deref(), Some("RANGE (id)"));
         assert!(!parent_info.is_partition);
@@ -8522,16 +8681,31 @@ mod tests {
         assert_eq!(child_info.bound.as_deref(), Some("FOR VALUES FROM (1) TO (10)"));
         assert!(child_local_objects.has_primary_key);
         assert!(child_local_objects.indexes.contains("child_payload_idx"));
+        assert!(child_local_objects.check_constraints.contains("child_payload_not_blank"));
+        assert!(!child_local_objects.check_constraints.contains("parent_id_positive"));
+        assert!(child_local_objects.column_defaults.contains("status"));
         assert!(!inherited_child_local_objects.has_primary_key);
         assert!(inherited_child_local_objects.indexes.is_empty());
         assert_eq!(default_info.bound.as_deref(), Some("DEFAULT"));
         assert_eq!(subpartition_info.key.as_deref(), Some("HASH (payload)"));
         assert!(parent_ddl.contains(") PARTITION BY RANGE (id);"), "ddl: {parent_ddl}");
+        assert!(parent_ddl.contains("CONSTRAINT \"parent_id_positive\" CHECK (id > 0)"), "ddl: {parent_ddl}");
+        // The parent's trigger is automatically cloned onto every partition
+        // by PostgreSQL itself when the partition is created/attached, so it
+        // must appear exactly once in the combined DDL, not once per relation.
+        assert_eq!(parent_ddl.matches("CREATE TRIGGER").count(), 1, "ddl: {parent_ddl}");
         assert!(child_ddl.contains("CREATE TABLE"), "ddl: {child_ddl}");
         assert!(child_ddl.contains("PARTITION OF"), "ddl: {child_ddl}");
         assert!(child_ddl.contains("PRIMARY KEY (\"id\")"), "ddl: {child_ddl}");
-        assert!(child_ddl.contains("FOR VALUES FROM (1) TO (10);"), "ddl: {child_ddl}");
+        assert!(child_ddl.contains("FOR VALUES FROM (1) TO (10)"), "ddl: {child_ddl}");
         assert!(child_ddl.contains("CREATE INDEX \"child_payload_idx\""), "ddl: {child_ddl}");
+        assert!(child_ddl.contains("CONSTRAINT \"child_payload_not_blank\" CHECK (payload"), "ddl: {child_ddl}");
+        assert!(!child_ddl.contains("parent_id_positive"), "ddl: {child_ddl}");
+        assert!(child_ddl.contains("\"status\" WITH OPTIONS DEFAULT 'child-status'"), "ddl: {child_ddl}");
+        assert!(
+            !child_ddl.contains("CREATE TRIGGER"),
+            "child must not redeclare the parent's cloned trigger: {child_ddl}"
+        );
         assert!(default_ddl.contains(" DEFAULT;"), "ddl: {default_ddl}");
         assert!(
             subpartition_ddl.contains("FOR VALUES FROM (10) TO (20) PARTITION BY HASH (payload);"),
@@ -8539,6 +8713,77 @@ mod tests {
         );
         assert!(!inherited_child_ddl.contains("PRIMARY KEY"), "ddl: {inherited_child_ddl}");
         assert!(!inherited_child_ddl.contains("CREATE INDEX"), "ddl: {inherited_child_ddl}");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires DBX_TEST_POSTGRES_URL pointing at a writable PostgreSQL database with postgres_fdw available"]
+    async fn postgres_partition_ddl_uses_foreign_table_syntax_for_foreign_partitions() {
+        let url = std::env::var("DBX_TEST_POSTGRES_URL").expect("DBX_TEST_POSTGRES_URL");
+        let pool = connect(&url, Duration::from_secs(5)).await.expect("connect postgres");
+        let pid = std::process::id();
+        let schema = format!("dbx_partition_fdw_{pid}");
+        let schema_ident = pg_quote_ident(&schema);
+        let server = format!("dbx_partition_fdw_server_{pid}");
+        let server_ident = pg_quote_ident(&server);
+        let replay_schema = format!("{schema}_replay");
+        let replay_schema_ident = pg_quote_ident(&replay_schema);
+        let parent = format!("{schema_ident}.parent");
+        let local_child = format!("{schema_ident}.local_child");
+        let foreign_child = format!("{schema_ident}.foreign_child");
+
+        execute_query(&pool, &format!("CREATE SCHEMA {schema_ident}")).await.expect("create schema");
+        let client = pool.get().await.expect("get postgres client");
+        client
+            .batch_execute(&format!(
+                "CREATE EXTENSION IF NOT EXISTS postgres_fdw; \
+                 CREATE SERVER {server_ident} FOREIGN DATA WRAPPER postgres_fdw \
+                   OPTIONS (host 'localhost', dbname 'postgres', port '5432'); \
+                 CREATE USER MAPPING FOR CURRENT_USER SERVER {server_ident} \
+                   OPTIONS (user 'postgres', password 'postgres'); \
+                 CREATE TABLE {parent} (id integer, payload text) PARTITION BY RANGE (id); \
+                 CREATE TABLE {local_child} PARTITION OF {parent} FOR VALUES FROM (1) TO (10); \
+                 CREATE FOREIGN TABLE {foreign_child} PARTITION OF {parent} \
+                   FOR VALUES FROM (10) TO (20) \
+                   SERVER {server_ident} OPTIONS (schema_name 'public', table_name 'foreign_child_data')"
+            ))
+            .await
+            .expect("create partitioned tables with a foreign partition");
+
+        let foreign_info = get_table_partition_info(&pool, &schema, "foreign_child").await.expect("foreign child info");
+        let local_info = get_table_partition_info(&pool, &schema, "local_child").await.expect("local child info");
+        let parent_ddl = crate::schema::pg_ddl(&pool, &schema, "parent").await.expect("parent ddl");
+        let foreign_ddl = crate::schema::pg_ddl(&pool, &schema, "foreign_child").await.expect("foreign child ddl");
+
+        execute_query(&pool, &format!("CREATE SCHEMA {replay_schema_ident}")).await.expect("create replay schema");
+        client
+            .batch_execute(&parent_ddl.replace(&schema, &replay_schema))
+            .await
+            .unwrap_or_else(|error| panic!("replay foreign partition ddl failed: {error:?}; ddl: {parent_ddl}"));
+
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE; \
+                 DROP SERVER {server_ident} CASCADE"
+            ))
+            .await
+            .expect("drop schemas and foreign server");
+
+        assert!(!local_info.is_foreign);
+        assert!(foreign_info.is_foreign);
+        assert_eq!(foreign_info.foreign_server.as_deref(), Some(server.as_str()));
+        assert!(
+            foreign_info.foreign_options.contains(&("schema_name".to_string(), "public".to_string())),
+            "options: {:?}",
+            foreign_info.foreign_options
+        );
+        assert!(parent_ddl.contains("CREATE FOREIGN TABLE"), "ddl: {parent_ddl}");
+        assert!(foreign_ddl.starts_with("CREATE FOREIGN TABLE"), "ddl: {foreign_ddl}");
+        assert!(foreign_ddl.contains("PARTITION OF"), "ddl: {foreign_ddl}");
+        assert!(foreign_ddl.contains(&format!("SERVER {}", pg_quote_ident(&server))), "ddl: {foreign_ddl}");
+        assert!(foreign_ddl.contains("\"schema_name\" 'public'"), "ddl: {foreign_ddl}");
+        assert!(foreign_ddl.contains("\"table_name\" 'foreign_child_data'"), "ddl: {foreign_ddl}");
+        assert!(!foreign_ddl.contains("PRIMARY KEY"), "ddl: {foreign_ddl}");
+        assert!(!foreign_ddl.contains("CREATE INDEX"), "ddl: {foreign_ddl}");
     }
 
     #[tokio::test]
@@ -9332,7 +9577,22 @@ mod tests {
         let sql = postgres_trigger_definitions_sql();
         assert!(sql.contains("pg_catalog.pg_get_triggerdef(t.oid, true) AS trigger_definition"));
         assert!(sql.contains("NOT t.tgisinternal"));
+        assert!(sql.contains("t.tgparentid = 0"));
         assert!(sql.contains("ORDER BY t.tgname, t.oid"));
+    }
+
+    #[test]
+    fn postgres_trigger_definitions_sql_without_tgparentid_omits_partition_clone_filter() {
+        let sql = postgres_trigger_definitions_sql_without_tgparentid();
+        assert!(sql.contains("NOT t.tgisinternal"));
+        assert!(!sql.contains("tgparentid"));
+    }
+
+    #[test]
+    fn detects_postgres_missing_tgparentid_errors() {
+        assert!(postgres_missing_tgparentid_error("ERROR: column t.tgparentid does not exist"));
+        assert!(postgres_missing_tgparentid_error("ERROR: column \"t\".\"tgparentid\" does not exist"));
+        assert!(!postgres_missing_tgparentid_error("ERROR: relation public.tgparentid does not exist"));
     }
 
     #[test]

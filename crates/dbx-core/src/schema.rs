@@ -8644,6 +8644,7 @@ mod ddl_tests {
                 &[column("created_at", "timestamp without time zone")],
                 &[],
                 &[],
+                &[],
                 None,
                 &db::postgres::PostgresTablePartitionInfo {
                     key: Some(partition_key.to_string()),
@@ -8663,6 +8664,7 @@ mod ddl_tests {
             "public",
             "users",
             &[column("id", "integer")],
+            &[],
             &[],
             &[],
             None,
@@ -8695,11 +8697,13 @@ mod ddl_tests {
             parent_table: Some("events".to_string()),
             bound: Some("FOR VALUES FROM ('2026-01-01') TO ('2027-01-01')".to_string()),
             key: Some("HASH (payload)".to_string()),
+            ..Default::default()
         };
         let partition_local_objects = db::postgres::PostgresTablePartitionLocalObjects {
             has_primary_key: true,
             foreign_keys: BTreeSet::new(),
             indexes: BTreeSet::from(["events_payload_idx".to_string()]),
+            ..Default::default()
         };
 
         let ddl = render_postgres_table_ddl_with_partition_info(
@@ -8707,6 +8711,7 @@ mod ddl_tests {
             "events_2026",
             &[id, column("payload", "text")],
             &indexes,
+            &[],
             &[],
             None,
             &partition_info,
@@ -8742,6 +8747,7 @@ mod ddl_tests {
             parent_table: Some("events".to_string()),
             bound: Some("DEFAULT".to_string()),
             key: None,
+            ..Default::default()
         };
 
         let ddl = render_postgres_table_ddl_with_partition_info(
@@ -8750,12 +8756,143 @@ mod ddl_tests {
             &[id],
             &indexes,
             &[],
+            &[],
             None,
             &partition_info,
             &db::postgres::PostgresTablePartitionLocalObjects::default(),
         );
 
         assert_eq!(ddl, "CREATE TABLE \"public\".\"events_default\" PARTITION OF \"public\".\"events\" DEFAULT;\n");
+    }
+
+    #[test]
+    fn postgres_table_ddl_renders_check_constraints_for_ordinary_tables() {
+        let ddl = render_postgres_table_ddl_with_partition_info(
+            "public",
+            "users",
+            &[column("age", "integer")],
+            &[],
+            &[],
+            &[("users_age_check".to_string(), "CHECK (age >= 0)".to_string())],
+            None,
+            &db::postgres::PostgresTablePartitionInfo::default(),
+            &db::postgres::PostgresTablePartitionLocalObjects::default(),
+        );
+
+        assert!(ddl.contains("CONSTRAINT \"users_age_check\" CHECK (age >= 0)"), "ddl: {ddl}");
+    }
+
+    #[test]
+    fn postgres_partition_ddl_only_renders_local_check_constraints() {
+        let mut partition_local_objects = db::postgres::PostgresTablePartitionLocalObjects::default();
+        partition_local_objects.check_constraints.insert("child_only_check".to_string());
+
+        let ddl = render_postgres_table_ddl_with_partition_info(
+            "public",
+            "events_2026",
+            &[column("payload", "text")],
+            &[],
+            &[],
+            &[
+                ("parent_check".to_string(), "CHECK (payload IS NOT NULL)".to_string()),
+                ("child_only_check".to_string(), "CHECK (payload <> '')".to_string()),
+            ],
+            None,
+            &db::postgres::PostgresTablePartitionInfo {
+                is_partition: true,
+                parent_schema: Some("public".to_string()),
+                parent_table: Some("events".to_string()),
+                bound: Some("DEFAULT".to_string()),
+                ..Default::default()
+            },
+            &partition_local_objects,
+        );
+
+        assert!(ddl.contains("CONSTRAINT \"child_only_check\" CHECK (payload <> '')"), "ddl: {ddl}");
+        assert!(!ddl.contains("parent_check"), "ddl: {ddl}");
+    }
+
+    #[test]
+    fn postgres_partition_ddl_overrides_local_column_default() {
+        let mut status = column("status", "text");
+        status.column_default = Some("'archived'::text".to_string());
+        let mut partition_local_objects = db::postgres::PostgresTablePartitionLocalObjects::default();
+        partition_local_objects.column_defaults.insert("status".to_string());
+
+        let ddl = render_postgres_table_ddl_with_partition_info(
+            "public",
+            "events_2026",
+            &[status],
+            &[],
+            &[],
+            &[],
+            None,
+            &db::postgres::PostgresTablePartitionInfo {
+                is_partition: true,
+                parent_schema: Some("public".to_string()),
+                parent_table: Some("events".to_string()),
+                bound: Some("DEFAULT".to_string()),
+                ..Default::default()
+            },
+            &partition_local_objects,
+        );
+
+        assert!(ddl.contains("\"status\" WITH OPTIONS DEFAULT 'archived'::text"), "ddl: {ddl}");
+        // The partition's own column list is otherwise omitted (inherited
+        // from the parent), so a plain (non-override) column declaration
+        // must not appear alongside the WITH OPTIONS clause.
+        assert!(!ddl.contains("\"status\" text"), "ddl: {ddl}");
+    }
+
+    #[test]
+    fn postgres_table_ddl_renders_foreign_table_with_server_and_options() {
+        let ddl = render_postgres_table_ddl_with_partition_info(
+            "public",
+            "remote_users",
+            &[column("id", "integer")],
+            &[],
+            &[],
+            &[],
+            None,
+            &db::postgres::PostgresTablePartitionInfo {
+                is_foreign: true,
+                foreign_server: Some("loopback".to_string()),
+                foreign_options: vec![("schema_name".to_string(), "public".to_string())],
+                ..Default::default()
+            },
+            &db::postgres::PostgresTablePartitionLocalObjects::default(),
+        );
+
+        assert!(ddl.starts_with("CREATE FOREIGN TABLE \"public\".\"remote_users\""), "ddl: {ddl}");
+        assert!(ddl.contains("SERVER \"loopback\""), "ddl: {ddl}");
+        assert!(ddl.contains("OPTIONS (\"schema_name\" 'public')"), "ddl: {ddl}");
+    }
+
+    #[test]
+    fn postgres_partition_ddl_uses_foreign_table_syntax_for_foreign_partitions() {
+        let ddl = render_postgres_table_ddl_with_partition_info(
+            "public",
+            "events_remote",
+            &[column("id", "integer")],
+            &[],
+            &[],
+            &[],
+            None,
+            &db::postgres::PostgresTablePartitionInfo {
+                is_partition: true,
+                parent_schema: Some("public".to_string()),
+                parent_table: Some("events".to_string()),
+                bound: Some("FOR VALUES FROM ('2027-01-01') TO ('2028-01-01')".to_string()),
+                is_foreign: true,
+                foreign_server: Some("loopback".to_string()),
+                ..Default::default()
+            },
+            &db::postgres::PostgresTablePartitionLocalObjects::default(),
+        );
+
+        assert!(ddl.starts_with("CREATE FOREIGN TABLE \"public\".\"events_remote\" PARTITION OF"), "ddl: {ddl}");
+        assert!(ddl.contains("SERVER \"loopback\""), "ddl: {ddl}");
+        assert!(!ddl.contains("CREATE TABLE \"public\".\"events_remote\""), "ddl: {ddl}");
     }
 
     #[test]
@@ -9305,13 +9442,14 @@ fn pg_ddl_recursive<'a>(
     table: &'a str,
 ) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
     Box::pin(async move {
-        let (columns, indexes, fkeys, table_comment, partition_info, trigger_definitions) = tokio::try_join!(
+        let (columns, indexes, fkeys, table_comment, partition_info, trigger_definitions, check_constraints) = tokio::try_join!(
             db::postgres::get_columns(pool, schema, table),
             db::postgres::list_indexes(pool, schema, table),
             db::postgres::list_foreign_keys(pool, schema, table),
             async { db::postgres::get_table_comment(pool, schema, table).await },
             db::postgres::get_table_partition_info(pool, schema, table),
             db::postgres::list_trigger_definitions(pool, schema, table),
+            db::postgres::list_check_constraints(pool, schema, table),
         )?;
         let partition_local_objects = if partition_info.is_partition {
             db::postgres::get_table_partition_local_objects(pool, schema, table).await?
@@ -9326,6 +9464,7 @@ fn pg_ddl_recursive<'a>(
                 &columns,
                 &indexes,
                 &fkeys,
+                &check_constraints,
                 table_comment.as_deref(),
                 &partition_info,
                 &partition_local_objects,
@@ -9665,6 +9804,7 @@ pub fn render_postgres_table_ddl(
         columns,
         indexes,
         fkeys,
+        &[],
         table_comment,
         &db::postgres::PostgresTablePartitionInfo::default(),
         &db::postgres::PostgresTablePartitionLocalObjects::default(),
@@ -9677,6 +9817,7 @@ fn render_postgres_table_ddl_with_partition_info(
     columns: &[db::ColumnInfo],
     indexes: &[db::IndexInfo],
     fkeys: &[db::ForeignKeyInfo],
+    check_constraints: &[(String, String)],
     table_comment: Option<&str>,
     partition_info: &db::postgres::PostgresTablePartitionInfo,
     partition_local_objects: &db::postgres::PostgresTablePartitionLocalObjects,
@@ -9753,6 +9894,27 @@ fn render_postgres_table_ddl_with_partition_info(
             ref_columns
         ));
     }
+    for (name, definition) in check_constraints {
+        if is_partition && !partition_local_objects.check_constraints.contains(name) {
+            continue;
+        }
+        definition_lines.push(format!("  CONSTRAINT {} {}", pg_ident(name), definition.trim()));
+    }
+    if is_partition {
+        // A partition can override a column's default independently of the
+        // parent; PostgreSQL only accepts that override through `column_name
+        // WITH OPTIONS DEFAULT ...` since the partition's own column list is
+        // otherwise inherited (and thus omitted) from the parent's.
+        for column in columns {
+            if !partition_local_objects.column_defaults.contains(&column.name) {
+                continue;
+            }
+            let Some(default) = column.column_default.as_deref() else {
+                continue;
+            };
+            definition_lines.push(format!("  {} WITH OPTIONS DEFAULT {default}", pg_ident(&column.name)));
+        }
+    }
 
     let mut ddl = if let Some((parent_schema, parent_table, bound)) = partition_parent {
         let parent_name = format!("{}.{}", pg_ident(parent_schema), pg_ident(parent_table));
@@ -9761,10 +9923,24 @@ fn render_postgres_table_ddl_with_partition_info(
         } else {
             format!(" (\n{}\n)", definition_lines.join(",\n"))
         };
-        format!("CREATE TABLE {table_name} PARTITION OF {parent_name}{definitions} {bound}")
+        let create = if partition_info.is_foreign { "CREATE FOREIGN TABLE" } else { "CREATE TABLE" };
+        format!("{create} {table_name} PARTITION OF {parent_name}{definitions} {bound}")
     } else {
-        format!("CREATE TABLE {table_name} (\n{}\n)", definition_lines.join(",\n"))
+        let create = if partition_info.is_foreign { "CREATE FOREIGN TABLE" } else { "CREATE TABLE" };
+        format!("{create} {table_name} (\n{}\n)", definition_lines.join(",\n"))
     };
+    if let Some(server) = partition_info.foreign_server.as_deref().filter(|server| !server.trim().is_empty()) {
+        ddl.push_str(&format!(" SERVER {}", pg_ident(server)));
+        if !partition_info.foreign_options.is_empty() {
+            let options = partition_info
+                .foreign_options
+                .iter()
+                .map(|(key, value)| format!("{} {}", pg_ident(key), sql_string(value)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            ddl.push_str(&format!(" OPTIONS ({options})"));
+        }
+    }
     if let Some(partition_key) = partition_info.key.as_deref().filter(|key| !key.trim().is_empty()) {
         ddl.push_str(&format!(" PARTITION BY {partition_key}"));
     }
