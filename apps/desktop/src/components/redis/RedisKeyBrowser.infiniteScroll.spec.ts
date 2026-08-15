@@ -392,3 +392,113 @@ describe("RedisKeyBrowser infinite scroll auto-continue (issue #6022)", () => {
     expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1);
   });
 });
+
+// Each round below uses a page size large enough that a single fetchScanPage
+// call needs exactly one `redisScanKeysBatch` round-trip (COUNT budget /
+// pageSize <= 1 batch of iterations), so "number of backend calls" and
+// "number of automatic pages" line up 1:1 and the assertions below can pin
+// an exact call count.
+const SINGLE_CALL_PAGE_SIZE = 200_000;
+// Must match AUTO_LOAD_MAX_PAGES in RedisKeyBrowser.vue.
+const AUTO_LOAD_MAX_PAGES = 20;
+
+async function settleThoroughly(rounds = 40) {
+  for (let i = 0; i < rounds; i++) await settle();
+}
+
+function keyInfo(rawKey: string): RedisKeyInfo {
+  return { key_display: rawKey, key_raw: rawKey, key_type: "string", ttl: -1, size: 0, value_preview: "" };
+}
+
+describe("RedisKeyBrowser automatic continuation request budget (PR #6313 review)", () => {
+  beforeEach(() => {
+    mocks.redisScanPageSize = SINGLE_CALL_PAGE_SIZE;
+  });
+
+  it("stops after a bounded number of pages when every page comes back empty", async () => {
+    stubNonOverflowingViewport();
+    let call = 0;
+    // The tree-vs-empty-state view only mounts the scroller once at least one
+    // key has loaded, so seed exactly one key on the first page — every page
+    // after that comes back empty with a cursor that always advances and
+    // never hits 0. An unbounded loop would spin until the (huge) keyspace is
+    // exhausted or the process runs out of time.
+    mocks.redisScanKeysBatch.mockImplementation((_c: string, _d: number, cursor: number) => {
+      call++;
+      return Promise.resolve({ cursor: cursor + 1, keys: call === 1 ? [keyInfo("seed")] : [], total_keys: 5_000_000 });
+    });
+
+    mountBrowser();
+    await settleThoroughly();
+
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1 + AUTO_LOAD_MAX_PAGES);
+    const callsAtBound = mocks.redisScanKeysBatch.mock.calls.length;
+    await settleThoroughly(10);
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(callsAtBound);
+  });
+
+  it("stops after a bounded number of pages when every page comes back with only already-loaded keys", async () => {
+    stubNonOverflowingViewport();
+    // Every page repeats the same key, so unique loaded/visible keys stay at 1
+    // forever — a stop condition based on unique-key growth alone never fires.
+    mocks.redisScanKeysBatch.mockImplementation((_c: string, _d: number, cursor: number) => Promise.resolve({ cursor: cursor + 1, keys: [keyInfo("dup")], total_keys: 5_000_000 }));
+
+    mountBrowser();
+    await settleThoroughly();
+
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1 + AUTO_LOAD_MAX_PAGES);
+  });
+
+  it("stops after a bounded number of pages against a sparse filter that only rarely yields a new key", async () => {
+    stubNonOverflowingViewport();
+    let call = 0;
+    mocks.redisScanKeysBatch.mockImplementation((_c: string, _d: number, cursor: number) => {
+      call++;
+      // A new unique key surfaces on the first page (so the scroller mounts)
+      // and then only every 7th page after that — same shape as a narrow
+      // pattern against a huge, mostly-non-matching keyspace.
+      const keys = call === 1 || call % 7 === 0 ? [keyInfo(`sparse-${call}`)] : [];
+      return Promise.resolve({ cursor: cursor + 1, keys, total_keys: 5_000_000 });
+    });
+
+    mountBrowser();
+    await settleThoroughly();
+
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1 + AUTO_LOAD_MAX_PAGES);
+  });
+
+  it("still stops on reaching the configured max-key limit, well under the page budget", async () => {
+    stubNonOverflowingViewport();
+    mocks.queryResultMaxRows = 3;
+    let call = 0;
+    mocks.redisScanKeysBatch.mockImplementation((_c: string, _d: number, cursor: number) => {
+      call++;
+      return Promise.resolve({ cursor: cursor + 1, keys: [keyInfo(`k${call}`)], total_keys: 5_000_000 });
+    });
+
+    mountBrowser();
+    await settleThoroughly();
+
+    // 1 initial page + 2 automatic pages reaches the 3-key limit, well before
+    // the 20-page automatic budget would otherwise cut it off.
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("RedisKeyBrowser loadMore failure handling (PR #6313 review)", () => {
+  it("does not automatically retry after a page request fails", async () => {
+    stubNonOverflowingViewport();
+    mocks.redisScanKeysBatch.mockResolvedValueOnce({ cursor: 7, keys: [keyInfo("a")], total_keys: 200_004 }).mockRejectedValue(new Error("backend unavailable"));
+
+    mountBrowser();
+    await settleThoroughly();
+
+    // One successful initial page, one failed automatic follow-up — and then
+    // nothing further, even after settling repeatedly.
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(2);
+    expect(mocks.toast).toHaveBeenCalledTimes(1);
+
+    await settleThoroughly(10);
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(2);
+  });
+});

@@ -162,6 +162,14 @@ const createKeyTypeHelpOffsetTop = ref(0);
 let nextEntryId = 0;
 let searchRequestId = 0;
 let loadMoreOperationId = 0;
+// Automatic continuation (see `maybeAutoLoadMoreRedisKeys`) has no natural stop
+// condition when a search is sparse: unique visible keys barely grow, so the
+// scroller keeps reporting a short viewport forever. Bound the number of
+// *automatic* pages per operation regardless of how many keys they yield —
+// this is a request/page budget, not a key-count budget. Reset alongside the
+// rest of the per-operation state in `invalidateScanRequests`.
+const AUTO_LOAD_MAX_PAGES = 20;
+let autoLoadPageCount = 0;
 let redisBrowserIsActive = true;
 let reloadKeysOnActivation = false;
 let redisDbFlushedListenerRegistered = false;
@@ -515,6 +523,7 @@ function invalidateScanRequests(): number {
   searchRequestId++;
   loadMoreOperationId++;
   loadingMore.value = false;
+  autoLoadPageCount = 0;
   return searchRequestId;
 }
 
@@ -639,6 +648,11 @@ async function loadKeys() {
   expandedGroupIds.value = new Set();
   scanCursor.value = 0;
   lastTotalKeys.value = 0;
+  // Only chain the automatic continuation after a page actually applied. A
+  // throw (network/backend failure) must not schedule another attempt — the
+  // `finally` block below always runs on failure too, so success is tracked
+  // separately and checked once we're clear of it.
+  let succeeded = false;
   try {
     if (isValueSearchMode.value && !valueQuery.value) {
       hasMore.value = false;
@@ -648,11 +662,14 @@ async function loadKeys() {
     if (applied && isValueSearchMode.value) {
       await streamValueSearch(requestId);
     }
+    succeeded = applied;
   } finally {
     if (requestId === searchRequestId) {
       loading.value = false;
-      void maybeAutoLoadMoreRedisKeys();
     }
+  }
+  if (succeeded && requestId === searchRequestId) {
+    void maybeAutoLoadMoreRedisKeys();
   }
 }
 
@@ -664,13 +681,19 @@ async function loadMore() {
   const requestId = searchRequestId;
   const operationId = ++loadMoreOperationId;
   loadingMore.value = true;
+  // Same reasoning as `loadKeys`: a failed page must not trigger another
+  // automatic attempt from `finally`, or a persistent failure retries forever
+  // (bounded only by hasMore/viewport state, neither of which a failure changes).
+  let applied = false;
   try {
-    await scanNextPage(requestId, operationId);
+    applied = await scanNextPage(requestId, operationId);
   } finally {
     if (isCurrentScanOperation(requestId, operationId)) {
       loadingMore.value = false;
-      void maybeAutoLoadMoreRedisKeys();
     }
+  }
+  if (applied && isCurrentScanOperation(requestId, operationId)) {
+    void maybeAutoLoadMoreRedisKeys();
   }
 }
 
@@ -685,6 +708,13 @@ async function loadMore() {
 // scroll handler already uses.
 async function maybeAutoLoadMoreRedisKeys() {
   await nextTick();
+  // Unique visible/loaded keys are a poor stop condition on their own: an
+  // empty, all-duplicate, or sparsely-matching page grows that count by ~0,
+  // so relying on it alone lets a short viewport turn an ordinary tree load
+  // into an unbounded chain of full-budget SCAN pages. Cap the number of
+  // automatic pages per operation as a hard backstop, independent of how many
+  // (if any) new keys each page yields.
+  if (autoLoadPageCount >= AUTO_LOAD_MAX_PAGES) return;
   const scroller = redisKeyScrollerRef.value?.$el as HTMLElement | undefined;
   if (!scroller) return;
   const shouldLoad = shouldLoadMoreRedisKeys({
@@ -698,6 +728,7 @@ async function maybeAutoLoadMoreRedisKeys() {
     scrollHeight: scroller.scrollHeight,
   });
   if (shouldLoad) {
+    autoLoadPageCount++;
     await loadMore().catch((error) => toast(errorMessage(error), 5000));
   }
 }
