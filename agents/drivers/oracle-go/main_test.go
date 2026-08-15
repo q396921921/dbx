@@ -207,6 +207,15 @@ func TestEmptyResultSlicesMarshalAsArrays(t *testing.T) {
 	if strings.Contains(text, `"columns":null`) || strings.Contains(text, `"included_columns":null`) {
 		t.Fatalf("index info should marshal nil slices as arrays: %s", text)
 	}
+
+	data, err = json.Marshal(constraintInfo{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = string(data)
+	if strings.Contains(text, `"columns":null`) || strings.Contains(text, `"ref_columns":null`) {
+		t.Fatalf("constraint info should marshal nil slices as arrays: %s", text)
+	}
 }
 
 func TestGetTableDDLResultMarshalsAsString(t *testing.T) {
@@ -740,6 +749,74 @@ func TestListForeignKeysIncludesReferencedSchemaAndDeleteRule(t *testing.T) {
 	}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("listForeignKeys() = %#v, want %#v", got, want)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
+func TestListConstraintsGroupsMultiColumnPrimaryKeyAndMapsTypes(t *testing.T) {
+	const schema = "HR"
+	const table = "ORDERS"
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "FROM ALL_CONSTRAINTS ac",
+			args:          []driver.Value{schema, table},
+			columns:       []string{"CONSTRAINT_NAME", "CONSTRAINT_TYPE", "SEARCH_CONDITION", "GENERATED", "STATUS", "DEFERRABLE", "DEFERRED", "VALIDATED", "COLUMN_NAME", "POSITION"},
+			rows: [][]driver.Value{
+				{"PK_ORDERS", "P", nil, "USER NAME", "ENABLED", "NOT DEFERRABLE", "IMMEDIATE", "VALIDATED", "TENANT_ID", int64(1)},
+				{"PK_ORDERS", "P", nil, "USER NAME", "ENABLED", "NOT DEFERRABLE", "IMMEDIATE", "VALIDATED", "ORDER_ID", int64(2)},
+				{"UQ_ORDERS_CODE", "U", nil, "USER NAME", "ENABLED", "DEFERRABLE", "DEFERRED", "VALIDATED", "ORDER_CODE", int64(1)},
+				{"CK_ORDERS_AMOUNT", "C", "AMOUNT > 0", "USER NAME", "DISABLED", "NOT DEFERRABLE", "IMMEDIATE", "NOT VALIDATED", nil, nil},
+			},
+		},
+	})
+	s := newServer()
+	s.db = db
+
+	got, err := s.listConstraints(schema, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []constraintInfo{
+		{Name: "PK_ORDERS", ConstraintType: "PRIMARY KEY", Definition: "", Columns: []string{"TENANT_ID", "ORDER_ID"}, RefColumns: []string{}, Enabled: true, Valid: true},
+		{Name: "UQ_ORDERS_CODE", ConstraintType: "UNIQUE", Definition: "", Columns: []string{"ORDER_CODE"}, RefColumns: []string{}, Deferrable: true, InitiallyDeferred: true, Enabled: true, Valid: true},
+		{Name: "CK_ORDERS_AMOUNT", ConstraintType: "CHECK", Definition: "AMOUNT > 0", Columns: []string{}, RefColumns: []string{}, Enabled: false, Valid: false},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listConstraints() = %#v, want %#v", got, want)
+	}
+	if scripted.next != len(scripted.steps) {
+		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)
+	}
+}
+
+func TestListConstraintsExcludesGeneratedNotNullChecksButKeepsRealChecks(t *testing.T) {
+	const schema = "HR"
+	const table = "ORDERS"
+	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+		{
+			queryContains: "FROM ALL_CONSTRAINTS ac",
+			args:          []driver.Value{schema, table},
+			columns:       []string{"CONSTRAINT_NAME", "CONSTRAINT_TYPE", "SEARCH_CONDITION", "GENERATED", "STATUS", "DEFERRABLE", "DEFERRED", "VALIDATED", "COLUMN_NAME", "POSITION"},
+			rows: [][]driver.Value{
+				{"SYS_C008648", "C", `"ORDER_CODE" IS NOT NULL`, "GENERATED NAME", "ENABLED", "NOT DEFERRABLE", "IMMEDIATE", "VALIDATED", "ORDER_CODE", int64(1)},
+				{"CK_ORDERS_AMOUNT", "C", "AMOUNT > 0", "USER NAME", "ENABLED", "NOT DEFERRABLE", "IMMEDIATE", "VALIDATED", nil, nil},
+			},
+		},
+	})
+	s := newServer()
+	s.db = db
+
+	got, err := s.listConstraints(schema, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []constraintInfo{
+		{Name: "CK_ORDERS_AMOUNT", ConstraintType: "CHECK", Definition: "AMOUNT > 0", Columns: []string{}, RefColumns: []string{}, Enabled: true, Valid: true},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("listConstraints() = %#v, want %#v (system-generated NOT NULL check must be excluded, real CHECK must survive)", got, want)
 	}
 	if scripted.next != len(scripted.steps) {
 		t.Fatalf("expected %d queries, got %d", len(scripted.steps), scripted.next)

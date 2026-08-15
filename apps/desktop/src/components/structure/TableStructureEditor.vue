@@ -40,7 +40,7 @@ import { canAddTableStructureColumn, getTableStructureCapabilities, hasLocalTabl
 import { orderedColumnIndexes, uniqueDataGridColumnOrderKeys } from "@/lib/dataGrid/dataGridColumnOrder";
 import { loadTableDataGridColumnOrder, notifyTableDataGridColumnOrderChanged, removeTableDataGridColumnOrder, saveTableDataGridColumnOrder, tableDataGridColumnOrderScopeKey } from "@/lib/dataGrid/dataGridColumnLayoutStorage";
 import { connectionObjectTreeQuerySchema, tableStructureDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
-import type { TableInfoTab, TableStructureEditorDraft, TableStructureEditorTarget, TableStructureEditorViewport } from "@/types/database";
+import type { ConstraintInfo, TableInfoTab, TableStructureEditorDraft, TableStructureEditorTarget, TableStructureEditorViewport } from "@/types/database";
 import {
   applyManticoreDdlColumnExtras,
   buildStructureTargetLabel,
@@ -95,6 +95,7 @@ type StructureScrollerRef = HTMLElement | { $el?: HTMLElement };
 const columnsScrollerRef = ref<StructureScrollerRef>();
 const indexesScrollerRef = ref<StructureScrollerRef>();
 const foreignKeysScrollerRef = ref<StructureScrollerRef>();
+const constraintsScrollerRef = ref<StructureScrollerRef>();
 const triggersScrollerRef = ref<StructureScrollerRef>();
 const ddlScrollerRef = ref<StructureScrollerRef>();
 const dynamicDataTypeOptionsCache = new Map<string, string[]>();
@@ -141,6 +142,7 @@ const sqlPreviewLoading = ref(false);
 const sqlPreviewPending = ref(false);
 const indexesLoading = ref(false);
 const foreignKeysLoading = ref(false);
+const constraintsLoading = ref(false);
 const triggersLoading = ref(false);
 const ddlContent = ref("");
 const ddlLoading = ref(false);
@@ -192,9 +194,11 @@ const pendingStatements = ref<string[]>([]);
 const warnings = ref<string[]>([]);
 const sqliteSchemaRevision = ref<string>();
 const foreignKeys = ref<EditableStructureForeignKey[]>([]);
+const constraints = ref<ConstraintInfo[]>([]);
+const constraintsLoaded = ref(false);
 const triggers = ref<EditableStructureTrigger[]>([]);
 const triggersLoaded = ref(false);
-const secondaryMetadataLoading = computed(() => indexesLoading.value || foreignKeysLoading.value || triggersLoading.value);
+const secondaryMetadataLoading = computed(() => indexesLoading.value || foreignKeysLoading.value || constraintsLoading.value || triggersLoading.value);
 
 function sameList(left: string[] | null | undefined, right: string[] | null | undefined): boolean {
   const a = left ?? [];
@@ -262,6 +266,10 @@ function captureStructureRefreshScope(): TableStructureRefreshScope {
     columns: columns.value.some(columnChanged),
     indexes: indexes.value.some(indexChanged),
     foreignKeys: foreignKeys.value.some(foreignKeyChanged),
+    // Constraints have no editable draft of their own, but column/index/FK
+    // saves can change what constraints exist (e.g. toggling a primary key),
+    // so refresh the tab if it was ever loaded rather than leaving it stale.
+    constraints: constraintsLoaded.value,
     triggers: triggers.value.some(triggerChanged),
     tableComment: tableComment.value !== originalTableComment.value,
   };
@@ -881,6 +889,7 @@ function structureScrollerForTab(tab: TableInfoTab): HTMLElement | undefined {
   if (tab === "columns") return structureScrollerElement(columnsScrollerRef.value);
   if (tab === "indexes") return structureScrollerElement(indexesScrollerRef.value);
   if (tab === "foreignKeys") return structureScrollerElement(foreignKeysScrollerRef.value);
+  if (tab === "constraints") return structureScrollerElement(constraintsScrollerRef.value);
   if (tab === "triggers") return structureScrollerElement(triggersScrollerRef.value);
   if (tab === "ddl") return structureScrollerElement(ddlScrollerRef.value);
   return undefined;
@@ -927,6 +936,8 @@ function createCurrentDraft(initialized = true): TableStructureEditorDraft {
     columns: cloneDraftValue(columns.value),
     indexes: cloneDraftValue(indexes.value),
     foreignKeys: cloneDraftValue(foreignKeys.value),
+    constraints: cloneDraftValue(constraints.value),
+    constraintsLoaded: constraintsLoaded.value,
     triggers: cloneDraftValue(triggers.value),
     triggersLoaded: triggersLoaded.value,
     loadedMetadataFacets: [...loadedMetadataFacets],
@@ -953,6 +964,9 @@ function restoreDraft(draft: TableStructureEditorDraft) {
   columns.value = cloneDraftValue(draft.columns || []);
   indexes.value = cloneDraftValue(draft.indexes || []);
   foreignKeys.value = cloneDraftValue(draft.foreignKeys || []);
+  constraints.value = cloneDraftValue(draft.constraints || []);
+  // Drafts created before constraint loading existed have no saved facet.
+  constraintsLoaded.value = draft.constraintsLoaded ?? false;
   triggers.value = cloneDraftValue(draft.triggers || []);
   // Drafts created before lazy trigger loading always contained live trigger metadata.
   triggersLoaded.value = draft.triggersLoaded ?? true;
@@ -964,6 +978,7 @@ function restoreDraft(draft: TableStructureEditorDraft) {
     if (activeScope.columns) loadedMetadataFacets.add("columns");
     if (activeScope.indexes || draft.indexes?.length) loadedMetadataFacets.add("indexes");
     if (activeScope.foreignKeys || draft.foreignKeys?.length) loadedMetadataFacets.add("foreign-keys");
+    if (activeScope.constraints || constraintsLoaded.value) loadedMetadataFacets.add("constraints");
     if (activeScope.triggers || triggersLoaded.value) loadedMetadataFacets.add("triggers");
     if (activeScope.tableComment) loadedMetadataFacets.add("comment");
   }
@@ -1226,6 +1241,7 @@ function resetState() {
   sqlPreviewPending.value = false;
   indexesLoading.value = false;
   foreignKeysLoading.value = false;
+  constraintsLoading.value = false;
   triggersLoading.value = false;
   errorMessage.value = "";
   columns.value = [];
@@ -1234,6 +1250,8 @@ function resetState() {
   warnings.value = [];
   sqliteSchemaRevision.value = undefined;
   foreignKeys.value = [];
+  constraints.value = [];
+  constraintsLoaded.value = false;
   triggers.value = [];
   triggersLoaded.value = false;
   selectedColumnId.value = null;
@@ -1259,6 +1277,10 @@ async function reloadStructureFromDatabase() {
     triggers.value = [];
     triggersLoaded.value = false;
   }
+  if (activeTab.value !== "constraints") {
+    constraints.value = [];
+    constraintsLoaded.value = false;
+  }
   const refreshDdl = activeTab.value === "ddl";
   const metadataMatch = { connectionId: props.connectionId, database: props.database, schema: metadataSchema.value, tableName: props.tableName };
   invalidateTableMetadataCache(metadataMatch);
@@ -1275,6 +1297,7 @@ async function reloadStructureFromDatabase() {
 function setSecondaryMetadataLoading(scope: TableStructureRefreshScope, value: boolean) {
   if (scope.indexes && tableMetadataCapabilities.value.indexes) indexesLoading.value = value;
   if (scope.foreignKeys && tableMetadataCapabilities.value.foreignKeys) foreignKeysLoading.value = value;
+  if (scope.constraints && tableMetadataCapabilities.value.constraints) constraintsLoading.value = value;
   if (scope.triggers && tableMetadataCapabilities.value.triggers) triggersLoading.value = value;
 }
 
@@ -1330,6 +1353,11 @@ async function loadStructure(
         ? loadObjectMetadataFacet(metadataRequest, "foreign-keys", () => api.listForeignKeys(connectionId, database, schema, tableName, catalog).catch(() => []), { force: forceMetadata }).then((result) => result.value)
         : Promise.resolve([])
       : Promise.resolve(undefined);
+    const constraintsPromise = scope.constraints
+      ? tableMetadataCapabilities.value.constraints
+        ? loadObjectMetadataFacet(metadataRequest, "constraints", () => api.listConstraints(connectionId, database, schema, tableName, catalog).catch(() => []), { force: forceMetadata }).then((result) => result.value)
+        : Promise.resolve([])
+      : Promise.resolve(undefined);
     const triggersPromise = scope.triggers
       ? tableMetadataCapabilities.value.triggers
         ? loadObjectMetadataFacet(metadataRequest, "triggers", () => api.listTriggers(connectionId, database, schema, tableName, catalog).catch(() => []), { force: forceMetadata }).then((result) => result.value)
@@ -1366,7 +1394,7 @@ async function loadStructure(
       loadedMetadataFacets.add("comment");
     }
     const applySecondaryMetadata = async () => {
-      const [nextIndexes, nextForeignKeys, nextTriggers] = await Promise.all([indexesPromise, foreignKeysPromise, triggersPromise]);
+      const [nextIndexes, nextForeignKeys, nextConstraints, nextTriggers] = await Promise.all([indexesPromise, foreignKeysPromise, constraintsPromise, triggersPromise]);
       if (requestId !== structureLoadRequestId) return;
       if (nextIndexes) {
         indexes.value = createIndexDrafts(nextIndexes);
@@ -1375,6 +1403,11 @@ async function loadStructure(
       if (nextForeignKeys) {
         foreignKeys.value = createForeignKeyDrafts(nextForeignKeys);
         loadedMetadataFacets.add("foreign-keys");
+      }
+      if (nextConstraints) {
+        constraints.value = nextConstraints;
+        constraintsLoaded.value = true;
+        loadedMetadataFacets.add("constraints");
       }
       if (nextTriggers) {
         triggers.value = createTriggerDrafts(nextTriggers);
@@ -2605,6 +2638,10 @@ watch(refreshVersion, (version, previous) => {
     triggers.value = [];
     triggersLoaded.value = false;
   }
+  if (activeTab.value !== "constraints") {
+    constraints.value = [];
+    constraintsLoaded.value = false;
+  }
   void loadStructure(true, visibleTableStructureRefreshScope(activeTab.value));
 });
 
@@ -2674,6 +2711,7 @@ watch([activeTab, ddlLoading], ([tab, loading]) => {
               <TabsTrigger v-if="tableMetadataCapabilities.columns" value="columns">{{ t("structureEditor.columns") }}</TabsTrigger>
               <TabsTrigger v-if="tableMetadataCapabilities.indexes" value="indexes">{{ t("structureEditor.indexes") }}</TabsTrigger>
               <TabsTrigger v-if="tableMetadataCapabilities.foreignKeys" value="foreignKeys">{{ t("structureEditor.foreignKeys") }}</TabsTrigger>
+              <TabsTrigger v-if="tableMetadataCapabilities.constraints" value="constraints">{{ t("structureEditor.constraints") }}</TabsTrigger>
               <TabsTrigger v-if="tableMetadataCapabilities.triggers" value="triggers">{{ t("structureEditor.triggers") }}</TabsTrigger>
             </TabsList>
             <div class="flex shrink-0 items-center gap-1.5">
@@ -3298,6 +3336,29 @@ watch([activeTab, ddlLoading], ([tab, loading]) => {
                   </Select>
                   <div class="truncate font-mono text-muted-foreground">{{ fk.column }} -> {{ fk.refSchema ? `${fk.refSchema}.` : "" }}{{ fk.refTable }}.{{ fk.refColumn }}</div>
                 </div>
+              </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent ref="constraintsScrollerRef" v-if="tableMetadataCapabilities.constraints" value="constraints" class="m-0 min-h-0 flex-1 overflow-auto p-[var(--structure-cell-px)]" @scroll.passive="onStructureContentScroll('constraints', $event)">
+            <div v-if="constraintsLoading" class="flex items-center justify-center gap-2 py-10 text-muted-foreground">
+              <Loader2 class="h-4 w-4 animate-spin" />
+              {{ t("common.loading") }}
+            </div>
+            <div v-else-if="constraints.length === 0" class="py-10 text-center text-muted-foreground">
+              {{ t("structureEditor.emptyReadonly") }}
+            </div>
+            <div v-else class="space-y-1.5">
+              <div v-for="constraint in constraints" :key="constraint.name" class="rounded-md border px-[var(--structure-cell-px)] py-[var(--structure-header-py)] text-[length:var(--structure-font-size)]" :class="constraint.enabled ? '' : 'opacity-60'">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-mono font-medium">{{ constraint.name }}</span>
+                  <Badge variant="outline" class="shrink-0">{{ constraint.constraint_type }}</Badge>
+                  <Badge v-if="!constraint.enabled" variant="outline" class="shrink-0 text-muted-foreground">{{ t("structureEditor.constraintDisabled") }}</Badge>
+                  <Badge v-else-if="!constraint.valid" variant="outline" class="shrink-0 text-muted-foreground">{{ t("structureEditor.constraintNotValidated") }}</Badge>
+                </div>
+                <div v-if="constraint.columns.length" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.columns.join(", ") }}</div>
+                <div v-if="constraint.ref_table" class="mt-1 truncate font-mono text-muted-foreground">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
+                <div v-if="constraint.definition" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.definition }}</div>
               </div>
             </div>
           </TabsContent>

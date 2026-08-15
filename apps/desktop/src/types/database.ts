@@ -1036,7 +1036,7 @@ export interface TableNameFilter {
   excludePatterns: string[];
 }
 
-export type TableInfoTab = "columns" | "indexes" | "foreignKeys" | "triggers" | "ddl";
+export type TableInfoTab = "columns" | "indexes" | "foreignKeys" | "constraints" | "triggers" | "ddl";
 
 export interface TableStructureEditorTarget {
   kind: "column" | "index";
@@ -1052,6 +1052,8 @@ export interface TableStructureEditorDraft {
   columns: import("@/lib/table/tableStructureEditorSql").EditableStructureColumn[];
   indexes: import("@/lib/table/tableStructureEditorSql").EditableStructureIndex[];
   foreignKeys: import("@/lib/table/tableStructureEditorSql").EditableStructureForeignKey[];
+  constraints?: ConstraintInfo[];
+  constraintsLoaded?: boolean;
   triggers: import("@/lib/table/tableStructureEditorSql").EditableStructureTrigger[];
   triggersLoaded?: boolean;
   loadedMetadataFacets?: import("@/lib/metadata/objectMetadataCache").ObjectMetadataFacet[];
