@@ -1407,6 +1407,15 @@ fn writable_transfer_columns(
         .collect()
 }
 
+/// Columns DBX is about to write into `target_columns` (via `col_names`) that
+/// don't exist in the target table. MySQL (and most other targets) compare
+/// unquoted identifiers case-insensitively, so the check does too.
+fn missing_transfer_target_columns(target_columns: &[db::ColumnInfo], col_names: &[String]) -> Vec<String> {
+    let existing: std::collections::HashSet<String> =
+        target_columns.iter().map(|column| column.name.to_lowercase()).collect();
+    col_names.iter().filter(|name| !existing.contains(&name.to_lowercase())).cloned().collect()
+}
+
 fn transfer_key_columns(columns: &[db::ColumnInfo], db_type: &DatabaseType) -> Vec<String> {
     let uses_unique_key_model = matches!(db_type, DatabaseType::Doris | DatabaseType::StarRocks);
     columns
@@ -6763,6 +6772,35 @@ where
         return Ok(0);
     }
 
+    // The user asked DBX to sync structure (create_table), but the target
+    // table already existed so the create-table DDL above was skipped (see
+    // "skipping create-table DDL" above). If the untouched target structure
+    // can't hold the source's columns, fail fast here instead of truncating
+    // the target's existing data and then hitting an opaque driver error
+    // partway through the insert.
+    if request.create_table && target_table_preexisting {
+        let existing_target_columns = get_columns_for_transfer(
+            state,
+            target_pool_key,
+            &request.target_connection_id,
+            &request.target_database,
+            &request.target_schema,
+            &target_table,
+            request.target_catalog.as_deref(),
+        )
+        .await
+        .unwrap_or_default();
+        let missing = missing_transfer_target_columns(&existing_target_columns, &col_names);
+        if !missing.is_empty() {
+            return Err(format!(
+                "Target table '{target_table}' already exists with a different structure and is missing column(s) \
+                 {} present in the source table. DBX does not alter an existing target table's columns during \
+                 transfer — drop the target table or adjust its structure to match the source first.",
+                missing.join(", ")
+            ));
+        }
+    }
+
     // Truncate target if overwrite mode
     if request.mode == TransferMode::Overwrite {
         let full_table =
@@ -8731,6 +8769,31 @@ mod tests {
         let writable = writable_transfer_columns(&columns, &DatabaseType::Postgres, &DatabaseType::SqlServer);
 
         assert_eq!(writable.iter().map(|column| column.name.as_str()).collect::<Vec<_>>(), vec!["id", "updated_at"]);
+    }
+
+    #[test]
+    fn missing_transfer_target_columns_reports_columns_absent_from_target() {
+        let target_columns = vec![test_column("id", "int"), test_column("name", "varchar(32)")];
+        let col_names = vec!["id".to_string(), "name".to_string(), "extra_col".to_string()];
+
+        assert_eq!(missing_transfer_target_columns(&target_columns, &col_names), vec!["extra_col".to_string()]);
+    }
+
+    #[test]
+    fn missing_transfer_target_columns_ignores_case() {
+        let target_columns = vec![test_column("ID", "int"), test_column("Name", "varchar(32)")];
+        let col_names = vec!["id".to_string(), "name".to_string()];
+
+        assert!(missing_transfer_target_columns(&target_columns, &col_names).is_empty());
+    }
+
+    #[test]
+    fn missing_transfer_target_columns_allows_extra_target_columns() {
+        let target_columns =
+            vec![test_column("id", "int"), test_column("name", "varchar(32)"), test_column("legacy_col", "int")];
+        let col_names = vec!["id".to_string(), "name".to_string()];
+
+        assert!(missing_transfer_target_columns(&target_columns, &col_names).is_empty());
     }
 
     #[test]
