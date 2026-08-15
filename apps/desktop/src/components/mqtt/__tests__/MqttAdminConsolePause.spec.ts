@@ -72,6 +72,36 @@ afterEach(() => {
 });
 
 describe("MQTT 控制台消息暂停自动滚动 (issue #5615)", () => {
+  it("暂停期间不会应用已经在途的轮询结果", async () => {
+    let resolvePollingRequest!: (messages: MqttMessage[]) => void;
+    mqttGetMessagesMock.mockResolvedValueOnce([messageAt(0)]).mockReturnValueOnce(
+      new Promise<MqttMessage[]>((resolve) => {
+        resolvePollingRequest = resolve;
+      }),
+    );
+
+    const container = await mountConsole();
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+    expect(container.textContent).toContain("payload-0");
+
+    vi.advanceTimersByTime(3000);
+    await Promise.resolve();
+    expect(mqttGetMessagesMock).toHaveBeenCalledTimes(2);
+
+    const pauseButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("暂停"));
+    pauseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    resolvePollingRequest([messageAt(1)]);
+    await Promise.resolve();
+    await nextTick();
+
+    expect(container.textContent).toContain("payload-0");
+    expect(container.textContent).not.toContain("payload-1");
+  });
+
   it("点击暂停后，轮询不再覆盖消息列表", async () => {
     const container = await mountConsole();
     await vi.runOnlyPendingTimersAsync();

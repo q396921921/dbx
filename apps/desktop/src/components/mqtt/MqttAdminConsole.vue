@@ -221,7 +221,8 @@ function startPolling() {
   pollingTimer.value = setInterval(async () => {
     if (messagesPaused.value) return;
     try {
-      messages.value = (await mqttGetMessages(props.connectionId, selectedTopic.value || undefined, 50)) as MqttMessage[];
+      const nextMessages = (await mqttGetMessages(props.connectionId, selectedTopic.value || undefined, 50)) as MqttMessage[];
+      if (!messagesPaused.value) messages.value = nextMessages;
     } catch {
       /* ignore polling errors */
     }
