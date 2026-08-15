@@ -478,7 +478,15 @@ async fn live_mysql_transfer_structure_overwrite_rejects_incompatible_target_col
          CREATE TABLE `{target_database}`.`orders` (\
              id INT PRIMARY KEY, name VARCHAR(32)\
          );\
-         INSERT INTO `{target_database}`.`orders` (id, name) VALUES (99, 'stale')"
+         INSERT INTO `{target_database}`.`orders` (id, name) VALUES (99, 'stale');\
+         CREATE TABLE `{source_database}`.`required_orders` (\
+             id INT PRIMARY KEY, name VARCHAR(32)\
+         );\
+         INSERT INTO `{source_database}`.`required_orders` VALUES (1, 'alpha');\
+         CREATE TABLE `{target_database}`.`required_orders` (\
+             id INT PRIMARY KEY, name VARCHAR(32), required_code VARCHAR(32) NOT NULL\
+         );\
+         INSERT INTO `{target_database}`.`required_orders` (id, name, required_code) VALUES (99, 'stale', 'keep')"
     );
     mysql::execute_query(&setup_pool, &setup, true).await.unwrap();
 
@@ -527,7 +535,8 @@ async fn live_mysql_transfer_structure_overwrite_rejects_incompatible_target_col
         )
         .await;
 
-        assert!(result.is_err(), "expected transfer to reject the incompatible target structure, got {result:?}");
+        let error = result.expect_err("expected transfer to reject the incompatible target structure");
+        assert!(error.contains("extra_col"), "unexpected missing-source-column error: {error}");
 
         // The pre-existing target row must survive: a column-mismatch error must
         // be raised BEFORE the destructive TRUNCATE, not surface only after the
@@ -540,6 +549,49 @@ async fn live_mysql_transfer_structure_overwrite_rejects_incompatible_target_col
             .await,
             "1",
             "target row was destroyed by TRUNCATE despite the transfer failing"
+        );
+
+        let required_request = TransferRequest {
+            transfer_id: format!("live-mysql-transfer-required-target-overwrite-{suffix}"),
+            source_connection_id: connection_id.clone(),
+            source_database: source_database.clone(),
+            source_schema: source_database.clone(),
+            source_catalog: None,
+            target_connection_id: connection_id.clone(),
+            target_database: target_database.clone(),
+            target_schema: target_database.clone(),
+            target_catalog: None,
+            tables: vec!["required_orders".to_string()],
+            create_table: true,
+            content: TransferContent::default(),
+            objects: Vec::new(),
+            mode: TransferMode::Overwrite,
+            target_table_name_case: TransferTableNameCase::Preserve,
+            ownership_policy: TransferOwnershipPolicy::Preserve,
+            batch_size: 10,
+        };
+        let required_result = transfer_table(
+            &state,
+            &required_request,
+            "required_orders",
+            0,
+            &DatabaseType::Mysql,
+            &DatabaseType::Mysql,
+            &source_pool_key,
+            &target_pool_key,
+            |_| {},
+        )
+        .await;
+        let required_error = required_result.expect_err("expected transfer to reject a required target-only column");
+        assert!(required_error.contains("required_code"), "unexpected required-target-column error: {required_error}");
+        assert_eq!(
+            query_text(
+                &setup_pool,
+                &format!("SELECT CAST(COUNT(*) AS CHAR) FROM `{target_database}`.`required_orders` WHERE id=99"),
+            )
+            .await,
+            "1",
+            "target row was destroyed by TRUNCATE despite the required target column mismatch"
         );
         Ok::<_, String>(())
     }
