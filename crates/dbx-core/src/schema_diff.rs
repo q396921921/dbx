@@ -3162,23 +3162,59 @@ fn mysql_index_column_sql(column: &str) -> String {
     }
 }
 
+fn is_postgres_family_ddl(db_type: DatabaseType) -> bool {
+    matches!(
+        db_type,
+        DatabaseType::Postgres
+            | DatabaseType::Redshift
+            | DatabaseType::Gaussdb
+            | DatabaseType::Kingbase
+            | DatabaseType::Highgo
+            | DatabaseType::Vastbase
+            | DatabaseType::OpenGauss
+            | DatabaseType::Kwdb
+            | DatabaseType::Firebird
+            | DatabaseType::Vertica
+            | DatabaseType::Exasol
+            | DatabaseType::Uxdb
+    )
+}
+
+fn looks_like_index_expression(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.contains('(') || trimmed.contains("::") || trimmed.chars().any(char::is_whitespace)
+}
+
+fn postgres_index_column_sql(column: &str, db_type: DatabaseType) -> String {
+    // Expression/functional index key parts (e.g. from pg_get_indexdef) arrive as raw
+    // expression text, not a plain column name; quoting the whole expression as an
+    // identifier turns it into a literal column reference that doesn't exist (#6295).
+    let trimmed = column.trim();
+    if looks_like_index_expression(trimmed) {
+        trimmed.to_string()
+    } else {
+        quote_id(column, db_type)
+    }
+}
+
 fn create_index_sql(table_name: &str, index: &IndexInfo, db_type: DatabaseType, schema: Option<&str>) -> String {
     use crate::sql_dialect::ddl_profile::IndexTypePlacement;
     let profile = profile_for(db_type);
     let table = qualified_name(table_name, db_type, schema);
-    let columns =
-        index
-            .columns
-            .iter()
-            .map(|column| {
-                if db_type == DatabaseType::Mysql {
-                    mysql_index_column_sql(column)
-                } else {
-                    quote_id(column, db_type)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+    let columns = index
+        .columns
+        .iter()
+        .map(|column| {
+            if db_type == DatabaseType::Mysql {
+                mysql_index_column_sql(column)
+            } else if is_postgres_family_ddl(db_type) {
+                postgres_index_column_sql(column, db_type)
+            } else {
+                quote_id(column, db_type)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let unique = if index.is_unique { "UNIQUE " } else { "" };
     let index_type = index.index_type.as_deref().unwrap_or_default();
     let (type_prefix, using_before_on, using_suffix) = if index_type.is_empty() {
@@ -5317,6 +5353,66 @@ mod tests {
             "CREATE UNIQUE INDEX `test_UNIQUE` ON `dbx_issue_4114`.`test` (`attr`, `attr2`, {functional_key_part});"
         )));
         assert!(!sql.contains("`((case"));
+    }
+
+    #[test]
+    fn preserves_bare_expression_in_postgres_family_unique_index_ddl() {
+        // Regression for #6295: highgo/postgres-family expression index key parts (e.g. from
+        // pg_get_indexdef) arrived as raw expression text in IndexInfo.columns; quoting the
+        // whole expression as an identifier turned it into a literal (and nonexistent) column.
+        let expression_key_part = "COALESCE(height, '-1'::integer::double precision)";
+        let new_index = index(IndexInfo {
+            name: "uq_tankong_sta_type_time".to_string(),
+            columns: vec![
+                "sta_id".to_string(),
+                "data_type".to_string(),
+                "data_time".to_string(),
+                expression_key_part.to_string(),
+            ],
+            is_unique: true,
+            is_primary: false,
+            filter: None,
+            index_type: None,
+            included_columns: None,
+            comment: None,
+        });
+
+        let sql = generate_schema_sync_sql(
+            &[TableDiff {
+                diff_type: "modified".to_string(),
+                object_type: Some("table".to_string()),
+                name: "tankong_data".to_string(),
+                columns: None,
+                indexes: Some(vec![IndexDiff {
+                    diff_type: "added".to_string(),
+                    name: new_index.name.clone(),
+                    source: Some(new_index),
+                    target: None,
+                    changes: vec![],
+                }]),
+                foreign_keys: None,
+                triggers: None,
+                ddl: None,
+                target_ddl: None,
+                source_table_comment: None,
+                target_table_comment: None,
+                sync_sql: None,
+            }],
+            &[],
+            &[],
+            &[],
+            &[],
+            DatabaseType::Highgo,
+            Some("public"),
+            false,
+            None,
+            &[],
+        );
+
+        assert!(sql.contains(&format!(
+            "CREATE UNIQUE INDEX \"uq_tankong_sta_type_time\" ON \"public\".\"tankong_data\" (\"sta_id\", \"data_type\", \"data_time\", {expression_key_part})"
+        )));
+        assert!(!sql.contains(&format!("\"{expression_key_part}\"")));
     }
 
     #[test]

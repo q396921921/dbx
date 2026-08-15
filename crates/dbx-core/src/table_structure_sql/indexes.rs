@@ -132,6 +132,23 @@ fn mysql_index_column_sql(column: &str) -> String {
     }
 }
 
+fn looks_like_index_expression(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.contains('(') || trimmed.contains("::") || trimmed.chars().any(char::is_whitespace)
+}
+
+fn postgres_index_column_sql(column: &str) -> String {
+    // Expression/functional index key parts arrive as raw expression text, not a plain
+    // column name; quoting the whole expression as an identifier turns it into a literal
+    // column reference that doesn't exist (#6295).
+    let trimmed = column.trim();
+    if looks_like_index_expression(trimmed) {
+        trimmed.to_string()
+    } else {
+        quote_ident(StructureDialect::Postgres, column)
+    }
+}
+
 pub(super) fn build_drop_index_sql(
     database_type: Option<DatabaseType>,
     dialect: StructureDialect,
@@ -184,6 +201,8 @@ pub(super) fn build_create_index_statements(
         .map(|column| {
             if dialect == StructureDialect::Mysql {
                 mysql_index_column_sql(column)
+            } else if dialect == StructureDialect::Postgres {
+                postgres_index_column_sql(column)
             } else {
                 quote_ident(dialect, column)
             }
