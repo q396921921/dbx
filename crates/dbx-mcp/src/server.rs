@@ -1096,7 +1096,11 @@ fn validate_sql_policy(
     if risk == SqlRisk::Transaction {
         return Err(tool_error("SQL_BLOCKED", "Transaction statements are not supported by MCP."));
     }
-    let is_write = is_write_sql_for_database(sql, connection.db_type);
+    // The keyword scan alone misses write-capable SQL that the risk classifier
+    // does recognize (locking reads, side-effect functions, writable CTEs), and
+    // those statements would otherwise reach the database whenever high-risk SQL
+    // is permitted. Fail closed on either signal so read-only stays read-only.
+    let is_write = risk != SqlRisk::ReadOnly || is_write_sql_for_database(sql, connection.db_type);
     if policy.read_only && is_write {
         return Err(tool_error("MCP_READ_ONLY", "DBX global MCP read-only mode is enabled. SQL write blocked."));
     }

@@ -872,6 +872,10 @@ fn sql_contains_top_level_locking_clause(sql: &str, dialect: &dyn sqlparser::dia
         || words.windows(4).any(|window| {
             matches!(window, [r#for, no, key, update] if r#for == "FOR" && no == "NO" && key == "KEY" && update == "UPDATE")
         })
+        // MySQL's pre-8.0.1 spelling of `FOR SHARE`, still accepted by 8.0.x.
+        || words.windows(4).any(|window| {
+            matches!(window, [lock, r#in, share, mode] if lock == "LOCK" && r#in == "IN" && share == "SHARE" && mode == "MODE")
+        })
 }
 
 #[cfg(test)]
@@ -921,6 +925,34 @@ mod tests {
                 "expected write detection: {sql}"
             );
             assert!(is_dangerous_sql_for_database(sql, DatabaseType::Mysql), "expected dangerous SQL: {sql}");
+        }
+    }
+
+    #[test]
+    fn classify_mysql_legacy_shared_lock_reads_like_for_share() {
+        // MySQL's pre-8.0.1 spelling of `FOR SHARE` is still valid in 8.0.x and
+        // takes the same shared row locks, so it must not classify as a plain read.
+        for sql in [
+            "SELECT * FROM users LOCK IN SHARE MODE",
+            "SELECT * FROM users lock in share mode",
+            "SELECT id FROM users WHERE id = 1 LOCK IN SHARE MODE",
+            "WITH c AS (SELECT 1) SELECT * FROM users LOCK IN SHARE MODE",
+        ] {
+            assert_eq!(
+                classify_sql_risk_for_database(sql, DatabaseType::Mysql).unwrap(),
+                SqlRisk::Write,
+                "expected locking read to be write-capable: {sql}"
+            );
+            assert!(is_dangerous_sql_for_database(sql, DatabaseType::Mysql), "expected high-risk SQL: {sql}");
+        }
+
+        // A column or alias literally named "mode" must stay a plain read.
+        for sql in ["SELECT lock_in_share_mode FROM settings", "SELECT mode FROM share WHERE id = 1"] {
+            assert_eq!(
+                classify_sql_risk_for_database(sql, DatabaseType::Mysql).unwrap(),
+                SqlRisk::ReadOnly,
+                "expected plain read: {sql}"
+            );
         }
     }
 
