@@ -8861,8 +8861,16 @@ mod tests {
             ddl.starts_with("CREATE TABLE IF NOT EXISTS public.background_categories_img ("),
             "table/schema must be unquoted, ddl: {ddl}"
         );
-        for column in ["id", "created_at", "updated_at", "deleted_at", "categories_id", "background_image_id", "level", "parent_id"]
-        {
+        for column in [
+            "id",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "categories_id",
+            "background_image_id",
+            "level",
+            "parent_id",
+        ] {
             assert!(ddl.contains(&format!("  {column} ")), "column `{column}` must be unquoted, ddl: {ddl}");
         }
         assert!(ddl.contains("PRIMARY KEY (id)"), "primary key must be unquoted, ddl: {ddl}");
@@ -8898,8 +8906,16 @@ mod tests {
         // itself keeps quoting everything, unchanged.
         let cols = vec![test_column("id", "int")];
 
-        let ddl =
-            generate_create_table_ddl(&cols, "t", "", "public", &DatabaseType::Postgres, &DatabaseType::Mysql, None, None);
+        let ddl = generate_create_table_ddl(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::Postgres,
+            &DatabaseType::Mysql,
+            None,
+            None,
+        );
 
         assert!(ddl.contains("\"id\""), "ddl: {ddl}");
     }
