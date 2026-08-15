@@ -60,6 +60,16 @@ export async function buildExecutableObjectSourceSql(input: BuildEditableObjectS
   return api.buildExecutableObjectSourceSql(input);
 }
 
+/**
+ * MySQL (and other servers) hand back view/routine definitions already flattened to a
+ * single line with comments stripped — that's server-side normalization dbx can't recover
+ * from. But the editor should still seed from the pretty-printed text already computed for
+ * the read-only preview instead of re-collapsing back to that raw single-line source.
+ */
+export function resolveObjectSourceEditDraft(formatted: string, editable: string): string {
+  return formatted.trim() ? formatted : editable;
+}
+
 export function buildEditableObjectSource(input: BuildEditableObjectSourceSqlInput): Promise<string> {
   return api.buildEditableObjectSource(input);
 }

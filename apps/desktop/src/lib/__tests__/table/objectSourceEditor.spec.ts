@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as api from "@/lib/backend/api";
-import { executeObjectSourceSave, formatObjectSourceSaveError } from "@/lib/table/objectSourceEditor";
+import { executeObjectSourceSave, formatObjectSourceSaveError, resolveObjectSourceEditDraft } from "@/lib/table/objectSourceEditor";
+import { formatSqlForDisplay } from "@/lib/sql/sqlFormatter";
 
 vi.mock("@/lib/backend/api", () => ({
   executeInTransaction: vi.fn().mockResolvedValue({}),
@@ -60,5 +61,30 @@ describe("formatObjectSourceSaveError", () => {
   it("does not append the same guidance twice", () => {
     const formatted = formatObjectSourceSaveError("ERROR: cannot drop columns from view", "postgres", "VIEW", hint);
     expect(formatObjectSourceSaveError(formatted, "postgres", "VIEW", hint)).toBe(formatted);
+  });
+});
+
+describe("resolveObjectSourceEditDraft", () => {
+  // MySQL's SHOW CREATE VIEW always returns the definition flattened to one line with
+  // comments already stripped by the server (verified against a real MySQL 8.0 instance) —
+  // this is what `editable` looks like before dbx does anything with it.
+  const mysqlSingleLineViewDefinition = "CREATE VIEW `v_active_users` AS select `users`.`id` AS `id`,`users`.`name` AS `name` from `users` where (`users`.`active` = 1)";
+
+  it("prefers the pretty-printed text over the server's flattened single-line source (issue #5057)", async () => {
+    const formatted = await formatSqlForDisplay(mysqlSingleLineViewDefinition, "mysql");
+
+    expect(formatted).not.toBe(mysqlSingleLineViewDefinition);
+    expect(formatted.split("\n").length).toBeGreaterThan(1);
+
+    // Before the fix, the "edit view" draft was seeded from the raw `editable` text
+    // directly — reproducing the reported "all view code collapses to one line" symptom.
+    expect(mysqlSingleLineViewDefinition.split("\n").length).toBe(1);
+
+    expect(resolveObjectSourceEditDraft(formatted, mysqlSingleLineViewDefinition)).toBe(formatted);
+  });
+
+  it("falls back to the raw editable text when formatting produced nothing usable", () => {
+    expect(resolveObjectSourceEditDraft("", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+    expect(resolveObjectSourceEditDraft("   ", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
   });
 });
