@@ -7,6 +7,7 @@ import type { ClickHouseFunctionDefinition, ClickHouseFunctionKind } from "@/lib
 import type { SqlObjectNavigationType } from "@/lib/sql/sqlNavigation";
 import { sqlSemanticDialectFor } from "@/lib/sql/semantic/dialect";
 import { findActiveSqlStatementSpan, tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
+import { expandToSqlStatementWindow } from "@/lib/sql/insertValueHints";
 import type { SqlSemanticBuildOptions, SqlSemanticSpan } from "@/lib/sql/semantic/types";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS, resolveSqlSnippetBodyForDatabase } from "@/lib/sql/sqlSnippetTemplates";
 import { requiresMysqlIdentifierQuote, requiresPostgresIdentifierQuote } from "@/lib/sql/sqlIdentifier";
@@ -1748,6 +1749,11 @@ export function isSqlCommentContext(sql: string, cursor: number): boolean {
 
 function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
   const end = Math.max(0, Math.min(cursor, sql.length));
+  // Bound the backward scan so huge documents do not pay O(document) on every
+  // keystroke (this runs on every completion request). expandToSqlStatementWindow's
+  // `from` already lands on a top-level statement boundary within its lookback,
+  // where quote/comment state is guaranteed clean, so scanning from there is safe.
+  const start = expandToSqlStatementWindow(sql, end, end).from;
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
@@ -1755,7 +1761,7 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
   let inLineComment = false;
   let inBlockComment = false;
 
-  for (let index = 0; index < end; index += 1) {
+  for (let index = start; index < end; index += 1) {
     const ch = sql[index] ?? "";
     const next = sql[index + 1] ?? "";
 
@@ -1841,10 +1847,18 @@ export function isSqlLikeCompletionStatement(sql: string, cursor: number, option
 function activeSqlCompletionStatementSpan(sql: string, cursor: number, options: SqlSemanticBuildOptions): SqlSemanticSpan {
   const safeCursor = Math.max(0, Math.min(cursor, sql.length));
   const dialectId = options.databaseType || options.dialect ? sqlSemanticDialectFor(options).id : "mysql";
-  const tokens = tokenizeSqlSemantic(sql, dialectId);
-  const statementSpan = findActiveSqlStatementSpan(sql, tokens, safeCursor);
+  // Tokenizing the full document on every keystroke is O(document) and, with
+  // autocompletion's activateOnTyping, runs on every keystroke. Bound tokenization
+  // to the statement window around the cursor (same tradeoff as
+  // expandToSqlStatementWindow's other callers) and translate spans back.
+  const window = expandToSqlStatementWindow(sql, safeCursor, safeCursor);
+  const windowSql = sql.slice(window.from, window.to);
+  const windowCursor = safeCursor - window.from;
+  const tokens = tokenizeSqlSemantic(windowSql, dialectId);
+  const statementSpan = findActiveSqlStatementSpan(windowSql, tokens, windowCursor);
   const firstStatementToken = tokens.find((token) => token.kind !== "comment" && token.span.end > statementSpan.start && token.span.start < statementSpan.end);
-  return firstStatementToken ? { start: firstStatementToken.span.start, end: statementSpan.end } : statementSpan;
+  const result = firstStatementToken ? { start: firstStatementToken.span.start, end: statementSpan.end } : statementSpan;
+  return { start: result.start + window.from, end: result.end + window.from };
 }
 
 function currentSqlLikeLineBlockSpan(sql: string, cursor: number, activeStatementSpan: SqlSemanticSpan): SqlSemanticSpan | null {
