@@ -8900,6 +8900,45 @@ mod tests {
     }
 
     #[test]
+    fn gaussdb_create_table_quotes_target_only_reserved_words() {
+        // t8y2/dbx#6283: `compact` is a plain lowercase identifier that isn't a
+        // Postgres reserved word, so relying solely on the Postgres reserved-word
+        // set would leave it unquoted — but GaussDB reserves it (Huawei's
+        // GaussDB(DWS) keyword reference lists it as "Reserved (functions and
+        // types allowed)"), and unquoted `compact` is invalid in GaussDB DDL.
+        let cols = vec![test_column("compact", "int"), test_column("sysdate", "text")];
+
+        let ddl = generate_create_table_ddl(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::Gaussdb,
+            &DatabaseType::Mysql,
+            None,
+            None,
+        );
+
+        assert!(ddl.contains("\"compact\""), "target-only reserved word must be quoted, ddl: {ddl}");
+        assert!(ddl.contains("\"sysdate\""), "target-only reserved word must be quoted, ddl: {ddl}");
+
+        let opengauss_ddl = generate_create_table_ddl(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::OpenGauss,
+            &DatabaseType::Mysql,
+            None,
+            None,
+        );
+        assert!(
+            opengauss_ddl.contains("\"compact\""),
+            "OpenGauss must also quote target-only reserved word, ddl: {opengauss_ddl}"
+        );
+    }
+
+    #[test]
     fn postgres_create_table_still_quotes_simple_lowercase_identifiers() {
         // Unlike GaussDB, plain Postgres has no reported case-folding quirk, so
         // the fix is deliberately scoped to Gaussdb/OpenGauss only — Postgres

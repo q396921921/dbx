@@ -62,6 +62,36 @@ fn quotes_gaussdb_jdbc_identifiers_selectively() {
 }
 
 #[test]
+fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
+    // t8y2/dbx#6283: `compact` and friends are reserved in GaussDB/openGauss
+    // (per Huawei's GaussDB(DWS) keyword reference) but are not PostgreSQL
+    // keywords, so a check that only consults the Postgres reserved-word set
+    // misses them and would emit invalid unquoted DDL on the real target.
+    for name in ["compact", "buckets", "sysdate", "minus", "modify", "plan", "procedure"] {
+        assert_eq!(
+            quote_table_data_identifier(Some(DatabaseType::Gaussdb), name, Some("\"")),
+            format!("\"{name}\""),
+            "GaussDB must quote target-only reserved word `{name}`"
+        );
+        assert_eq!(
+            quote_table_data_identifier(Some(DatabaseType::OpenGauss), name, Some("\"")),
+            format!("\"{name}\""),
+            "OpenGauss must quote target-only reserved word `{name}`"
+        );
+    }
+
+    // The same words are not reserved in real PostgreSQL, so the dialect-aware
+    // check must not over-quote a genuine Postgres target.
+    for name in ["compact", "buckets", "sysdate", "minus", "modify"] {
+        assert_eq!(
+            quote_table_data_identifier(Some(DatabaseType::Postgres), name, Some("\"")),
+            name,
+            "plain Postgres must not quote `{name}` — it is not a Postgres keyword"
+        );
+    }
+}
+
+#[test]
 fn qualifies_schema_only_for_schema_aware_databases() {
     assert_eq!(qualified_table_name(Some(DatabaseType::Postgres), Some("public"), "users"), "\"public\".\"users\"");
     assert_eq!(qualified_table_name(Some(DatabaseType::Kwdb), Some("public"), "users"), "\"public\".\"users\"");

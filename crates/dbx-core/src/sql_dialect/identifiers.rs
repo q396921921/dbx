@@ -147,7 +147,11 @@ pub fn quote_table_identifier(database_type: Option<DatabaseType>, name: &str) -
     }
 }
 
-pub(crate) fn quote_gaussdb_jdbc_identifier(name: &str, identifier_quote: &str) -> String {
+pub(crate) fn quote_gaussdb_jdbc_identifier(
+    name: &str,
+    identifier_quote: &str,
+    database_type: Option<DatabaseType>,
+) -> String {
     if is_explicitly_quoted_identifier(name) {
         return name.to_string();
     }
@@ -157,6 +161,8 @@ pub(crate) fn quote_gaussdb_jdbc_identifier(name: &str, identifier_quote: &str) 
     }
     let requires_quote = !is_simple_lower_identifier(name)
         || is_postgres_reserved_identifier(name)
+        || (matches!(database_type, Some(DatabaseType::Gaussdb | DatabaseType::OpenGauss))
+            && is_gaussdb_only_reserved_identifier(name))
         || (quote == "`" && is_mysql_only_reserved_identifier(name));
     if !requires_quote {
         return name.to_string();
@@ -287,6 +293,53 @@ fn is_postgres_reserved_identifier(name: &str) -> bool {
     )
 }
 
+/// Words GaussDB/openGauss reserve that plain PostgreSQL does not, so they
+/// are missed by [`is_postgres_reserved_identifier`] alone (t8y2/dbx#6283).
+/// For example `compact` is a bare lowercase identifier that passes
+/// [`is_simple_lower_identifier`] and isn't a Postgres keyword, but GaussDB
+/// reserves it and rejects it unquoted in DDL.
+///
+/// Sourced from Huawei's official GaussDB(DWS) keyword reference
+/// (<https://support.huaweicloud.com/intl/en-us/sqlreference-dws/dws_06_0007.html>),
+/// filtered to entries marked reserved (in any category) that are absent
+/// from [`is_postgres_reserved_identifier`]. That page documents the
+/// GaussDB(DWS) MPP variant; the core GaussDB/openGauss keyword pages are
+/// client-side rendered and couldn't be diffed against directly, so a few
+/// entries here (`tstag`, `tstime`, `tsfield`, `hdfsdirectory`) are flagged
+/// by Huawei's own docs as used only by the hybrid data warehouse feature
+/// and may never appear as column names on non-DWS targets. Keeping them
+/// quoted regardless is harmless — quoting a name that didn't strictly need
+/// it is a no-op superset of quoting one that did.
+fn is_gaussdb_only_reserved_identifier(name: &str) -> bool {
+    matches!(
+        name,
+        "authid"
+            | "buckets"
+            | "compact"
+            | "deltamerge"
+            | "fenced"
+            | "hdfsdirectory"
+            | "hot"
+            | "internal"
+            | "less"
+            | "maxvalue"
+            | "minus"
+            | "modify"
+            | "nlssort"
+            | "performance"
+            | "plan"
+            | "procedure"
+            | "recyclebin"
+            | "reject"
+            | "sysdate"
+            | "timecapsule"
+            | "tstag"
+            | "tstime"
+            | "tsfield"
+            | "warmup"
+    )
+}
+
 fn is_mysql_only_reserved_identifier(name: &str) -> bool {
     matches!(
         name,
@@ -386,7 +439,10 @@ pub(crate) fn quote_transfer_identifier(name: &str, database_type: &DatabaseType
         | DatabaseType::Questdb => format!("`{}`", name.replace('`', "``")),
         DatabaseType::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ if needs_conditional_quoting_for_gaussdb_family(database_type) => {
-            if is_simple_lower_identifier(name) && !is_postgres_reserved_identifier(name) {
+            if is_simple_lower_identifier(name)
+                && !is_postgres_reserved_identifier(name)
+                && !is_gaussdb_only_reserved_identifier(name)
+            {
                 name.to_string()
             } else {
                 format!("\"{}\"", name.replace('\"', "\"\""))
