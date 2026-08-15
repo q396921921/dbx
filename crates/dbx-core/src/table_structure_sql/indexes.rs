@@ -132,21 +132,46 @@ fn mysql_index_column_sql(column: &str) -> String {
     }
 }
 
+// Fallback only: used when the original snapshot has no per-key provenance at all (dialects
+// bridged through the generic Agent/JDBC driver rather than the native Postgres wire protocol,
+// e.g. Firebird/Vertica). A quoted column identifier can legitimately contain whitespace, `(`,
+// or `::`, so this heuristic must never override real provenance when it's available (#6312
+// review).
 fn looks_like_index_expression(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.contains('(') || trimmed.contains("::") || trimmed.chars().any(char::is_whitespace)
 }
 
-fn postgres_index_column_sql(column: &str) -> String {
+fn postgres_index_column_sql(column: &str, is_expression: bool) -> String {
     // Expression/functional index key parts arrive as raw expression text, not a plain
     // column name; quoting the whole expression as an identifier turns it into a literal
     // column reference that doesn't exist (#6295).
-    let trimmed = column.trim();
-    if looks_like_index_expression(trimmed) {
-        trimmed.to_string()
+    if is_expression {
+        column.trim().to_string()
     } else {
         quote_ident(StructureDialect::Postgres, column)
     }
+}
+
+/// Whether `column` is a bare expression carried over unedited from introspection. The editor
+/// only lets users toggle real table columns onto an index (see TableStructureEditor.vue's
+/// column checkbox list) — there is no free-text expression input — so a key part is only ever
+/// an expression when it matches one from the original introspected snapshot. Matches by value
+/// rather than position so that adding/removing an unrelated key part elsewhere in the same
+/// index doesn't break the match. Falls back to the character-based heuristic only when the
+/// original snapshot has no per-key provenance at all.
+fn key_part_is_expression(index: &EditableStructureIndex, column: &str) -> bool {
+    if let Some(original) = &index.original {
+        if !original.key_is_expression.is_empty() {
+            return original
+                .columns
+                .iter()
+                .position(|original_column| original_column == column)
+                .and_then(|position| original.key_is_expression.get(position).copied())
+                .unwrap_or(false);
+        }
+    }
+    looks_like_index_expression(column)
 }
 
 pub(super) fn build_drop_index_sql(
@@ -202,7 +227,7 @@ pub(super) fn build_create_index_statements(
             if dialect == StructureDialect::Mysql {
                 mysql_index_column_sql(column)
             } else if dialect == StructureDialect::Postgres {
-                postgres_index_column_sql(column)
+                postgres_index_column_sql(column, key_part_is_expression(index, column))
             } else {
                 quote_ident(dialect, column)
             }

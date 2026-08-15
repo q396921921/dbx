@@ -90,6 +90,7 @@ fn existing_index(name: &str, columns: &[&str], is_unique: bool) -> EditableStru
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
     index
 }
@@ -169,6 +170,7 @@ fn builds_mysql_column_and_index_changes() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
     let mut email_index = index("uniq_users_email", &["email"]);
     email_index.is_unique = true;
@@ -741,6 +743,7 @@ fn builds_informix_column_and_index_changes() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
     let mut email_index = index("uniq_users_email", &["email"]);
     email_index.is_unique = true;
@@ -939,6 +942,7 @@ fn iris_drop_index_includes_table_name() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
 
     let result = build_table_structure_change_sql(TableStructureSqlOptions {
@@ -1218,6 +1222,7 @@ fn gbase8a_uses_limited_mysql_ddl() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
 
     let result = build_table_structure_change_sql(TableStructureSqlOptions {
@@ -1666,6 +1671,33 @@ fn preserves_bare_expression_in_postgres_create_index_statement() {
 }
 
 #[test]
+fn preserves_key_provenance_when_rebuilding_an_untouched_postgres_index() {
+    // PR #6312 review: a quoted column identifier can legitimately contain whitespace, `(`,
+    // or `::` (e.g. PostgreSQL metadata returning the ordinary column name `order item`
+    // through a.attname). Regenerating an *unedited* existing index (e.g. only its uniqueness
+    // changed) must trust the original snapshot's real per-key provenance rather than guessing
+    // from characters, so a weirdly-named real column stays quoted and only the genuine
+    // expression key part stays bare.
+    let expression_key_part = "COALESCE(height, '-1'::integer::double precision)";
+    let mut changed = existing_index("uq_weird_columns", &["order item", "a(b)", "a::b", expression_key_part], false);
+    changed.is_unique = true;
+    changed.original.as_mut().unwrap().key_is_expression = vec![false, false, false, true];
+
+    let result =
+        build_table_structure_change_sql(index_change_options(DatabaseType::Postgres, Some("public"), changed));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements.len(), 2);
+    assert!(result.statements[0].starts_with("DROP INDEX "));
+    assert_eq!(
+        result.statements[1],
+        format!(
+            "CREATE UNIQUE INDEX \"uq_weird_columns\" ON \"public\".\"USERS\" (\"order item\", \"a(b)\", \"a::b\", {expression_key_part});"
+        )
+    );
+}
+
+#[test]
 fn create_table_trims_table_name_whitespace_for_all_statements() {
     let mut id = column("id");
     id.data_type = "integer".to_string();
@@ -1739,6 +1771,7 @@ fn qualifies_attached_sqlite_table_and_index_changes() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
     let email_index = index("idx_users_email", &["email"]);
 
@@ -4648,6 +4681,7 @@ fn oscar_drop_index_with_schema_qualifier() {
         index_type: None,
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     });
 
     let result = build_table_structure_change_sql(TableStructureSqlOptions {
