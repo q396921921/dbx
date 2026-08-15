@@ -728,7 +728,12 @@ fn parse_codebuddy_effort_level_strings(model: &Value) -> Vec<String> {
 
 fn parse_account_auth_state(account: Option<&Value>) -> Option<bool> {
     match account? {
-        Value::Null => Some(false),
+        // The real CodeBuddy Code CLI (verified against @tencent-ai/codebuddy-code
+        // 2.136.0) always reports `account: null` in this control response, whether
+        // or not the session is signed in — it's not a login signal here. Treat it
+        // as unknown so callers fall back to the model-catalog-based heuristic
+        // instead of hard-blocking authenticated users (t8y2/dbx#6253).
+        Value::Null => None,
         Value::Bool(value) => Some(*value),
         Value::Object(fields) => fields
             .get("authenticated")
@@ -1052,6 +1057,25 @@ mod tests {
         )
         .unwrap();
         assert!(result.models.is_empty());
+    }
+
+    #[test]
+    fn treats_null_account_as_authenticated_when_models_are_present() {
+        // Real `codebuddy --print --output-format stream-json --input-format
+        // stream-json --setting-sources user` initialize response captured from
+        // the actual @tencent-ai/codebuddy-code@2.136.0 CLI: `account` is always
+        // null in this control response (both logged-in and logged-out sessions),
+        // and the model catalog is populated regardless of auth state — real
+        // "not authenticated" only ever surfaces later, on an actual chat turn.
+        let result = parse_codebuddy_initialize(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"dbx_model_discovery","response":{"commands":[{"name":"/login","description":"Switch Tencent Cloud CodeBuddy accounts"}],"models":[{"id":"default-model","name":"Default"},{"id":"gpt-5.5","name":"GPT-5.5"},{"id":"kimi-k2.5","name":"Kimi-K2.5"}],"account":null,"currentModelId":"default-model"}}}"#,
+        )
+        .unwrap();
+        assert!(result.authenticated);
+        assert_eq!(
+            result.models.iter().map(|model| model.id.as_str()).collect::<Vec<_>>(),
+            ["default", "gpt-5.5", "kimi-k2.5"]
+        );
     }
 
     #[test]
