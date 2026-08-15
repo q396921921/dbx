@@ -159,7 +159,7 @@ async fn transfer_configs(
 ) -> Result<Vec<NacosConfigUpsert>, String> {
     let target_group = request.target_group.as_deref().map(str::trim).filter(|group| !group.is_empty());
     let source = resolve_selector(source_admin, &request.source).await?;
-    source
+    let configs = source
         .into_iter()
         .map(|config| {
             let content = config
@@ -177,7 +177,19 @@ async fn transfer_configs(
                 tags: config.tags,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut target_keys = std::collections::HashSet::new();
+    for config in &configs {
+        let namespace = config.namespace.as_deref().unwrap_or_default();
+        let key = (namespace, config.group.as_str(), config.data_id.as_str());
+        if !target_keys.insert(key) {
+            return Err(format!(
+                "Multiple selected Nacos configurations map to the same target key {namespace}/{}/{}",
+                config.group, config.data_id
+            ));
+        }
+    }
+    Ok(configs)
 }
 
 async fn resolve_selector(
@@ -867,6 +879,33 @@ mod tests {
 
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].group, "TARGET_GROUP");
+    }
+
+    #[tokio::test]
+    async fn transfer_rejects_target_key_collisions_after_group_override() {
+        let source_admin = source_admin_with_config();
+        source_admin.insert(NacosConfigItem {
+            data_id: "app".to_string(),
+            group: "OTHER_GROUP".to_string(),
+            namespace: "source-ns".to_string(),
+            app_name: None,
+            desc: None,
+            tags: None,
+            config_type: Some("text".to_string()),
+            md5: None,
+            encrypted_data_key: None,
+            content: Some("other value".to_string()),
+        });
+        let mut request = transfer_request(Some("TARGET_GROUP"));
+        request.source.keys.push(NacosConfigKey {
+            namespace: Some("source-ns".to_string()),
+            data_id: "app".to_string(),
+            group: "OTHER_GROUP".to_string(),
+        });
+
+        let error = transfer_configs(source_admin, &request).await.unwrap_err();
+
+        assert!(error.contains("target-ns/TARGET_GROUP/app"), "unexpected error: {error}");
     }
 
     #[tokio::test]
