@@ -25,6 +25,7 @@ import java.sql.Date;
 import java.sql.Driver;
 import java.sql.DriverManager;
 import java.sql.DriverPropertyInfo;
+import java.sql.ParameterMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
@@ -1160,6 +1161,7 @@ public final class DbxJdbcPlugin {
                 "EXPLAIN PLAN SET STATEMENT_ID = '" + statementId + "' FOR " + trimStatementSql(sql)
             )) {
                 applyExplainTimeout(explain, timeoutSecs);
+                nullBindExplainParameters(explain);
                 explain.execute();
             }
             try (PreparedStatement read = connection.prepareStatement(
@@ -1183,6 +1185,27 @@ public final class DbxJdbcPlugin {
                 cleanup.setString(1, statementId);
                 cleanup.executeUpdate();
             } catch (SQLException ignored) {}
+        }
+    }
+
+    /**
+     * SQL passed to EXPLAIN PLAN may legitimately contain Oracle bind markers
+     * (":1", ":name", or "?") that aren't meant to be executed with real
+     * values — e.g. statements copied from V$SQL/AWR reports. A PreparedStatement
+     * still requires every marker to be bound before execute(), or Oracle throws
+     * "ORA-17041: Missing IN or OUT parameter". The plan doesn't depend on the
+     * actual bind values, so null them all out.
+     */
+    private static void nullBindExplainParameters(PreparedStatement statement) throws SQLException {
+        int parameterCount;
+        try {
+            ParameterMetaData metadata = statement.getParameterMetaData();
+            parameterCount = metadata == null ? 0 : metadata.getParameterCount();
+        } catch (SQLException ignored) {
+            return;
+        }
+        for (int index = 1; index <= parameterCount; index++) {
+            statement.setNull(index, Types.VARCHAR);
         }
     }
 
