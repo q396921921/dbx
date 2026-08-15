@@ -46,6 +46,11 @@ export interface EditableQuerySource {
   tableName: string;
   tableNameQuoted?: boolean;
   alias?: string;
+  // True when this source sits on the nullable side of an outer join (or
+  // transitively behind one): it is not guaranteed to correspond to a real
+  // row of that table for every returned result row. A nullable source must
+  // never be treated as a safe, unique write target.
+  nullable?: boolean;
 }
 
 const POSTGRES_FOLDED_IDENTIFIER_TYPES = new Set(["postgres", "redshift", "gaussdb", "highgo", "uxdb", "vastbase", "kwdb", "opengauss", "questdb"]);
@@ -226,8 +231,13 @@ function parseSelectColumn(col: string, sources?: EditableQuerySource[]): Editab
   const alias = parseColumnAlias(source.rest);
   if (alias === null) return parseComputedSelectColumn(col);
   const sourceName = source.parts[source.parts.length - 1];
-  const qualifier = source.parts.length >= 2 ? source.parts[source.parts.length - 2] : undefined;
-  const sourceKey = qualifier ? sourceKeyForQualifier(sources, qualifier) : undefined;
+  // Everything before the column name (e.g. ["s1", "foo"] for "s1.foo.id").
+  // Two joined tables that share a table name across schemas ("s1.foo" vs
+  // "s2.foo") are only distinguishable by the full qualifier chain, not just
+  // the identifier immediately before the column.
+  const qualifierParts = source.parts.slice(0, -1);
+  const qualifier = qualifierParts.at(-1);
+  const sourceKey = qualifierParts.length ? sourceKeyForQualifierParts(sources, qualifierParts) : undefined;
   return {
     sourceName,
     sourceNameQuoted: source.quoted[source.quoted.length - 1],
@@ -246,14 +256,14 @@ function parseStarSelectColumn(col: string, sources?: EditableQuerySource[]): Ed
       expression: col,
     };
   }
-  const starMatch = col.match(/^((?:[\p{ID_Start}_][\p{ID_Continue}$]*|"[^"]+"|`[^`]+`|\[[^\]]+\]))\s*\.\s*\*$/u);
-  if (!starMatch) return null;
-  const qualifier = readIdentifier(starMatch[1]!, 0);
-  if (!qualifier) return null;
-  const sourceKey = sourceKeyForQualifier(sources, qualifier.value);
+  const chain = parseQualifierChainBeforeStar(col);
+  if (!chain || chain.end !== col.length) return null;
+  const qualifierParts = chain.parts;
+  const qualifier = qualifierParts.at(-1)!;
+  const sourceKey = sourceKeyForQualifierParts(sources, qualifierParts);
   return {
     star: true,
-    sourceQualifier: qualifier.value,
+    sourceQualifier: qualifier,
     ...(sourceKey ? { sourceKey } : {}),
     resultName: "*",
     expression: col,
@@ -488,11 +498,50 @@ function startsWithKeyword(text: string, pos: number, keyword: string): boolean 
   return !isIdentifierChar(before) && !isIdentifierChar(after);
 }
 
-function sourceKeyForQualifier(sources: EditableQuerySource[] | undefined, qualifier: string): string | undefined {
-  if (!sources?.length) return undefined;
-  const normalizedQualifier = qualifier.toLowerCase();
-  const matches = sources.filter((source) => (source.alias ?? source.tableName).toLowerCase() === normalizedQualifier || source.tableName.toLowerCase() === normalizedQualifier);
+// Resolves the qualifier parts preceding a column/star reference (e.g.
+// ["s1", "foo"] for "s1.foo.id") to a single unambiguous source key.
+//
+// A single-part qualifier matches by alias-or-table-name, as before. A
+// multi-part qualifier (schema.table or catalog.schema.table) must match the
+// source's own catalog/schema/tableName chain — an alias never spans more
+// than one identifier, so it cannot satisfy a multi-part qualifier. This is
+// what distinguishes two joined tables that share a table name across
+// different schemas: "s1.foo" and "s2.foo" are ambiguous under a bare "foo"
+// qualifier but unambiguous once the schema is considered. Returns undefined
+// (stay unbound / read-only) whenever more than one source matches, rather
+// than guessing.
+function sourceKeyForQualifierParts(sources: EditableQuerySource[] | undefined, qualifierParts: string[]): string | undefined {
+  if (!sources?.length || !qualifierParts.length) return undefined;
+  const last = qualifierParts[qualifierParts.length - 1]!.toLowerCase();
+  const rest = qualifierParts.slice(0, -1).map((part) => part.toLowerCase());
+  const matches = sources.filter((source) => {
+    if (!rest.length) {
+      return (source.alias ?? source.tableName).toLowerCase() === last || source.tableName.toLowerCase() === last;
+    }
+    const ownParts = [source.catalog, source.schema, source.tableName].filter((part): part is string => !!part).map((part) => part.toLowerCase());
+    const givenParts = [...rest, last];
+    if (givenParts.length > ownParts.length) return false;
+    const suffix = ownParts.slice(ownParts.length - givenParts.length);
+    return suffix.every((own, index) => own === givenParts[index]);
+  });
   return matches.length === 1 ? matches[0]!.key : undefined;
+}
+
+// Reads a dot-separated identifier chain ("s1.foo" in "s1.foo.*"), stopping
+// right before a trailing "*". Returns null if the text isn't "<chain>.*".
+function parseQualifierChainBeforeStar(text: string): { parts: string[]; end: number } | null {
+  const parts: string[] = [];
+  let pos = 0;
+  for (;;) {
+    pos = skipWhitespace(text, pos);
+    if (text[pos] === "*") return { parts, end: pos + 1 };
+    const ident = readIdentifier(text, pos);
+    if (!ident) return null;
+    const after = skipWhitespace(text, ident.end);
+    if (text[after] !== ".") return null;
+    parts.push(ident.value);
+    pos = after + 1;
+  }
 }
 
 function parseQualifiedIdentifier(text: string): { parts: string[]; quoted: boolean[]; end: number; rest: string; done: boolean } | null {

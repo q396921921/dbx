@@ -201,6 +201,24 @@ describe("editable query hidden primary keys", () => {
     expect(analyzeEditableQueryEditability("select id from jobs union select id from archived_jobs")).toEqual({ editable: false, reason: "set-operation" });
   });
 
+  it("disambiguates schema-qualified columns across cross-schema same-name tables", () => {
+    // Regression for PR #6318 review: two joined tables with the same table
+    // name in different schemas cannot be told apart by table name alone.
+    const result = analyzeEditableQueryEditability("select s1.foo.id, s1.foo.name, s2.foo.total from s1.foo join s2.foo on s1.foo.id = s2.foo.id");
+
+    expect(result.editable).toBe(true);
+    if (!result.editable) return;
+    expect(result.analysis.columns.map((column) => column.sourceKey)).toEqual(["foo:0", "foo:0", "foo:1"]);
+  });
+
+  it("leaves ambiguous unqualified columns unbound across cross-schema same-name tables", () => {
+    const result = analyzeEditableQueryEditability("select foo.id, foo.name from s1.foo join s2.foo on s1.foo.id = s2.foo.id");
+
+    expect(result.editable).toBe(true);
+    if (!result.editable) return;
+    expect(result.analysis.columns.every((column) => column.sourceKey === undefined)).toBe(true);
+  });
+
   it("resolves appended aliases to result indexes", () => {
     expect(
       hiddenResultColumnIndexes(

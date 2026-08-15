@@ -3742,13 +3742,33 @@ export const useQueryStore = defineStore("query", () => {
         };
       }
 
-      // When more than one source table qualifies (e.g. a join where every
-      // side has its primary key returned), bind editing to the source that
-      // appears first in the FROM/JOIN order. Its columns become editable
-      // exactly like the single-source case; columns from the other source(s)
-      // fall out of querySourceColumns and are individually read-only, same
-      // as any other non-source (e.g. expression) column.
-      const target = candidates[0]!;
+      // A source on the nullable side of an outer join (RIGHT/FULL, or the
+      // preserved-but-later-nullified side of a chained LEFT..RIGHT) is not
+      // guaranteed to correspond to a real row of that table for every
+      // result row, even when its primary key columns are structurally
+      // present in the projection. Never treat it as a write target: match
+      // DBeaver's safety model only for the side the JOIN actually guarantees.
+      const provableCandidates = candidates.filter((candidate) => !candidate.source.nullable);
+      // Binding editing requires a single, unambiguous, provably-present
+      // source. When more than one source independently qualifies (e.g. an
+      // INNER JOIN where every side has its primary key returned) there is no
+      // way to know which table the user means to edit — stay read-only
+      // rather than guess, since picking wrong risks an update or delete
+      // landing on the wrong table.
+      if (provableCandidates.length !== 1) {
+        return {
+          queryAnalysis: undefined,
+          querySourceColumns: undefined,
+          queryEditabilityReason: "complex-source",
+          tableMeta: undefined,
+        };
+      }
+
+      // Its columns become editable exactly like the single-source case;
+      // columns from the other source(s) fall out of querySourceColumns and
+      // are individually read-only, same as any other non-source (e.g.
+      // expression) column.
+      const target = provableCandidates[0]!;
       const queryAnalysis = {
         ...target.analysis,
         ...(target.analysis.distinct && canInsertIntoEditableQuerySource(tab, dbType as DatabaseType, target, target.sourceColumns) ? { allowInsert: true } : {}),

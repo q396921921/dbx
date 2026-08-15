@@ -61,6 +61,12 @@ pub struct EditableQuerySource {
     pub table_name_quoted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    // True when this source sits on the nullable side of an outer join (or
+    // transitively behind one), i.e. it is not guaranteed to correspond to a
+    // real row of that table for every returned result row. Callers must
+    // never treat a nullable source as a safe, unique write target.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +106,15 @@ struct FromSource {
     table_name: String,
     table_name_quoted: bool,
     alias: Option<String>,
+    nullable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JoinKind {
+    Inner,
+    Left,
+    Right,
+    Full,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -290,12 +305,16 @@ fn parse_select_column(column: &str, sources: &[FromSource]) -> Option<EditableQ
     };
     let source_name_part = source.parts.last()?;
     let source_name = source_name_part.value.clone();
-    let qualifier = if source.parts.len() >= 2 {
-        source.parts.get(source.parts.len() - 2).map(|part| part.value.clone())
-    } else {
-        None
-    };
-    let source_key = qualifier.as_deref().and_then(|qualifier| source_key_for_qualifier(sources, qualifier));
+    // Everything before the column name itself (e.g. ["s1", "foo"] for
+    // "s1.foo.id"). Binding must consider the full chain, not just the
+    // identifier immediately before the column: two joined tables that share
+    // a name across different schemas ("s1.foo" vs "s2.foo") are only
+    // distinguishable by their full qualifier.
+    let qualifier_parts: Vec<&str> =
+        source.parts[..source.parts.len() - 1].iter().map(|part| part.value.as_str()).collect();
+    let qualifier = qualifier_parts.last().map(|value| value.to_string());
+    let source_key =
+        if qualifier_parts.is_empty() { None } else { source_key_for_qualifier_parts(sources, &qualifier_parts) };
     Some(EditableQueryColumn {
         source_name: Some(source_name.clone()),
         source_name_quoted: source_name_part.quoted,
@@ -320,25 +339,43 @@ fn parse_star_select_column(column: &str, sources: &[FromSource]) -> Option<Edit
             expression: trimmed.to_string(),
         });
     }
-    let qualifier = read_identifier(trimmed, 0)?;
-    let mut pos = skip_whitespace(trimmed, qualifier.end);
-    if !trimmed[pos..].starts_with('.') {
+    let (parts, end) = parse_qualifier_chain_before_star(trimmed)?;
+    if end != trimmed.len() || parts.is_empty() {
         return None;
     }
-    pos = skip_whitespace(trimmed, pos + 1);
-    if trimmed[pos..].trim() != "*" {
-        return None;
-    }
-    let source_key = source_key_for_qualifier(sources, &qualifier.value);
+    let qualifier_parts: Vec<&str> = parts.iter().map(|part| part.value.as_str()).collect();
+    let source_key = source_key_for_qualifier_parts(sources, &qualifier_parts);
+    let qualifier = parts.last()?.value.clone();
     Some(EditableQueryColumn {
         source_name: None,
         source_name_quoted: false,
-        source_qualifier: Some(qualifier.value),
+        source_qualifier: Some(qualifier),
         source_key,
         star: true,
         result_name: "*".to_string(),
         expression: trimmed.to_string(),
     })
+}
+
+/// Reads a dot-separated identifier chain ("s1.foo" in "s1.foo.*"), stopping
+/// right before a trailing "*". Returns the parsed identifiers and the
+/// position just past the "*", or None if the text isn't "<chain>.*".
+fn parse_qualifier_chain_before_star(text: &str) -> Option<(Vec<Identifier>, usize)> {
+    let mut parts = Vec::new();
+    let mut pos = 0usize;
+    loop {
+        pos = skip_whitespace(text, pos);
+        if text[pos..].starts_with('*') {
+            return Some((parts, pos + 1));
+        }
+        let ident = read_identifier(text, pos)?;
+        let after = skip_whitespace(text, ident.end);
+        if !text[after..].starts_with('.') {
+            return None;
+        }
+        parts.push(ident);
+        pos = after + 1;
+    }
 }
 
 fn parse_computed_select_column(column: &str) -> Option<EditableQueryColumn> {
@@ -698,6 +735,16 @@ fn parse_from_sources(body: &str) -> Vec<FromSource> {
     };
     sources.push(first.0);
     let mut pos = first.1;
+    // Tracks, for each source parsed so far, whether it is guaranteed to
+    // correspond to a real row of that table in every result row. A plain
+    // (comma/CROSS/INNER) join never null-pads either side and only adds the
+    // new source to the guaranteed set. LEFT preserves every existing
+    // guarantee but leaves the new (right-hand) source nullable. RIGHT is the
+    // mirror image: the new source becomes the only guaranteed one and every
+    // source seen so far (which may itself be a multi-table group) becomes
+    // nullable, matching left-associative join evaluation. FULL guarantees
+    // nothing on either side.
+    let mut guaranteed = vec![true];
 
     while pos < body.len() {
         pos = skip_whitespace(body, pos);
@@ -709,20 +756,62 @@ fn parse_from_sources(body: &str) -> Vec<FromSource> {
                 return Vec::new();
             };
             sources.push(next.0);
+            guaranteed.push(true);
             pos = next.1;
             continue;
         }
         let Some(join_index) = find_top_level_keyword(body, "JOIN", pos) else {
             break;
         };
+        let kind = join_kind_before(body, join_index);
         let Some(next) = parse_table_source_at(body, join_index + "JOIN".len(), sources.len()) else {
             return Vec::new();
         };
         sources.push(next.0);
+        match kind {
+            JoinKind::Inner => guaranteed.push(true),
+            JoinKind::Left => guaranteed.push(false),
+            JoinKind::Right => {
+                guaranteed.iter_mut().for_each(|value| *value = false);
+                guaranteed.push(true);
+            }
+            JoinKind::Full => {
+                guaranteed.iter_mut().for_each(|value| *value = false);
+                guaranteed.push(false);
+            }
+        }
         pos = next.1;
     }
 
+    for (source, is_guaranteed) in sources.iter_mut().zip(guaranteed.iter()) {
+        source.nullable = !is_guaranteed;
+    }
+
     sources
+}
+
+/// Determines the join kind immediately preceding a bare "JOIN" keyword at
+/// `join_index`, by inspecting the word(s) directly before it (e.g. "LEFT",
+/// "RIGHT OUTER"). Bare "JOIN" and unrecognized qualifiers default to INNER,
+/// matching standard SQL semantics.
+fn join_kind_before(body: &str, join_index: usize) -> JoinKind {
+    let prefix = body[..join_index].trim_end();
+    let mut tokens = prefix.rsplit(char::is_whitespace).filter(|token| !token.is_empty());
+    let Some(first) = tokens.next() else {
+        return JoinKind::Inner;
+    };
+    match first.to_ascii_uppercase().as_str() {
+        "LEFT" => JoinKind::Left,
+        "RIGHT" => JoinKind::Right,
+        "FULL" => JoinKind::Full,
+        "OUTER" => match tokens.next().map(|token| token.to_ascii_uppercase()) {
+            Some(word) if word == "LEFT" => JoinKind::Left,
+            Some(word) if word == "RIGHT" => JoinKind::Right,
+            Some(word) if word == "FULL" => JoinKind::Full,
+            _ => JoinKind::Inner,
+        },
+        _ => JoinKind::Inner,
+    }
 }
 
 fn parse_table_source_at(text: &str, start: usize, index: usize) -> Option<(FromSource, usize)> {
@@ -765,7 +854,17 @@ fn parse_table_source_at(text: &str, start: usize, index: usize) -> Option<(From
     };
     let key = format!("{}:{}", alias.as_deref().unwrap_or(&table_name), index);
     Some((
-        FromSource { key, catalog, catalog_quoted, schema, schema_quoted, table_name, table_name_quoted, alias },
+        FromSource {
+            key,
+            catalog,
+            catalog_quoted,
+            schema,
+            schema_quoted,
+            table_name,
+            table_name_quoted,
+            alias,
+            nullable: false,
+        },
         end,
     ))
 }
@@ -818,12 +917,37 @@ fn starts_with_keyword_at(text: &str, pos: usize, keyword: &str) -> bool {
     !before.is_some_and(is_identifier_char) && !after.is_some_and(is_identifier_char)
 }
 
-fn source_key_for_qualifier(sources: &[FromSource], qualifier: &str) -> Option<String> {
+/// Resolves the qualifier parts preceding a column/star reference (e.g.
+/// `["s1", "foo"]` for `s1.foo.id`) to a single unambiguous source key.
+///
+/// A single-part qualifier matches by alias-or-table-name, as before. A
+/// multi-part qualifier (schema.table or catalog.schema.table) must match
+/// the source's own catalog/schema/table_name chain — an alias never spans
+/// more than one identifier, so it cannot satisfy a multi-part qualifier.
+/// This is what distinguishes two joined tables that share a table name
+/// across different schemas: `s1.foo` and `s2.foo` are ambiguous under a
+/// bare "foo" qualifier but unambiguous once the schema is considered.
+/// Returns None (stay unbound / read-only) whenever more than one source
+/// matches, rather than guessing.
+fn source_key_for_qualifier_parts(sources: &[FromSource], qualifier_parts: &[&str]) -> Option<String> {
+    let (&last, rest) = qualifier_parts.split_last()?;
     let matches = sources
         .iter()
         .filter(|source| {
-            source.alias.as_deref().is_some_and(|alias| alias.eq_ignore_ascii_case(qualifier))
-                || source.table_name.eq_ignore_ascii_case(qualifier)
+            if rest.is_empty() {
+                return source.alias.as_deref().is_some_and(|alias| alias.eq_ignore_ascii_case(last))
+                    || source.table_name.eq_ignore_ascii_case(last);
+            }
+            let own_parts: Vec<&str> =
+                [source.catalog.as_deref(), source.schema.as_deref(), Some(source.table_name.as_str())]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+            if qualifier_parts.len() > own_parts.len() {
+                return false;
+            }
+            let suffix = &own_parts[own_parts.len() - qualifier_parts.len()..];
+            suffix.iter().zip(qualifier_parts.iter()).all(|(own, given)| own.eq_ignore_ascii_case(given))
         })
         .collect::<Vec<_>>();
     if matches.len() == 1 {
@@ -844,6 +968,7 @@ impl From<FromSource> for EditableQuerySource {
             table_name: source.table_name,
             table_name_quoted: source.table_name_quoted,
             alias: source.alias,
+            nullable: source.nullable,
         }
     }
 }
@@ -1351,6 +1476,138 @@ mod tests {
         let result = analyze_editable_query_editability("select a.id, a.name, b.total from a join b using (id)");
 
         assert!(result.editable);
+    }
+
+    #[test]
+    fn marks_left_join_right_side_as_nullable() {
+        let result = analyze_editable_query_editability(
+            "select u.id, u.name, o.id as oid, o.total from users u left join orders o on o.user_id = u.id",
+        );
+
+        let sources = result.analysis.unwrap().sources.unwrap();
+        assert_eq!(
+            sources.iter().map(|source| (&source.key, source.nullable)).collect::<Vec<_>>(),
+            vec![(&"u:0".to_string(), false), (&"o:1".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn marks_right_join_left_side_as_nullable() {
+        // RIGHT JOIN mirrors LEFT JOIN: the right-hand table is guaranteed to
+        // exist for every row, while the left-hand (textually first) table is
+        // the one that may be null-padded. Regression for PR #6318 review:
+        // "first source in FROM/JOIN order" is not a safe stand-in for "the
+        // side that really corresponds to the current result row".
+        let result = analyze_editable_query_editability(
+            "select u.id, u.name, o.id as oid, o.total from users u right join orders o on o.user_id = u.id",
+        );
+
+        let sources = result.analysis.unwrap().sources.unwrap();
+        assert_eq!(
+            sources.iter().map(|source| (&source.key, source.nullable)).collect::<Vec<_>>(),
+            vec![(&"u:0".to_string(), true), (&"o:1".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn marks_both_sides_of_full_join_as_nullable() {
+        let result = analyze_editable_query_editability(
+            "select u.id, u.name, o.id as oid, o.total from users u full join orders o on o.user_id = u.id",
+        );
+
+        let sources = result.analysis.unwrap().sources.unwrap();
+        assert_eq!(
+            sources.iter().map(|source| (&source.key, source.nullable)).collect::<Vec<_>>(),
+            vec![(&"u:0".to_string(), true), (&"o:1".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn marks_no_source_nullable_for_inner_and_comma_joins() {
+        for sql in [
+            "select u.id, u.name, o.id as oid, o.total from users u join orders o on o.user_id = u.id",
+            "select u.id, u.name, o.id as oid, o.total from users u inner join orders o on o.user_id = u.id",
+            "select u.id, u.name, o.id as oid, o.total from users u, orders o where o.user_id = u.id",
+        ] {
+            let result = analyze_editable_query_editability(sql);
+            let sources = result.analysis.unwrap().sources.unwrap();
+            assert!(sources.iter().all(|source| !source.nullable), "{sql}");
+        }
+    }
+
+    #[test]
+    fn resets_earlier_guarantees_when_a_right_join_follows_a_left_join() {
+        // (users LEFT JOIN orders) RIGHT JOIN shipments: left-associative
+        // evaluation means the RIGHT JOIN can null-pad the entire preceding
+        // group, so users and orders both become nullable even though users
+        // was guaranteed relative to the first join alone.
+        let result = analyze_editable_query_editability(
+            "select u.id, o.id as oid, s.id as sid from users u left join orders o on o.user_id = u.id right join shipments s on s.order_id = o.id",
+        );
+
+        let sources = result.analysis.unwrap().sources.unwrap();
+        assert_eq!(
+            sources.iter().map(|source| (&source.key, source.nullable)).collect::<Vec<_>>(),
+            vec![(&"u:0".to_string(), true), (&"o:1".to_string(), true), (&"s:2".to_string(), false)]
+        );
+    }
+
+    #[test]
+    fn binds_quoted_alias_columns_to_correct_source_in_a_join() {
+        let result = analyze_editable_query_editability(
+            r#"select "U".id, "U".name, "O".total from users "U" join orders "O" on "U".id = "O".user_id"#,
+        );
+
+        assert!(result.editable);
+        let analysis = result.analysis.unwrap();
+        assert_eq!(
+            analysis.columns.iter().map(|column| column.source_key.clone()).collect::<Vec<_>>(),
+            vec![Some("U:0".to_string()), Some("U:0".to_string()), Some("O:1".to_string())]
+        );
+    }
+
+    #[test]
+    fn binds_columns_to_correct_side_of_a_self_join() {
+        let result = analyze_editable_query_editability(
+            "select e1.id, e1.name, e2.id as manager_id from employees e1 join employees e2 on e1.manager_id = e2.id",
+        );
+
+        assert!(result.editable);
+        let analysis = result.analysis.unwrap();
+        assert_eq!(
+            analysis.columns.iter().map(|column| column.source_key.clone()).collect::<Vec<_>>(),
+            vec![Some("e1:0".to_string()), Some("e1:0".to_string()), Some("e2:1".to_string())]
+        );
+    }
+
+    #[test]
+    fn disambiguates_schema_qualified_columns_across_cross_schema_same_name_tables() {
+        // Regression for PR #6318 review: two joined tables with the same
+        // table name in different schemas cannot be told apart by table name
+        // alone. The full schema.table qualifier on each column must be used.
+        let result = analyze_editable_query_editability(
+            "select s1.foo.id, s1.foo.name, s2.foo.total from s1.foo join s2.foo on s1.foo.id = s2.foo.id",
+        );
+
+        assert!(result.editable);
+        let analysis = result.analysis.unwrap();
+        assert_eq!(
+            analysis.columns.iter().map(|column| column.source_key.clone()).collect::<Vec<_>>(),
+            vec![Some("foo:0".to_string()), Some("foo:0".to_string()), Some("foo:1".to_string())]
+        );
+    }
+
+    #[test]
+    fn leaves_ambiguous_unqualified_schema_same_name_columns_unbound() {
+        // Without the schema qualifier, "foo" alone cannot disambiguate
+        // between s1.foo and s2.foo; the column must stay unbound (read-only)
+        // rather than guessing.
+        let result = analyze_editable_query_editability(
+            "select foo.id, foo.name from s1.foo join s2.foo on s1.foo.id = s2.foo.id",
+        );
+
+        let analysis = result.analysis.unwrap();
+        assert!(analysis.columns.iter().all(|column| column.source_key.is_none()));
     }
 
     #[test]

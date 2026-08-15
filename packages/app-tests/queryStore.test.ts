@@ -2482,7 +2482,7 @@ test("expands single-table alias star projections for editable query metadata", 
   }
 });
 
-test("binds joined query editing to the first source when multiple source tables are writable candidates", async () => {
+test("keeps joined query read-only when multiple non-nullable source tables are writable candidates", async () => {
   const restoreStorage = installMemoryStorage();
   setActivePinia(createPinia());
   const connectionStore = useConnectionStore();
@@ -2569,13 +2569,221 @@ test("binds joined query editing to the first source when multiple source tables
     await store.executeTabSql(tabId, sql);
 
     const tab = store.tabs.find((item) => item.id === tabId);
+    // Both "users" and "orders" independently qualify as writable (each has
+    // its own primary key returned and at least one writable column). Since
+    // an INNER JOIN gives every returned row a real, present record on both
+    // sides, there is no way to prove which table the user means to edit —
+    // guessing the first one risks an update or delete landing on the wrong
+    // table, so the query must stay read-only. Regression for PR #6318
+    // review: "when multiple possible targets exist, stay read-only rather
+    // than guess."
+    await waitFor(() => columnRequests.length === 2 && tab?.queryEditabilityReason === "complex-source");
+    assert.equal(tab?.queryAnalysis, undefined);
+    assert.equal(tab?.tableMeta, undefined);
+    assert.equal(tab?.querySourceColumns, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreStorage();
+  }
+});
+
+test("binds joined query editing to the sole guaranteed source when the other side of the join is nullable", async () => {
+  const restoreStorage = installMemoryStorage();
+  setActivePinia(createPinia());
+  const connectionStore = useConnectionStore();
+  const store = useQueryStore();
+  const originalFetch = globalThis.fetch;
+  const columnRequests: Array<{ schema: string | null; table: string | null }> = [];
+
+  connectionStore.addEphemeralConnection(conn("pg-join-nullable-side"));
+
+  globalThis.fetch = withConnectionHealthMock(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/query/execute-multi") {
+      return new Response(
+        JSON.stringify([
+          {
+            columns: ["user_id", "name", "order_id", "total"],
+            rows: [[1, "Ada", 10, 42]],
+            affected_rows: 0,
+            execution_time_ms: 1,
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url === "/api/query/analyze-editability") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      assert.equal(body.sql, "select u.id as user_id, u.name, o.id as order_id, o.total from users u left join orders o on o.user_id = u.id");
+      return new Response(
+        JSON.stringify({
+          editable: true,
+          analysis: {
+            schema: undefined,
+            schemaQuoted: false,
+            tableName: "users",
+            tableNameQuoted: false,
+            tableAlias: "u",
+            selectStar: false,
+            multiSource: true,
+            allowInsertDelete: false,
+            sources: [
+              { key: "u:0", tableName: "users", tableNameQuoted: false, schemaQuoted: false, alias: "u" },
+              // The right side of a LEFT JOIN is not guaranteed to exist for
+              // every returned row, even though its primary key is present
+              // in the projection here.
+              { key: "o:1", tableName: "orders", tableNameQuoted: false, schemaQuoted: false, alias: "o", nullable: true },
+            ],
+            columns: [
+              { sourceName: "id", sourceNameQuoted: false, sourceQualifier: "u", sourceKey: "u:0", resultName: "user_id", expression: "u.id" },
+              { sourceName: "name", sourceNameQuoted: false, sourceQualifier: "u", sourceKey: "u:0", resultName: "name", expression: "u.name" },
+              { sourceName: "id", sourceNameQuoted: false, sourceQualifier: "o", sourceKey: "o:1", resultName: "order_id", expression: "o.id" },
+              { sourceName: "total", sourceNameQuoted: false, sourceQualifier: "o", sourceKey: "o:1", resultName: "total", expression: "o.total" },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.startsWith("/api/schema/columns?")) {
+      const params = new URL(url, "http://localhost").searchParams;
+      const table = params.get("table");
+      columnRequests.push({ schema: params.get("schema"), table });
+      const columns =
+        table === "users"
+          ? [
+              { name: "id", data_type: "integer", is_nullable: false, column_default: null, is_primary_key: true, extra: null, comment: null },
+              { name: "name", data_type: "text", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: null },
+            ]
+          : [
+              { name: "id", data_type: "integer", is_nullable: false, column_default: null, is_primary_key: true, extra: null, comment: null },
+              { name: "total", data_type: "numeric", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: null },
+            ];
+      return new Response(JSON.stringify(columns), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url === "/api/query/prepare-pagination-plan") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify({ sqlToExecute: body.options.sql, useAgentResultSession: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response("unexpected request", { status: 500 });
+  });
+
+  try {
+    const sql = "select u.id as user_id, u.name, o.id as order_id, o.total from users u left join orders o on o.user_id = u.id";
+    const tabId = store.createTab("pg-join-nullable-side", "appdb", "Query 1", "query");
+    await store.executeTabSql(tabId, sql);
+
+    const tab = store.tabs.find((item) => item.id === tabId);
     await waitFor(() => columnRequests.length === 2 && tab?.tableMeta?.tableName === "users");
     assert.equal(tab?.queryEditabilityReason, undefined);
     assert.equal(tab?.queryAnalysis?.multiSource, true);
     assert.equal(tab?.tableMeta?.tableName, "users");
-    // Only the "users" (first-in-FROM) columns stay editable; "orders" columns
-    // fall out of querySourceColumns and are individually read-only.
+    // "orders" is nullable (the optional side of the LEFT JOIN) and is never
+    // treated as a candidate write target, even though its own primary key
+    // is present in the projection; only "users" columns stay editable.
     assert.deepEqual(tab?.querySourceColumns, ["id", "name", undefined, undefined]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreStorage();
+  }
+});
+
+test("keeps joined query read-only when both sides of the join are nullable (full outer join)", async () => {
+  const restoreStorage = installMemoryStorage();
+  setActivePinia(createPinia());
+  const connectionStore = useConnectionStore();
+  const store = useQueryStore();
+  const originalFetch = globalThis.fetch;
+  const columnRequests: Array<{ schema: string | null; table: string | null }> = [];
+
+  connectionStore.addEphemeralConnection(conn("pg-full-join-nullable"));
+
+  globalThis.fetch = withConnectionHealthMock(async (input, init) => {
+    const url = String(input);
+    if (url === "/api/query/execute-multi") {
+      return new Response(
+        JSON.stringify([
+          {
+            columns: ["user_id", "name", "order_id", "total"],
+            rows: [[1, "Ada", 10, 42]],
+            affected_rows: 0,
+            execution_time_ms: 1,
+          },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url === "/api/query/analyze-editability") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      assert.equal(body.sql, "select u.id as user_id, u.name, o.id as order_id, o.total from users u full join orders o on o.user_id = u.id");
+      return new Response(
+        JSON.stringify({
+          editable: true,
+          analysis: {
+            schema: undefined,
+            schemaQuoted: false,
+            tableName: "users",
+            tableNameQuoted: false,
+            tableAlias: "u",
+            selectStar: false,
+            multiSource: true,
+            allowInsertDelete: false,
+            sources: [
+              // A FULL JOIN never guarantees either side has a real row for
+              // a given result row.
+              { key: "u:0", tableName: "users", tableNameQuoted: false, schemaQuoted: false, alias: "u", nullable: true },
+              { key: "o:1", tableName: "orders", tableNameQuoted: false, schemaQuoted: false, alias: "o", nullable: true },
+            ],
+            columns: [
+              { sourceName: "id", sourceNameQuoted: false, sourceQualifier: "u", sourceKey: "u:0", resultName: "user_id", expression: "u.id" },
+              { sourceName: "name", sourceNameQuoted: false, sourceQualifier: "u", sourceKey: "u:0", resultName: "name", expression: "u.name" },
+              { sourceName: "id", sourceNameQuoted: false, sourceQualifier: "o", sourceKey: "o:1", resultName: "order_id", expression: "o.id" },
+              { sourceName: "total", sourceNameQuoted: false, sourceQualifier: "o", sourceKey: "o:1", resultName: "total", expression: "o.total" },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    if (url.startsWith("/api/schema/columns?")) {
+      const params = new URL(url, "http://localhost").searchParams;
+      const table = params.get("table");
+      columnRequests.push({ schema: params.get("schema"), table });
+      const columns =
+        table === "users"
+          ? [
+              { name: "id", data_type: "integer", is_nullable: false, column_default: null, is_primary_key: true, extra: null, comment: null },
+              { name: "name", data_type: "text", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: null },
+            ]
+          : [
+              { name: "id", data_type: "integer", is_nullable: false, column_default: null, is_primary_key: true, extra: null, comment: null },
+              { name: "total", data_type: "numeric", is_nullable: true, column_default: null, is_primary_key: false, extra: null, comment: null },
+            ];
+      return new Response(JSON.stringify(columns), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url === "/api/query/prepare-pagination-plan") {
+      const body = JSON.parse(String(init?.body ?? "{}"));
+      return new Response(JSON.stringify({ sqlToExecute: body.options.sql, useAgentResultSession: false }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response("unexpected request", { status: 500 });
+  });
+
+  try {
+    const sql = "select u.id as user_id, u.name, o.id as order_id, o.total from users u full join orders o on o.user_id = u.id";
+    const tabId = store.createTab("pg-full-join-nullable", "appdb", "Query 1", "query");
+    await store.executeTabSql(tabId, sql);
+
+    const tab = store.tabs.find((item) => item.id === tabId);
+    await waitFor(() => columnRequests.length === 2 && tab?.queryEditabilityReason === "complex-source");
+    assert.equal(tab?.queryAnalysis, undefined);
+    assert.equal(tab?.tableMeta, undefined);
+    assert.equal(tab?.querySourceColumns, undefined);
   } finally {
     globalThis.fetch = originalFetch;
     restoreStorage();
