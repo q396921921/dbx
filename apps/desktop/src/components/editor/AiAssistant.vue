@@ -1884,7 +1884,8 @@ async function send() {
     );
   } catch (e: unknown) {
     const message = e instanceof Error ? e.message : String(e);
-    messages.value[assistantIdx].content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
+    const msg = messages.value[assistantIdx];
+    if (msg) msg.content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
   } finally {
     if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
     flushAssistantDeltas();
@@ -2019,6 +2020,10 @@ async function exportMessageAsMarkdown(msg: ChatMessage) {
 }
 
 function clearMessages() {
+  // If a request is still in flight, cancel it before wiping the transcript it was
+  // writing into — otherwise isGenerating is never reset (nothing but send()'s own
+  // finally block clears it) and the send box stays stuck disabled indefinitely.
+  if (isGenerating.value) cancelStream();
   messages.value = [];
   conversationId.value = "";
   historyIndex.value = -1;
@@ -2058,6 +2063,9 @@ async function setConversationListOpen(open: boolean) {
 }
 
 function selectConversation(conv: AiConversation) {
+  // Same guard as clearMessages(): switching away from an in-flight request must
+  // cancel it first, or isGenerating is stranded true and the send box never re-enables.
+  if (isGenerating.value) cancelStream();
   conversationId.value = conv.id;
   // Drop the previous conversation's rendered Markdown instead of keeping it until the LRU evicts it.
   messageRenderer.value.clear();
