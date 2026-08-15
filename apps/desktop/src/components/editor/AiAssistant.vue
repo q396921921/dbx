@@ -57,6 +57,7 @@ import { useToast } from "@/composables/useToast";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { buildAiContext, resolveAiDatabaseTarget, resolveAiNamespaceSelection, resolveDefaultAiSchema, runAgentStream, isVectorDbType, isValidActionForMode, defaultActionForMode, type AiAction, type AiAssistantMode, type AiSqlFileContext, type CustomPromptContext } from "@/lib/ai/ai";
 import { isAiConfigModelCandidate } from "@/lib/ai/aiConfigCandidates";
+import { AiGenerationGuard } from "@/lib/ai/aiGenerationGuard";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { addConfiguredAiModel, aiModelOptions } from "@/lib/ai/aiConfigList";
 import { orderAiConfigsForDisplay } from "@/lib/ai/aiConfigOrdering";
@@ -279,6 +280,13 @@ let lastAssistantFlushAt = 0;
 let pendingAssistantDelta = "";
 let pendingAssistantReasoning = "";
 let pendingAssistantIndex = -1;
+// Identifies which send() invocation is still allowed to write into `messages`/
+// `isGenerating`/`currentSessionId` and the delta buffers above.
+// abandonInFlightRequest() (used by clearMessages()/selectConversation()) invalidates
+// the active generation so a superseded send() can't corrupt state that now belongs
+// to a different conversation. See lib/ai/aiGenerationGuard.ts for why this exists
+// instead of relying on isGenerating/currentSessionId alone.
+const aiGenerationGuard = new AiGenerationGuard();
 
 function startEditMessage(visibleIndex: number) {
   if (isGenerating.value) return;
@@ -1727,14 +1735,25 @@ async function send() {
   }
   // Acquire the send guard before the first async operation so two rapid
   // submissions cannot both pass the initial isGenerating check and then
-  // resume into concurrent agent runs.
+  // resume into concurrent agent runs. `myGeneration` is this call's identity:
+  // every mutation of shared state below, once execution has been suspended and
+  // resumed at least once, must check `aiGenerationGuard.isCurrent(myGeneration)`
+  // first, since clearMessages()/selectConversation() can invalidate it out from
+  // under an in-flight send().
   isGenerating.value = true;
+  const myGeneration = aiGenerationGuard.begin();
   if (!(await promptTemplateStore.ensureLoaded())) {
     clearPendingWriteGrant();
-    isGenerating.value = false;
-    toast(t("ai.customInstructionsLoadFailed"), 5000);
+    if (aiGenerationGuard.isCurrent(myGeneration)) {
+      isGenerating.value = false;
+      toast(t("ai.customInstructionsLoadFailed"), 5000);
+    }
     return;
   }
+  // Superseded (chat cleared/switched, or a newer send() started) while awaiting
+  // the prompt templates above — bail before touching messages/mentions that now
+  // belong to a different conversation.
+  if (!aiGenerationGuard.isCurrent(myGeneration)) return;
   // Snapshot the selected custom prompts at send time so later async context loading
   // cannot change the instructions for an already-submitted request.
   const customPromptContext: CustomPromptContext = {
@@ -1846,6 +1865,10 @@ async function send() {
       },
       history,
       (event: AgentEvent) => {
+        // Superseded by a clear/switch/new-chat (or a newer send()) — the backend
+        // stream may still be running, but this generation no longer owns any
+        // shared state to write into.
+        if (!aiGenerationGuard.isCurrent(myGeneration)) return;
         agentEvents.push(event);
         if (event.type === "text_delta" && event.delta) {
           appendAssistantDelta(assistantIdx, event.delta);
@@ -1883,60 +1906,110 @@ async function send() {
       customPromptContext,
     );
   } catch (e: unknown) {
-    const message = e instanceof Error ? e.message : String(e);
-    const msg = messages.value[assistantIdx];
-    if (msg) msg.content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
+    // A superseded generation's error (including one caused by an
+    // abandonInFlightRequest()-triggered cancellation) must not overwrite a
+    // message that now belongs to a different conversation, or one that no
+    // longer exists in `messages.value`.
+    if (aiGenerationGuard.isCurrent(myGeneration)) {
+      const message = e instanceof Error ? e.message : String(e);
+      const msg = messages.value[assistantIdx];
+      if (msg) msg.content = `${t("ai.requestFailed")}\n\n${translateBackendError(t, message)}`;
+    }
   } finally {
-    if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
-    flushAssistantDeltas();
-    const msg = messages.value[assistantIdx];
-    if (msg) msg.isThinking = false;
-    isGenerating.value = false;
-    // Render agent tool call steps from agent events (fallback when no real-time steps)
-    if (msg && agentEvents.length > 0 && !msg.agentSteps?.length) {
-      const steps: AiAgentStepItem[] = [];
-      agentEvents.forEach((e, index) => {
-        const step = agentEventToStep(e, index);
-        if (step) upsertAgentStep(steps, step);
-      });
-      if (steps.length) msg.agentSteps = steps;
-    }
-    // Fallback: use aiAgentPlan for backward compatibility
-    if (msg && !msg.agentSteps?.length) {
-      const agentPlan = buildAiAgentPlan({
-        mode: requestedMode,
-        action: requestedAction,
-        instruction: modelInstruction,
-        assistantContent: msg?.content || "",
-        connection: connection,
-        database: tab.database,
-      });
-      if (msg && requestedMode === "agent") msg.agentSteps = buildAiAgentStepItems(agentPlan);
-      if (agentPlan.handoffSql) emit("requestAutoExecuteSql", agentPlan.handoffSql);
-    }
-    currentSessionId.value = "";
-    // Apply deferred context compaction after streaming so assistantIdx stays stable.
-    // Visible chat history is kept for the user; future LLM history starts from this hidden summary.
-    if (pendingCompaction.value) {
-      const { summary, compactedMessages } = pendingCompaction.value;
-      pendingCompaction.value = null;
-      const insertAt = Math.min(1 + compactedMessages, messages.value.length - 1);
-      if (summary) {
-        messages.value.splice(insertAt, 0, {
-          role: "user",
-          content: summary,
-          kind: "contextSummary",
+    // Everything below mutates state (messages, isGenerating, currentSessionId,
+    // the delta buffers) that only the current generation is allowed to touch.
+    // A superseded generation's cleanup is a no-op: abandonInFlightRequest()
+    // already reset isGenerating/currentSessionId/delta buffers synchronously
+    // when it invalidated this generation.
+    if (aiGenerationGuard.isCurrent(myGeneration)) {
+      if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
+      flushAssistantDeltas();
+      const msg = messages.value[assistantIdx];
+      if (msg) msg.isThinking = false;
+      isGenerating.value = false;
+      // Render agent tool call steps from agent events (fallback when no real-time steps)
+      if (msg && agentEvents.length > 0 && !msg.agentSteps?.length) {
+        const steps: AiAgentStepItem[] = [];
+        agentEvents.forEach((e, index) => {
+          const step = agentEventToStep(e, index);
+          if (step) upsertAgentStep(steps, step);
         });
+        if (steps.length) msg.agentSteps = steps;
       }
+      // Fallback: use aiAgentPlan for backward compatibility
+      if (msg && !msg.agentSteps?.length) {
+        const agentPlan = buildAiAgentPlan({
+          mode: requestedMode,
+          action: requestedAction,
+          instruction: modelInstruction,
+          assistantContent: msg?.content || "",
+          connection: connection,
+          database: tab.database,
+        });
+        if (msg && requestedMode === "agent") msg.agentSteps = buildAiAgentStepItems(agentPlan);
+        if (agentPlan.handoffSql) emit("requestAutoExecuteSql", agentPlan.handoffSql);
+      }
+      currentSessionId.value = "";
+      // Apply deferred context compaction after streaming so assistantIdx stays stable.
+      // Visible chat history is kept for the user; future LLM history starts from this hidden summary.
+      if (pendingCompaction.value) {
+        const { summary, compactedMessages } = pendingCompaction.value;
+        pendingCompaction.value = null;
+        const insertAt = Math.min(1 + compactedMessages, messages.value.length - 1);
+        if (summary) {
+          messages.value.splice(insertAt, 0, {
+            role: "user",
+            content: summary,
+            kind: "contextSummary",
+          });
+        }
+      }
+      persistConversation();
+      scrollToBottom();
     }
-    persistConversation();
-    scrollToBottom();
   }
 }
 
 async function cancelStream() {
+  // Plain "stop generating" (button click / component unmount): the SAME
+  // conversation stays current, so send()'s own finally — once the backend
+  // actually acknowledges the cancellation — still owns cleanup normally
+  // (write final content, build agent steps, persistConversation()). No need
+  // to force shared state here; see abandonInFlightRequest() for the case
+  // where that assumption doesn't hold.
   if (currentSessionId.value) {
     await aiCancelStream(currentSessionId.value).catch(() => {});
+  }
+}
+
+function abandonInFlightRequest() {
+  // Used when the UI is about to move to a different conversation/transcript
+  // (clear chat, switch conversation, new chat) while a request may still be
+  // in flight. Unlike cancelStream() above, this must reset shared state
+  // synchronously and unconditionally:
+  //  - the backend cancel RPC depends on a session id having already been
+  //    registered (send() only sets currentSessionId partway through), so it
+  //    can be a silent no-op if this fires before that point;
+  //  - even when the RPC isn't a no-op, waiting for the backend to actually
+  //    stop before resetting isGenerating is exactly what stranded the send
+  //    box indefinitely in issue #5941.
+  // Invalidating the generation here makes send()'s remaining event callbacks,
+  // catch, and finally no-ops regardless of what the backend does next, so
+  // they can't write into the array this call is about to replace. See
+  // lib/ai/aiGenerationGuard.ts.
+  const sessionId = currentSessionId.value;
+  aiGenerationGuard.invalidate();
+  isGenerating.value = false;
+  currentSessionId.value = "";
+  if (assistantDeltaFrame !== null) {
+    cancelAnimationFrame(assistantDeltaFrame);
+    assistantDeltaFrame = null;
+  }
+  pendingAssistantDelta = "";
+  pendingAssistantReasoning = "";
+  pendingAssistantIndex = -1;
+  if (sessionId) {
+    aiCancelStream(sessionId).catch(() => {});
   }
 }
 
@@ -2020,10 +2093,14 @@ async function exportMessageAsMarkdown(msg: ChatMessage) {
 }
 
 function clearMessages() {
-  // If a request is still in flight, cancel it before wiping the transcript it was
-  // writing into — otherwise isGenerating is never reset (nothing but send()'s own
-  // finally block clears it) and the send box stays stuck disabled indefinitely.
-  if (isGenerating.value) cancelStream();
+  // If a request is still in flight, abandon it before wiping the transcript it
+  // was writing into. abandonInFlightRequest() invalidates the active generation
+  // synchronously, so the in-flight send()'s callbacks/catch/finally become
+  // no-ops even if the backend cancel RPC itself can't reach a registered
+  // session id yet — otherwise isGenerating would never reset (nothing but
+  // send()'s own finally clears it) and the send box would stay stuck disabled
+  // indefinitely.
+  if (isGenerating.value) abandonInFlightRequest();
   messages.value = [];
   conversationId.value = "";
   historyIndex.value = -1;
@@ -2064,8 +2141,10 @@ async function setConversationListOpen(open: boolean) {
 
 function selectConversation(conv: AiConversation) {
   // Same guard as clearMessages(): switching away from an in-flight request must
-  // cancel it first, or isGenerating is stranded true and the send box never re-enables.
-  if (isGenerating.value) cancelStream();
+  // abandon it first — abandonInFlightRequest() invalidates the generation so
+  // the old send() can't write its deltas/result into this (different)
+  // conversation's messages array once it's assigned below.
+  if (isGenerating.value) abandonInFlightRequest();
   conversationId.value = conv.id;
   // Drop the previous conversation's rendered Markdown instead of keeping it until the LRU evicts it.
   messageRenderer.value.clear();
