@@ -1673,6 +1673,11 @@ pub async fn export_database_sql_core(
     )
     .await?;
     // 4. Create file
+    if let Some(parent) = std::path::Path::new(&request.file_path).parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create backup directory: {e}"))?;
+        }
+    }
     let file = std::fs::File::create(&request.file_path).map_err(|e| format!("Failed to write file: {e}"))?;
     let mut file = BufWriter::new(file);
 

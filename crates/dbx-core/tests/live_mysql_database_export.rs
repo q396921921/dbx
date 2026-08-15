@@ -133,3 +133,65 @@ async fn live_mysql_database_export_restores_dependent_views() {
     assert_eq!(result.rows, vec![vec![serde_json::json!("7")]]);
     assert_eq!(spatial_result.rows, vec![vec![serde_json::json!(4326), serde_json::json!(1)]]);
 }
+
+/// Regression test for #6109 ("backup always errors"): if the backup
+/// destination directory has been removed/unmounted/never created since the
+/// schedule was configured, export_database_sql_core must create it rather
+/// than failing on every run with a raw std::fs::File::create OS error.
+#[tokio::test]
+#[ignore = "requires a disposable MySQL endpoint"]
+async fn live_mysql_database_export_creates_missing_destination_directory() {
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let connection_id = format!("live-mysql-export-missing-dir-{suffix}");
+    let database = format!("dbx_export_missing_dir_{suffix}");
+    let dir = std::env::temp_dir().join(format!("dbx-live-mysql-export-missing-dir-{suffix}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let state = AppState::new(storage);
+    state.configs.write().await.insert(connection_id.clone(), live_mysql_config(&connection_id));
+
+    for sql in [
+        format!("DROP DATABASE IF EXISTS `{database}`"),
+        format!("CREATE DATABASE `{database}`"),
+        format!("CREATE TABLE `{database}`.`widgets` (id INT PRIMARY KEY, name VARCHAR(50))"),
+        format!("INSERT INTO `{database}`.`widgets` VALUES (1, 'alpha')"),
+    ] {
+        execute_sql_statement(&state, &connection_id, "", &sql, None, None).await.unwrap();
+    }
+
+    // Destination directory deliberately NOT created — simulates a backup
+    // schedule whose configured folder has since disappeared.
+    let missing_destination_dir = dir.join("destination-that-was-deleted");
+    let file_path = missing_destination_dir.join("export.sql");
+    let export_request = DatabaseExportRequest {
+        export_id: format!("live-mysql-export-missing-dir-{suffix}"),
+        connection_id: connection_id.clone(),
+        database: database.clone(),
+        schema: database.clone(),
+        file_path: file_path.to_string_lossy().to_string(),
+        selected_tables: Vec::new(),
+        excluded_tables: Vec::new(),
+        include_structure: true,
+        include_data: true,
+        include_objects: true,
+        include_create_database: true,
+        drop_table_if_exists: true,
+        omit_auto_increment: false,
+        fail_on_error: true,
+        snapshot_session_id: None,
+        batch_size: 1000,
+    };
+
+    let result = export_database_sql_core(&state, &export_request, |_| {}).await;
+
+    execute_sql_statement(&state, &connection_id, "", &format!("DROP DATABASE `{database}`"), None, None)
+        .await
+        .unwrap();
+
+    result.expect("export should succeed even when the destination directory is missing");
+    assert!(missing_destination_dir.exists(), "destination directory should have been auto-created");
+    let exported = std::fs::read_to_string(&file_path).unwrap();
+    assert!(exported.contains("'alpha'"), "exported SQL should contain the seeded row");
+
+    std::fs::remove_dir_all(dir).unwrap();
+}
