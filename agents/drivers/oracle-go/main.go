@@ -48,6 +48,7 @@ var (
 	oracleNamedPlSQLBlockEndRegexp       = regexp.MustCompile(`(?is)\bEND\s+([A-Z0-9_$#]+)\s*;\s*$`)
 	oracleUnsupportedServerCharsetRegexp = regexp.MustCompile(`server use charset with id: ([0-9]+).*not supported by the driver`)
 	oracleVersionNumberRegexp            = regexp.MustCompile(`(?:^|[^0-9])([0-9]+)\.[0-9]+`)
+	oracleNotNullConstraintRegexp        = regexp.MustCompile(`(?i)^\s*\(*\s*(?:"((?:[^"]|"")*)"|([A-Z0-9_$#]+))\s+IS\s+NOT\s+NULL\s*\)*\s*$`)
 	oracleDatabaseVersionQueries         = []string{
 		oracleDatabaseVersionSQL,
 		`SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%' AND ROWNUM = 1`,
@@ -2598,13 +2599,27 @@ func oracleConstraintTypeName(kind string) string {
 	}
 }
 
+func oracleSystemNotNullConstraint(kind string, generated sql.NullString, definition string, column, nullable sql.NullString) bool {
+	if kind != "C" || !generated.Valid || generated.String != "GENERATED NAME" || !column.Valid || !nullable.Valid || nullable.String != "N" {
+		return false
+	}
+	matches := oracleNotNullConstraintRegexp.FindStringSubmatch(definition)
+	if matches == nil {
+		return false
+	}
+	if matches[1] != "" {
+		return strings.ReplaceAll(matches[1], `""`, `"`) == column.String
+	}
+	return strings.EqualFold(matches[2], column.String)
+}
+
 // listConstraints returns primary key, unique, and check constraints for a
 // table. Oracle represents every NOT NULL column as a system-generated CHECK
 // constraint (e.g. "COL" IS NOT NULL); those are excluded here so the result
 // only contains constraints a user would recognize as such, matching how
 // tools like DBeaver/Navicat present Oracle constraints.
 func (s *server) listConstraints(schema, table string) ([]constraintInfo, error) {
-	schema, err := s.normalizeSchema(schema)
+	schema, err := s.normalizeSchemaForIdentity(schema)
 	if err != nil {
 		return nil, err
 	}
@@ -2623,9 +2638,11 @@ SELECT ac.CONSTRAINT_NAME,
        ac.DEFERRED,
        ac.VALIDATED,
        acc.COLUMN_NAME,
-       acc.POSITION
+       acc.POSITION,
+       atc.NULLABLE
 FROM ALL_CONSTRAINTS ac
 LEFT JOIN ALL_CONS_COLUMNS acc ON acc.OWNER = ac.OWNER AND acc.CONSTRAINT_NAME = ac.CONSTRAINT_NAME
+LEFT JOIN ALL_TAB_COLUMNS atc ON atc.OWNER = ac.OWNER AND atc.TABLE_NAME = ac.TABLE_NAME AND atc.COLUMN_NAME = acc.COLUMN_NAME
 WHERE ac.OWNER = :1
   AND ac.TABLE_NAME = :2
   AND ac.CONSTRAINT_TYPE IN ('P', 'U', 'C')
@@ -2640,9 +2657,9 @@ ORDER BY ac.CONSTRAINT_NAME, acc.POSITION`, []any{schema, table})
 	order := []string{}
 	for rows.Next() {
 		var name, kind string
-		var condition, generated, status, deferrable, deferred, validated, column sql.NullString
+		var condition, generated, status, deferrable, deferred, validated, column, nullable sql.NullString
 		var position sql.NullInt64
-		if err := rows.Scan(&name, &kind, &condition, &generated, &status, &deferrable, &deferred, &validated, &column, &position); err != nil {
+		if err := rows.Scan(&name, &kind, &condition, &generated, &status, &deferrable, &deferred, &validated, &column, &position, &nullable); err != nil {
 			return nil, err
 		}
 		if skipped[name] {
@@ -2654,7 +2671,7 @@ ORDER BY ac.CONSTRAINT_NAME, acc.POSITION`, []any{schema, table})
 			if condition.Valid {
 				definition = strings.TrimSpace(condition.String)
 			}
-			if kind == "C" && generated.Valid && generated.String == "GENERATED NAME" && strings.HasSuffix(strings.ToUpper(definition), "IS NOT NULL") {
+			if oracleSystemNotNullConstraint(kind, generated, definition, column, nullable) {
 				skipped[name] = true
 				continue
 			}

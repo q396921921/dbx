@@ -3358,7 +3358,7 @@ watch([activeTab, ddlLoading], ([tab, loading]) => {
                 </div>
                 <div v-if="constraint.columns.length" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.columns.join(", ") }}</div>
                 <div v-if="constraint.ref_table" class="mt-1 truncate font-mono text-muted-foreground">-> {{ constraint.ref_schema ? `${constraint.ref_schema}.` : "" }}{{ constraint.ref_table }}{{ constraint.ref_columns.length ? `(${constraint.ref_columns.join(", ")})` : "" }}</div>
-                <div v-if="constraint.definition" class="mt-1 truncate font-mono text-muted-foreground">{{ constraint.definition }}</div>
+                <div v-if="constraint.definition" class="mt-1 whitespace-pre-wrap break-words font-mono text-muted-foreground">{{ constraint.definition }}</div>
               </div>
             </div>
           </TabsContent>
