@@ -1630,6 +1630,72 @@ fn emit_database_export_running(
     });
 }
 
+/// Ensures `dir` exists for an export destination, without ever silently
+/// recreating a directory that previously produced a successful export and
+/// has since disappeared. Auto-creating on every run is what the original
+/// fix for #6109 did, but that is unsafe for a destination on a removable or
+/// network drive: if the mount is temporarily gone when a run executes,
+/// blindly recreating the path resurrects it on the local root filesystem
+/// and the export "succeeds" while silently writing to the wrong disk. A
+/// directory dbx has never used before is safe to create (normal first-time
+/// configuration of a local folder); a directory dbx has used before but
+/// that is now missing, or that now resolves to a different filesystem than
+/// last time, is refused instead. See #6327.
+async fn ensure_export_destination_dir(
+    state: &crate::connection::AppState,
+    dir: &std::path::Path,
+) -> Result<(), String> {
+    let key = format!("database_export_destination:{}", dir.to_string_lossy());
+    let recorded_dev: Option<Option<u64>> = state
+        .storage
+        .load_state(&key)
+        .await?
+        .map(|(bytes, _content_type)| <[u8; 8]>::try_from(bytes.as_slice()).ok().map(u64::from_le_bytes));
+
+    if dir.is_dir() {
+        if let Some(Some(recorded_dev)) = recorded_dev {
+            if let Some(current_dev) = export_destination_dir_device_id(dir) {
+                if current_dev != recorded_dev {
+                    return Err(format!(
+                        "Backup directory {} now resolves to a different filesystem than the last \
+                         successful export to this location. Refusing to write here automatically -- \
+                         if this directory is on a removable or network drive, make sure the correct \
+                         drive is connected before running the backup.",
+                        dir.display()
+                    ));
+                }
+            }
+        }
+    } else {
+        if recorded_dev.is_some() {
+            return Err(format!(
+                "Backup directory {} is missing. It existed during a previous export to this location, \
+                 so dbx will not recreate it automatically -- if this is on a removable or network \
+                 drive, reconnect it and try again.",
+                dir.display()
+            ));
+        }
+        std::fs::create_dir_all(dir).map_err(|e| format!("Failed to create backup directory: {e}"))?;
+    }
+
+    let value = match export_destination_dir_device_id(dir) {
+        Some(dev) => dev.to_le_bytes().to_vec(),
+        None => Vec::new(),
+    };
+    state.storage.save_state(&key, &value, "application/octet-stream").await
+}
+
+#[cfg(unix)]
+fn export_destination_dir_device_id(dir: &std::path::Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(dir).ok().map(|metadata| metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn export_destination_dir_device_id(_dir: &std::path::Path) -> Option<u64> {
+    None
+}
+
 pub async fn export_database_sql_core(
     state: &crate::connection::AppState,
     request: &DatabaseExportRequest,
@@ -1675,7 +1741,7 @@ pub async fn export_database_sql_core(
     // 4. Create file
     if let Some(parent) = std::path::Path::new(&request.file_path).parent() {
         if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).map_err(|e| format!("Failed to create backup directory: {e}"))?;
+            ensure_export_destination_dir(state, parent).await?;
         }
     }
     let file = std::fs::File::create(&request.file_path).map_err(|e| format!("Failed to write file: {e}"))?;
@@ -2520,19 +2586,21 @@ fn build_database_export_object_source_sql(
 mod tests {
     use super::{
         build_database_export_object_source_sql, build_database_sql_export, build_export_insert_statements,
-        database_export_select_sql, database_export_total_objects, drop_table_if_exists_sql, filter_export_table_infos,
-        format_export_sql_literal, format_export_table_ddl, format_mysql_spatial_export_literal,
-        generate_postgres_extension_ddl, generate_postgres_sequence_create_ddl, generate_postgres_sequence_owner_ddl,
-        generate_postgres_sequence_setval_sql, is_postgres_extension_member_routine, mysql_database_export_preamble,
-        mysql_view_dependencies_from_rows, mysql_view_dependencies_sql, normalize_export_table_ddl,
-        record_export_error, replace_database_export_select_list, sort_export_views_by_dependencies,
-        write_database_export_rows, BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions,
-        DatabaseExportObjectCounts, DatabaseExportRequest, DdlNormalizeOptions, ExportedTableSql,
-        PostgresExportExtension, PostgresExportSequence, PostgresExtensionMembers, DATABASE_EXPORT_INSERT_BATCH_SIZE,
-        DATABASE_EXPORT_ROW_LIMIT,
+        database_export_select_sql, database_export_total_objects, drop_table_if_exists_sql,
+        ensure_export_destination_dir, filter_export_table_infos, format_export_sql_literal, format_export_table_ddl,
+        format_mysql_spatial_export_literal, generate_postgres_extension_ddl, generate_postgres_sequence_create_ddl,
+        generate_postgres_sequence_owner_ddl, generate_postgres_sequence_setval_sql,
+        is_postgres_extension_member_routine, mysql_database_export_preamble, mysql_view_dependencies_from_rows,
+        mysql_view_dependencies_sql, normalize_export_table_ddl, record_export_error,
+        replace_database_export_select_list, sort_export_views_by_dependencies, write_database_export_rows,
+        BuildDatabaseSqlExportOptions, BuildExportInsertStatementsOptions, DatabaseExportObjectCounts,
+        DatabaseExportRequest, DdlNormalizeOptions, ExportedTableSql, PostgresExportExtension, PostgresExportSequence,
+        PostgresExtensionMembers, DATABASE_EXPORT_INSERT_BATCH_SIZE, DATABASE_EXPORT_ROW_LIMIT,
     };
     use super::{concurrent_metadata_prefetch_allowed, database_export_metadata_prefetch_concurrency};
+    use crate::connection::AppState;
     use crate::models::connection::DatabaseType;
+    use crate::storage::Storage;
     use crate::types::{ObjectInfo, ObjectSourceKind, TableInfo};
     use serde_json::{json, Value};
 
@@ -3926,5 +3994,59 @@ mod tests {
         assert_eq!(result.unwrap_err(), "exporting table users: permission denied");
         assert!(std::fs::read_to_string(&path).unwrap().is_empty());
         let _ = std::fs::remove_file(path);
+    }
+
+    async fn test_app_state(scratch_dir: &std::path::Path) -> AppState {
+        let storage = Storage::open(&scratch_dir.join("storage.db")).await.unwrap();
+        AppState::new(storage)
+    }
+
+    // Regression tests for #6327: create_dir_all on every export run is unsafe
+    // when the destination is on a removable/network drive, because a mount
+    // that is temporarily gone at write time would be silently recreated on
+    // the local root filesystem, and the backup would "succeed" while writing
+    // to the wrong disk.
+
+    #[tokio::test]
+    async fn ensure_export_destination_dir_creates_a_never_before_seen_local_directory() {
+        let scratch = std::env::temp_dir().join(format!("dbx-export-dest-new-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let state = test_app_state(&scratch).await;
+
+        let destination = scratch.join("backups").join("mydb");
+        assert!(!destination.exists());
+
+        ensure_export_destination_dir(&state, &destination)
+            .await
+            .expect("first-time local directory should be created");
+        assert!(destination.is_dir());
+
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    #[tokio::test]
+    async fn ensure_export_destination_dir_refuses_to_recreate_a_destination_that_disappeared() {
+        let scratch = std::env::temp_dir().join(format!("dbx-export-dest-vanished-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&scratch).unwrap();
+        let state = test_app_state(&scratch).await;
+
+        // Simulates a previously configured, already-used backup destination
+        // (e.g. on an external or network drive) by successfully exporting to
+        // it once first.
+        let destination = scratch.join("mounted-drive").join("mydb");
+        ensure_export_destination_dir(&state, &destination).await.expect("initial export should create the directory");
+        assert!(destination.is_dir());
+
+        // Simulates the mount disappearing (unplugged drive, unmounted share,
+        // etc.) before the next run.
+        std::fs::remove_dir_all(scratch.join("mounted-drive")).unwrap();
+        assert!(!destination.exists());
+
+        let result = ensure_export_destination_dir(&state, &destination).await;
+
+        assert!(result.is_err(), "a destination that existed before should not be silently recreated");
+        assert!(!destination.exists(), "the backup directory must not be resurrected on the wrong filesystem");
+
+        let _ = std::fs::remove_dir_all(&scratch);
     }
 }
