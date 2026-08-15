@@ -104,7 +104,7 @@ async function loadSource(nextEditing = props.initialEditing && canEdit.value) {
     const formatted = await formatSqlForDisplay(editable, props.formatDialect ?? props.dialect, settingsStore.editorSettings.sqlFormatter);
     editableText.value = editable;
     content.value = formatted;
-    draft.value = nextEditing && canEdit.value ? resolveObjectSourceEditDraft(formatted, editable) : "";
+    draft.value = nextEditing && canEdit.value ? resolveObjectSourceEditDraft(props.databaseType, resolvedType, formatted, editable) : "";
     editing.value = nextEditing && canEdit.value;
     if (nextEditing && !canEdit.value) {
       toast(t("objects.sourceReadOnly"), 3000);
@@ -131,7 +131,7 @@ function editSource() {
     if (!canEdit.value) toast(t("objects.sourceReadOnly"), 3000);
     return;
   }
-  draft.value = resolveObjectSourceEditDraft(content.value, editableText.value);
+  draft.value = resolveObjectSourceEditDraft(props.databaseType, resolvedObjectType.value, content.value, editableText.value);
   saveError.value = "";
   editing.value = true;
 }

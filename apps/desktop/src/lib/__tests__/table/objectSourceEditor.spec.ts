@@ -65,26 +65,26 @@ describe("formatObjectSourceSaveError", () => {
 });
 
 describe("resolveObjectSourceEditDraft", () => {
-  // MySQL's SHOW CREATE VIEW always returns the definition flattened to one line with
-  // comments already stripped by the server (verified against a real MySQL 8.0 instance) —
-  // this is what `editable` looks like before dbx does anything with it.
   const mysqlSingleLineViewDefinition = "CREATE VIEW `v_active_users` AS select `users`.`id` AS `id`,`users`.`name` AS `name` from `users` where (`users`.`active` = 1)";
 
-  it("prefers the pretty-printed text over the server's flattened single-line source (issue #5057)", async () => {
+  it("uses the pretty-printed draft for MySQL views (issue #5057)", async () => {
     const formatted = await formatSqlForDisplay(mysqlSingleLineViewDefinition, "mysql");
 
     expect(formatted).not.toBe(mysqlSingleLineViewDefinition);
     expect(formatted.split("\n").length).toBeGreaterThan(1);
-
-    // Before the fix, the "edit view" draft was seeded from the raw `editable` text
-    // directly — reproducing the reported "all view code collapses to one line" symptom.
-    expect(mysqlSingleLineViewDefinition.split("\n").length).toBe(1);
-
-    expect(resolveObjectSourceEditDraft(formatted, mysqlSingleLineViewDefinition)).toBe(formatted);
+    expect(resolveObjectSourceEditDraft("mysql", "VIEW", formatted, mysqlSingleLineViewDefinition)).toBe(formatted);
   });
 
-  it("falls back to the raw editable text when formatting produced nothing usable", () => {
-    expect(resolveObjectSourceEditDraft("", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
-    expect(resolveObjectSourceEditDraft("   ", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+  it("keeps raw editable source for other database and object types", () => {
+    const formatted = "CREATE VIEW v AS\nSELECT 1";
+
+    expect(resolveObjectSourceEditDraft("postgres", "VIEW", formatted, mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+    expect(resolveObjectSourceEditDraft("mysql", "FUNCTION", formatted, mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+    expect(resolveObjectSourceEditDraft(undefined, "VIEW", formatted, mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+  });
+
+  it("falls back to raw MySQL view source when formatting produced nothing usable", () => {
+    expect(resolveObjectSourceEditDraft("mysql", "VIEW", "", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
+    expect(resolveObjectSourceEditDraft("mysql", "VIEW", "   ", mysqlSingleLineViewDefinition)).toBe(mysqlSingleLineViewDefinition);
   });
 });
