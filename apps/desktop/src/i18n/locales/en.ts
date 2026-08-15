@@ -7652,6 +7652,8 @@ export default {
     noTargetConnections: "No writable Nacos connections are available. Add one or remove the target connection's read-only setting.",
     targetNamespace: "Target namespace",
     chooseTargetNamespace: "Choose another namespace",
+    targetGroup: "Target group (optional)",
+    targetGroupPlaceholder: "Same as source group",
     copyKeepsSource: "Sync uses one-way copy semantics. Source namespace configs stay unchanged.",
     conflictPolicy: "Conflict policy",
     policyABORT: "Abort on conflict",

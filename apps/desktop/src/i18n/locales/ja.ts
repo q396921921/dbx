@@ -6381,6 +6381,8 @@ export default withEnglishFallback({
     noTargetConnections: "書き込み可能な Nacos 接続がありません。接続を追加するか、宛先接続の読み取り専用設定を解除してください。",
     targetNamespace: "宛先名前空間",
     chooseTargetNamespace: "別の名前空間を選択",
+    targetGroup: "宛先グループ（任意）",
+    targetGroupPlaceholder: "元のグループと同じ",
     copyKeepsSource: "同期は一方向コピーです。元の名前空間の設定は変更されません。",
     conflictPolicy: "競合ポリシー",
     policyABORT: "競合時に中止",

@@ -7636,6 +7636,8 @@ export default withEnglishFallback({
     noTargetConnections: "没有可写入的 Nacos 连接。请先新增连接或取消目标连接的只读设置。",
     targetNamespace: "目标命名空间",
     chooseTargetNamespace: "请选择其他命名空间",
+    targetGroup: "目标 Group（可选）",
+    targetGroupPlaceholder: "与源 Group 相同",
     copyKeepsSource: "同步采用单向复制语义，源命名空间中的配置保持不变。",
     conflictPolicy: "冲突策略",
     policyABORT: "遇冲突终止",

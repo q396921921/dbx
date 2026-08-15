@@ -6340,6 +6340,8 @@ export default withEnglishFallback({
     noTargetConnections: "No hay conexiones Nacos con escritura disponibles. Añada una o desactive el modo de solo lectura del destino.",
     targetNamespace: "Namespace de destino",
     chooseTargetNamespace: "Seleccione otro namespace",
+    targetGroup: "Group de destino (opcional)",
+    targetGroupPlaceholder: "Igual que el group de origen",
     copyKeepsSource: "La sincronización usa una copia unidireccional. Las configuraciones del namespace de origen no cambian.",
     conflictPolicy: "Política de conflictos",
     policyABORT: "Abortar al encontrar conflictos",

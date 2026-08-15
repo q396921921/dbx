@@ -230,6 +230,7 @@ export interface NacosConfigTransferRequest {
   targetConnectionId: string;
   source: NacosConfigSelector;
   targetNamespace: string;
+  targetGroup?: string;
   conflictPolicy: NacosConflictPolicy;
 }
 

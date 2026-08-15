@@ -394,6 +394,8 @@ pub struct NacosConfigTransferRequest {
     pub source: NacosConfigSelector,
     pub target_namespace: String,
     #[serde(default)]
+    pub target_group: Option<String>,
+    #[serde(default)]
     pub conflict_policy: NacosConflictPolicy,
 }
 

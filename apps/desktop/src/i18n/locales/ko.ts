@@ -7114,6 +7114,8 @@ export default withEnglishFallback({
     noTargetConnections: "쓰기 가능한 Nacos 연결이 없습니다. 연결을 추가하거나 대상 연결의 읽기 전용 설정을 제거하세요.",
     targetNamespace: "대상 네임스페이스",
     chooseTargetNamespace: "다른 네임스페이스 선택",
+    targetGroup: "대상 그룹(선택 사항)",
+    targetGroupPlaceholder: "원본 그룹과 동일",
     copyKeepsSource: "동기화는 단방향 복사 의미를 사용합니다. 소스 네임스페이스 구성은 변경되지 않습니다.",
     conflictPolicy: "충돌 정책",
     policyABORT: "충돌 시 중단",
