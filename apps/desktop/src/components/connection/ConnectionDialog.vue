@@ -8304,7 +8304,7 @@ function openExternalUrl(url: string) {
           <div class="flex items-center justify-between gap-3">
             <div class="min-w-0">
               <div class="truncate text-sm font-medium">{{ agentInstallLabel || agentInstallDriverKey }}</div>
-              <div class="mt-1 text-xs text-muted-foreground">{{ agentInstallProgressLabel }}</div>
+              <div class="mt-1 text-xs text-muted-foreground tabular-nums">{{ agentInstallProgressLabel }}</div>
             </div>
             <Loader2 v-if="agentInstallRunning && !agentInstallError" class="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           </div>

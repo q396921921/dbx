@@ -124,6 +124,7 @@ export async function reinstallJre(jreKey?: string, operationId?: string) {
 export const uninstallJre = forward("uninstallJre");
 export const listenAgentInstallProgress = forward("listenAgentInstallProgress");
 export const loadSavedSqlLibrary = forward("loadSavedSqlLibrary");
+export const loadSavedSqlFilesForSync = forward("loadSavedSqlFilesForSync");
 export const loadSavedSqlFile = forward("loadSavedSqlFile");
 export const saveSavedSqlFolder = forward("saveSavedSqlFolder");
 export const deleteSavedSqlFolder = forward("deleteSavedSqlFolder");
@@ -729,6 +730,7 @@ export const deleteHistoryEntry = forward("deleteHistoryEntry");
 // Updates
 export const checkMcpServerStatus = forward("checkMcpServerStatus");
 export const installMcpServer = forward("installMcpServer");
+export const uninstallMcpServer = forward("uninstallMcpServer");
 export const checkForUpdates = forward("checkForUpdates");
 export const fetchChangelog = forward("fetchChangelog");
 export const getSystemProxyUrl = forward("getSystemProxyUrl");

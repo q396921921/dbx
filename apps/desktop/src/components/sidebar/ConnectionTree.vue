@@ -82,6 +82,7 @@ const showConnectedConnectionsOnly = ref(false);
 const isDisconnectingAllActiveConnections = ref(false);
 const searchInputRef = ref<HTMLInputElement>();
 const rootRef = ref<HTMLElement>();
+const sidebarRootStyle = computed<Record<string, string>>(() => ({ fontSize: `${settingsStore.editorSettings.sidebarFontSize}px` }));
 const pointerInsideTree = ref(false);
 const treeScrollerRef = ref<InstanceType<typeof RecycleScroller> | null>(null);
 const plainTreeScrollerRef = ref<HTMLElement | null>(null);
@@ -691,7 +692,7 @@ function measureSidebarTreeContentWidth() {
   if (!context) return;
   const style = window.getComputedStyle(rootRef.value);
   context.font = style.font || `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-  sidebarTreeContentWidth.value = sidebarTreeNaturalContentWidth(sidebarTreeNaturalWidthItems.value, (text) => context.measureText(text).width);
+  sidebarTreeContentWidth.value = sidebarTreeNaturalContentWidth(sidebarTreeNaturalWidthItems.value, (text) => context.measureText(text).width, settingsStore.editorSettings.sidebarIndent);
   void nextTick(scheduleSidebarScrollMetricsUpdate);
 }
 
@@ -705,7 +706,15 @@ function scheduleSidebarTreeContentWidthMeasure() {
 }
 
 watch(
-  [flatNodes, () => settingsStore.editorSettings.sidebarObjectInfoMode, () => settingsStore.editorSettings.sidebarShowConnectionNotes, () => settingsStore.editorSettings.sidebarHiddenTablePrefixes, () => settingsStore.editorSettings.uiFontFamily, () => settingsStore.editorSettings.uiScale],
+  [
+    flatNodes,
+    () => settingsStore.editorSettings.sidebarObjectInfoMode,
+    () => settingsStore.editorSettings.sidebarShowConnectionNotes,
+    () => settingsStore.editorSettings.sidebarHiddenTablePrefixes,
+    () => settingsStore.editorSettings.uiFontFamily,
+    () => settingsStore.editorSettings.uiScale,
+    () => settingsStore.editorSettings.sidebarFontSize,
+  ],
   scheduleSidebarCommentLabelMeasure,
   {
     flush: "post",
@@ -713,7 +722,7 @@ watch(
   },
 );
 
-watch([sidebarTreeNaturalWidthItems, () => settingsStore.editorSettings.uiFontFamily, () => settingsStore.editorSettings.uiScale], scheduleSidebarTreeContentWidthMeasure, {
+watch([sidebarTreeNaturalWidthItems, () => settingsStore.editorSettings.uiFontFamily, () => settingsStore.editorSettings.uiScale, () => settingsStore.editorSettings.sidebarIndent, () => settingsStore.editorSettings.sidebarFontSize], scheduleSidebarTreeContentWidthMeasure, {
   flush: "post",
   immediate: true,
 });
@@ -1988,7 +1997,7 @@ defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
 </script>
 
 <template>
-  <div ref="rootRef" class="h-full min-h-0 flex flex-col text-sm select-none" @pointerenter="pointerInsideTree = true" @pointerleave="pointerInsideTree = false">
+  <div ref="rootRef" class="h-full min-h-0 flex flex-col select-none" :style="sidebarRootStyle" @pointerenter="pointerInsideTree = true" @pointerleave="pointerInsideTree = false">
     <SidebarTreeRuntimeHost
       :ref="bindSidebarTreeRuntimeHost"
       :node="sidebarTreeRuntimeInitialNode"

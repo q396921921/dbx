@@ -1620,7 +1620,7 @@ export const useQueryStore = defineStore("query", () => {
     return tabs.value.find((tab) => tab.connectionId === connectionId && tab.database === database && tab.title === title && tab.mode === mode && (tab.schema || "") === (schema || "") && (tab.catalog || "") === (catalog || ""));
   }
 
-  function createTab(connectionId: string, database: string, title?: string, mode: QueryTab["mode"] = "query", schema?: string, initialSql?: string, catalog?: string, options: { forceNew?: boolean; activate?: boolean; forceWordWrap?: boolean } = {}) {
+  function createTab(connectionId: string, database: string, title?: string, mode: QueryTab["mode"] = "query", schema?: string, initialSql?: string, catalog?: string, options: { forceNew?: boolean; activate?: boolean; forceWordWrap?: boolean; insertAfterActive?: boolean } = {}) {
     if (title && !options.forceNew) {
       const existing = findTabByIdentity(connectionId, database, title, mode, schema, catalog);
       if (existing) {
@@ -1646,7 +1646,9 @@ export const useQueryStore = defineStore("query", () => {
       mode,
     };
     if (mode === "query") tab.originalSql = initialSql ?? "";
-    tabs.value.push(tab);
+    const activeIndex = options.insertAfterActive ? tabs.value.findIndex((item) => item.id === activeTabId.value) : -1;
+    if (activeIndex >= 0) tabs.value.splice(activeIndex + 1, 0, tab);
+    else tabs.value.push(tab);
     if (options.activate !== false) activeTabId.value = id;
     return id;
   }
@@ -5366,7 +5368,7 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function setActiveResultIndex(id: string, index: number) {
-    const tab = tabs.value.find((t) => t.id === id);
+    const tab = findExecutionTab(id);
     if (!tab?.results || index < 0 || index >= tab.results.length) return;
     tab.activeResultIndex = index;
     tab.result = tab.results[index];

@@ -1942,6 +1942,10 @@ export async function loadSavedSqlLibrary(): Promise<SavedSqlLibrary> {
   return invoke("load_saved_sql_library");
 }
 
+export async function loadSavedSqlFilesForSync(): Promise<SavedSqlFile[]> {
+  return invoke("load_saved_sql_files_for_sync");
+}
+
 export async function loadSavedSqlFile(id: string): Promise<SavedSqlFile | null> {
   return invoke("load_saved_sql_file", { id });
 }
@@ -2031,6 +2035,7 @@ export interface McpServerStatus {
   data_dir: string | null;
   install_command: string;
   update_command: string;
+  uninstall_command: string;
   error: string | null;
 }
 
@@ -2040,6 +2045,10 @@ export async function checkMcpServerStatus(): Promise<McpServerStatus> {
 
 export async function installMcpServer(): Promise<string> {
   return invoke("install_mcp_server");
+}
+
+export async function uninstallMcpServer(): Promise<string> {
+  return invoke("uninstall_mcp_server");
 }
 
 export async function checkForUpdates(locale?: string, source?: UpdateDownloadSource): Promise<UpdateInfo> {
