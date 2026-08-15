@@ -2482,7 +2482,7 @@ test("expands single-table alias star projections for editable query metadata", 
   }
 });
 
-test("keeps joined query read-only when multiple source tables are writable candidates", async () => {
+test("binds joined query editing to the first source when multiple source tables are writable candidates", async () => {
   const restoreStorage = installMemoryStorage();
   setActivePinia(createPinia());
   const connectionStore = useConnectionStore();
@@ -2569,10 +2569,13 @@ test("keeps joined query read-only when multiple source tables are writable cand
     await store.executeTabSql(tabId, sql);
 
     const tab = store.tabs.find((item) => item.id === tabId);
-    await waitFor(() => columnRequests.length === 2 && tab?.queryEditabilityReason === "complex-source");
-    assert.equal(tab?.queryAnalysis, undefined);
-    assert.equal(tab?.tableMeta, undefined);
-    assert.equal(tab?.querySourceColumns, undefined);
+    await waitFor(() => columnRequests.length === 2 && tab?.tableMeta?.tableName === "users");
+    assert.equal(tab?.queryEditabilityReason, undefined);
+    assert.equal(tab?.queryAnalysis?.multiSource, true);
+    assert.equal(tab?.tableMeta?.tableName, "users");
+    // Only the "users" (first-in-FROM) columns stay editable; "orders" columns
+    // fall out of querySourceColumns and are individually read-only.
+    assert.deepEqual(tab?.querySourceColumns, ["id", "name", undefined, undefined]);
   } finally {
     globalThis.fetch = originalFetch;
     restoreStorage();

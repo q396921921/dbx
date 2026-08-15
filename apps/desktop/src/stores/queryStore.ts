@@ -3742,15 +3742,12 @@ export const useQueryStore = defineStore("query", () => {
         };
       }
 
-      if (candidates.length > 1) {
-        return {
-          queryAnalysis: undefined,
-          querySourceColumns: undefined,
-          queryEditabilityReason: "complex-source",
-          tableMeta: undefined,
-        };
-      }
-
+      // When more than one source table qualifies (e.g. a join where every
+      // side has its primary key returned), bind editing to the source that
+      // appears first in the FROM/JOIN order. Its columns become editable
+      // exactly like the single-source case; columns from the other source(s)
+      // fall out of querySourceColumns and are individually read-only, same
+      // as any other non-source (e.g. expression) column.
       const target = candidates[0]!;
       const queryAnalysis = {
         ...target.analysis,

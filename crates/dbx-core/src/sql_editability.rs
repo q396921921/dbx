@@ -682,7 +682,13 @@ fn is_select_star(body: &str, alias: Option<&str>) -> bool {
 }
 
 fn parse_from_sources(body: &str) -> Vec<FromSource> {
-    if body.is_empty() || body.contains('(') || body.contains(')') {
+    // Derived tables ("FROM (SELECT ...) t") are already rejected per-source by
+    // parse_table_source_at, which bails whenever a table-source position
+    // starts with '('. Don't blanket-reject on any parenthesis in body: JOIN
+    // ... ON (a = b) and JOIN ... USING (col) are ordinary, common SQL and
+    // must still parse — find_top_level_keyword below is already
+    // parenthesis-depth-aware.
+    if body.is_empty() {
         return Vec::new();
     }
 
@@ -1313,6 +1319,38 @@ mod tests {
                 column(Some("total"), false, Some("o"), Some("o:1"), "total", "o.total"),
             ]
         );
+    }
+
+    #[test]
+    fn maps_joined_query_source_columns_with_parenthesized_on_clause() {
+        // Regression for #6269: wrapping the ON predicate in parens (a very
+        // common style) must not make parse_from_sources bail out entirely.
+        let result = analyze_editable_query_editability(
+            "select u.id, u.nickname, p.paper_id, p.paper_name from fd_user u join fd_paper p on (u.id = p.user_id) where u.id = 1",
+        );
+
+        assert!(result.editable);
+        let analysis = result.analysis.unwrap();
+        assert!(analysis.multi_source);
+        assert_eq!(
+            analysis
+                .sources
+                .unwrap()
+                .iter()
+                .map(|source| (&source.key, &source.table_name, source.alias.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![
+                (&"u:0".to_string(), &"fd_user".to_string(), Some("u")),
+                (&"p:1".to_string(), &"fd_paper".to_string(), Some("p")),
+            ]
+        );
+    }
+
+    #[test]
+    fn recognizes_join_using_clause_with_parens() {
+        let result = analyze_editable_query_editability("select a.id, a.name, b.total from a join b using (id)");
+
+        assert!(result.editable);
     }
 
     #[test]

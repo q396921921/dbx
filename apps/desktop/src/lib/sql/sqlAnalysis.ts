@@ -392,7 +392,12 @@ function isSelectStar(body: string, alias: string | undefined): boolean {
 }
 
 function parseFromSources(body: string): EditableQuerySource[] {
-  if (!body || /[()]/.test(body)) return [];
+  // Derived tables ("FROM (SELECT ...) t") are already rejected per-source by
+  // parseTableSourceAt, which bails whenever a table-source position starts
+  // with "(". Don't blanket-reject on any parenthesis in body: JOIN ... ON
+  // (a = b) and JOIN ... USING (col) are ordinary, common SQL and must still
+  // parse — findTopLevelKeyword below is already parenthesis-depth-aware.
+  if (!body) return [];
   const sources: EditableQuerySource[] = [];
   let pos = 0;
   const first = parseTableSourceAt(body, pos, sources.length);
