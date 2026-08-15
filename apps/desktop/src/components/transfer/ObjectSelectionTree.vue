@@ -116,7 +116,10 @@ const filteredGroups = computed<ObjectTreeGroup[]>(() => {
   }
   return props.groups.map((g) => ({
     ...g,
-    items: g.items.filter((name) => name.toLowerCase().includes(query)),
+    // Exact-prefix matches surface first (e.g. searching "user" ranks
+    // "users_archive" above "abc_users"); ties keep their original order
+    // since Array#sort is stable.
+    items: g.items.filter((name) => name.toLowerCase().includes(query)).sort((a, b) => Number(b.toLowerCase().startsWith(query)) - Number(a.toLowerCase().startsWith(query))),
   }));
 });
 
