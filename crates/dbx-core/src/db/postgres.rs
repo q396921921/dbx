@@ -2821,6 +2821,23 @@ pub async fn get_table_partition_key(pool: &Pool, schema: &str, table: &str) -> 
     Ok(get_table_partition_info(pool, schema, table).await?.key)
 }
 
+/// Direct child partitions of a partitioned table, as (schema, table) pairs.
+pub async fn list_table_partitions(pool: &Pool, schema: &str, table: &str) -> Result<Vec<(String, String)>, String> {
+    let schema = if schema.is_empty() { "public" } else { schema };
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_table_partitions_sql(), &[&schema, &table])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let child_schema = row.try_get::<_, String>(0).ok()?;
+            let child_table = row.try_get::<_, String>(1).ok()?;
+            Some((child_schema, child_table))
+        })
+        .collect())
+}
+
 pub async fn get_table_partition_local_objects(
     pool: &Pool,
     schema: &str,
@@ -2876,6 +2893,17 @@ fn postgres_table_partition_info_sql() -> &'static str {
      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p') \
      ORDER BY i.inhseqno NULLS LAST \
      LIMIT 1"
+}
+
+fn postgres_table_partitions_sql() -> &'static str {
+    "SELECT cn.nspname, c.relname \
+     FROM pg_catalog.pg_inherits i \
+     JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid \
+     JOIN pg_catalog.pg_namespace cn ON cn.oid = c.relnamespace \
+     JOIN pg_catalog.pg_class p ON p.oid = i.inhparent \
+     JOIN pg_catalog.pg_namespace pn ON pn.oid = p.relnamespace \
+     WHERE pn.nspname = $1 AND p.relname = $2 \
+     ORDER BY c.relname"
 }
 
 fn postgres_table_partition_local_objects_sql() -> &'static str {
@@ -8099,6 +8127,18 @@ mod tests {
         assert!(local_objects_sql.contains("row_to_json(con)->>'conparentid'"));
         assert!(local_objects_sql.contains("con.contype IN ('p','f')"));
         assert!(local_objects_sql.contains("i.inhrelid = idx.oid"));
+    }
+
+    #[test]
+    fn postgres_table_partitions_sql_lists_direct_children_by_parent() {
+        let sql = postgres_table_partitions_sql();
+
+        assert!(sql.contains("pg_catalog.pg_inherits"));
+        assert!(sql.contains("c.oid = i.inhrelid"));
+        assert!(sql.contains("p.oid = i.inhparent"));
+        assert!(sql.contains("pn.nspname = $1"));
+        assert!(sql.contains("p.relname = $2"));
+        assert!(sql.contains("ORDER BY c.relname"));
     }
 
     #[test]

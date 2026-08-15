@@ -9291,33 +9291,58 @@ pub async fn sqlite_ddl(pool: &db::sqlite::SqliteHandle, schema: &str, table: &s
 }
 
 pub async fn pg_ddl(pool: &deadpool_postgres::Pool, schema: &str, table: &str) -> Result<String, String> {
-    let (columns, indexes, fkeys, table_comment, partition_info, trigger_definitions) = tokio::try_join!(
-        db::postgres::get_columns(pool, schema, table),
-        db::postgres::list_indexes(pool, schema, table),
-        db::postgres::list_foreign_keys(pool, schema, table),
-        async { db::postgres::get_table_comment(pool, schema, table).await },
-        db::postgres::get_table_partition_info(pool, schema, table),
-        db::postgres::list_trigger_definitions(pool, schema, table),
-    )?;
-    let partition_local_objects = if partition_info.is_partition {
-        db::postgres::get_table_partition_local_objects(pool, schema, table).await?
-    } else {
-        db::postgres::PostgresTablePartitionLocalObjects::default()
-    };
+    pg_ddl_recursive(pool, schema, table).await
+}
 
-    Ok(append_postgres_trigger_definitions(
-        render_postgres_table_ddl_with_partition_info(
-            schema,
-            table,
-            &columns,
-            &indexes,
-            &fkeys,
-            table_comment.as_deref(),
-            &partition_info,
-            &partition_local_objects,
-        ),
-        &trigger_definitions,
-    ))
+// A partitioned table's DDL is incomplete without the CREATE TABLE ... PARTITION
+// OF statements for its existing partitions (which may themselves be further
+// partitioned), so this recurses into each child. async fns can't recurse
+// directly (the resulting future would have infinite size), hence the boxed
+// future indirection.
+fn pg_ddl_recursive<'a>(
+    pool: &'a deadpool_postgres::Pool,
+    schema: &'a str,
+    table: &'a str,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'a>> {
+    Box::pin(async move {
+        let (columns, indexes, fkeys, table_comment, partition_info, trigger_definitions) = tokio::try_join!(
+            db::postgres::get_columns(pool, schema, table),
+            db::postgres::list_indexes(pool, schema, table),
+            db::postgres::list_foreign_keys(pool, schema, table),
+            async { db::postgres::get_table_comment(pool, schema, table).await },
+            db::postgres::get_table_partition_info(pool, schema, table),
+            db::postgres::list_trigger_definitions(pool, schema, table),
+        )?;
+        let partition_local_objects = if partition_info.is_partition {
+            db::postgres::get_table_partition_local_objects(pool, schema, table).await?
+        } else {
+            db::postgres::PostgresTablePartitionLocalObjects::default()
+        };
+
+        let mut ddl = append_postgres_trigger_definitions(
+            render_postgres_table_ddl_with_partition_info(
+                schema,
+                table,
+                &columns,
+                &indexes,
+                &fkeys,
+                table_comment.as_deref(),
+                &partition_info,
+                &partition_local_objects,
+            ),
+            &trigger_definitions,
+        );
+
+        if partition_info.key.is_some() {
+            for (child_schema, child_table) in db::postgres::list_table_partitions(pool, schema, table).await? {
+                let child_ddl = pg_ddl_recursive(pool, &child_schema, &child_table).await?;
+                ddl.push('\n');
+                ddl.push_str(&child_ddl);
+            }
+        }
+
+        Ok(ddl)
+    })
 }
 
 async fn pg_display_ddl(pool: &deadpool_postgres::Pool, schema: &str, table: &str) -> Result<String, String> {
