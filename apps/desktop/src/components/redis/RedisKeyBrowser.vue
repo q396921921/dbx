@@ -103,6 +103,7 @@ const fetchAllStopRequested = ref(false);
 const fetchAllLoadedCount = ref(0);
 const rootRef = ref<HTMLElement>();
 const keyPaneRef = ref<HTMLElement>();
+const redisKeyScrollerRef = ref<InstanceType<typeof RecycleScroller> | null>(null);
 const valueViewerRef = ref<{ focusSearch: () => boolean } | null>(null);
 const commandTerminalRef = ref<HTMLElement>();
 const searchPattern = ref("");
@@ -650,6 +651,7 @@ async function loadKeys() {
   } finally {
     if (requestId === searchRequestId) {
       loading.value = false;
+      void maybeAutoLoadMoreRedisKeys();
     }
   }
 }
@@ -667,7 +669,36 @@ async function loadMore() {
   } finally {
     if (isCurrentScanOperation(requestId, operationId)) {
       loadingMore.value = false;
+      void maybeAutoLoadMoreRedisKeys();
     }
+  }
+}
+
+// Tree mode collapses most rows by default, so the loaded key count and the
+// rendered row count can diverge wildly (e.g. 1000 loaded keys folded into a
+// handful of visible top-level groups). When that happens the scroller never
+// overflows its viewport, so it never emits a native `scroll` event and
+// `onRedisKeyScroll` — the only other caller of `loadMore` — never runs,
+// silently stranding the browser on the first sparse SCAN page forever. Keep
+// pulling pages after any load until the view is either actually scrollable
+// or genuinely out of keys/budget, mirroring the same threshold logic the
+// scroll handler already uses.
+async function maybeAutoLoadMoreRedisKeys() {
+  await nextTick();
+  const scroller = redisKeyScrollerRef.value?.$el as HTMLElement | undefined;
+  if (!scroller) return;
+  const shouldLoad = shouldLoadMoreRedisKeys({
+    enabled: redisInfiniteScrollEnabled.value,
+    hasMore: hasMore.value,
+    busy: loading.value || loadingMore.value || searchPending.value || deletingKeys.value || isFetchingAll.value,
+    loadedKeys: flatKeys.value.length,
+    maxKeys: redisInfiniteScrollMaxKeys.value,
+    scrollTop: scroller.scrollTop,
+    clientHeight: scroller.clientHeight,
+    scrollHeight: scroller.scrollHeight,
+  });
+  if (shouldLoad) {
+    await loadMore().catch((error) => toast(errorMessage(error), 5000));
   }
 }
 
@@ -746,6 +777,7 @@ function toggleGroup(groupId: string) {
   if (next.has(groupId)) next.delete(groupId);
   else next.add(groupId);
   expandedGroupIds.value = next;
+  void maybeAutoLoadMoreRedisKeys();
 }
 
 function onRowClick(node: RedisKeyTreeNode, event?: MouseEvent) {
@@ -1898,7 +1930,7 @@ defineExpose({ focusSearch, insertCommand, executeCommand: executeAiCommand });
             <Loader2 class="w-3.5 h-3.5 animate-spin" />
             <span>{{ loadingEmptyText }}</span>
           </div>
-          <RecycleScroller v-else class="redis-key-scroller flex-1" :items="visibleRows" :item-size="30" :buffer="600" :skip-hover="true" key-field="id" @scroll="onRedisKeyScroll">
+          <RecycleScroller v-else ref="redisKeyScrollerRef" class="redis-key-scroller flex-1" :items="visibleRows" :item-size="30" :buffer="600" :skip-hover="true" key-field="id" @scroll="onRedisKeyScroll">
             <template #default="{ item: row }">
               <CustomContextMenu :items="redisKeyContextMenuItems(row.node)" v-slot="{ onContextMenu, isOpen }">
                 <div
