@@ -116,6 +116,7 @@ import { createDbxCodeMirrorSqlDialect, type CodeMirrorSqlDialectName } from "@/
 import { sqlSemanticTableNameSpansForSyntaxTree } from "@/lib/editor/codemirrorSqlSemanticHighlight";
 import { startsQueryEditorRectangularSelection, usesQueryEditorObjectNavigationModifier } from "@/lib/editor/queryEditorPointerSelection";
 import { LARGE_PASTE_HISTORY_USER_EVENT, normalizeQueryEditorPasteText, recoverableNativePasteSuffix, shouldRecoverLargeTauriPaste } from "@/lib/editor/queryEditorLargePaste";
+import { computePasteCaretResyncTarget } from "@/lib/editor/queryEditorPasteCaretResync";
 import { extendQueryEditorSelection, runQueryEditorAltExtendSelection } from "@/lib/editor/queryEditorExtendSelection";
 import type { StatementExecutionMarker } from "@/lib/tabs/tabPresentation";
 import { isSchemaAware, isSingleDatabase, supportsDatabaseNameCompletion, supportsDatabaseSchemaQualifier, supportsSqlInListPaste } from "@/lib/database/databaseFeatureSupport";
@@ -1485,6 +1486,20 @@ async function pasteClipboardAsSqlInCondition(): Promise<boolean> {
   currentView.focus();
   toast(t("editor.exPastePasted", { count: result.valueCount }), 2000);
   return true;
+}
+
+// See queryEditorPasteCaretResync.ts for why this nudge is needed (WebKit-only caret bug).
+function resyncCaretAfterPaste(view: EditorViewType) {
+  const EditorSelection = codeMirrorEditorSelection;
+  if (!EditorSelection) return;
+  const pos = view.state.selection.main.head;
+  const nudged = computePasteCaretResyncTarget(pos, view.state.doc.length);
+  if (nudged === null) return;
+  requestAnimationFrame(() => {
+    if (!view.dom.isConnected || view.state.selection.main.head !== pos || !view.state.selection.main.empty) return;
+    view.dispatch({ selection: EditorSelection.cursor(nudged) });
+    view.dispatch({ selection: EditorSelection.cursor(pos) });
+  });
 }
 
 function recoverLargeTauriPaste(event: ClipboardEvent, currentView: EditorViewType): boolean {
@@ -4928,6 +4943,9 @@ onMounted(async () => {
             if (!suppressCompletionAutoStart && shouldStartSqlCompletionAfterInput(insertedText, removedText, update.view)) {
               scheduleSqlCompletionStart(update.view);
             }
+          }
+          if (update.transactions.some((tr) => tr.isUserEvent("input.paste"))) {
+            resyncCaretAfterPaste(update.view);
           }
         }
         if (update.selectionSet || update.docChanged) {
