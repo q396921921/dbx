@@ -317,9 +317,13 @@ defineExpose({ expandAll, collapseAll, resetExpansion, refresh });
 .json-tree-string,
 .json-tree-number,
 .json-tree-boolean,
-.json-tree-null,
-.json-tree-summary {
+.json-tree-null {
   flex: 1 1 auto;
+  min-width: 0;
+}
+
+.json-tree-summary {
+  flex: 0 1 auto;
   min-width: 0;
 }
 
