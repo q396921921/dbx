@@ -267,11 +267,10 @@ watch([deferredSearchQuery, regexMode], ([newQuery, isRegexMode], [oldQuery, was
     const restoreTasks = restoreTrackedSearchTargets();
     const searchGeneration = sidebarSearchLoadingTracker.begin();
     isSidebarSearchLoading.value = true;
-    void Promise.all([loadRegexTableSearchIndexes(), ...restoreTasks])
+    void Promise.allSettled([loadRegexTableSearchIndexes(), ...restoreTasks])
       .then(() => {
         if (restoreTasks.length > 0) refreshActiveSidebarTableSearches();
       })
-      .catch(() => {})
       .finally(() => {
         if (sidebarSearchLoadingTracker.end(searchGeneration)) isSidebarSearchLoading.value = false;
       });
@@ -304,11 +303,10 @@ watch([deferredSearchQuery, regexMode], ([newQuery, isRegexMode], [oldQuery, was
     sidebarSearchLoadingTracker.cancel();
     isSidebarSearchLoading.value = false;
   }
-  Promise.all(tasks)
+  void Promise.allSettled(tasks)
     .then(() => {
       if (!newQuery && oldQuery) refreshActiveSidebarTableSearches();
     })
-    .catch(() => {})
     .finally(() => {
       if (searchGeneration >= 0 && sidebarSearchLoadingTracker.end(searchGeneration)) isSidebarSearchLoading.value = false;
     });

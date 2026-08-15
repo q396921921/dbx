@@ -3755,9 +3755,14 @@ export const useConnectionStore = defineStore("connection", () => {
     const config = getConfig(connectionId);
     if (!config || ["redis", "etcd", "zookeeper", "consul", "mongodb", "elasticsearch", "easysearch", "meilisearch", "milvus", "qdrant", "weaviate", "chromadb", "mq", "nacos"].includes(config.db_type)) return;
     const node = findConnectionNode(connectionId);
-    if (!node || node.type !== "connection" || node.isLoading || hasConnectionMetadataChildren(node.children)) return;
+    if (!node || node.type !== "connection" || hasConnectionMetadataChildren(node.children)) return;
     const scope = { kind: "connection-databases" as const, connectionId, driverProfile: metadataDriverProfile(config) };
-    if (metadataLoadCoordinator.has(scope)) return;
+    const inFlight = metadataLoadCoordinator.inFlightPromise<void>(scope);
+    if (inFlight) {
+      await inFlight;
+      return;
+    }
+    if (node.isLoading) return;
 
     const wasExpanded = !!node.isExpanded;
     const load = beginTreeNodeLoad(node);

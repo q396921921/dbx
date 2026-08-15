@@ -518,8 +518,16 @@ describe("connectionStore metadata loading", () => {
     store.treeNodes = [node];
 
     const normalLoad = store.loadDatabases(connection.id);
-    const searchLoad = store.loadConnectedConnectionRootForSidebarSearch(connection.id);
     await listStarted;
+    const searchLoad = store.loadConnectedConnectionRootForSidebarSearch(connection.id);
+    let searchLoadSettled = false;
+    void searchLoad.finally(() => {
+      searchLoadSettled = true;
+    });
+    await Promise.resolve();
+
+    expect(searchLoadSettled).toBe(false);
+
     resolveDatabases([{ name: "dajia", comment: null }]);
     await Promise.all([normalLoad, searchLoad]);
 
