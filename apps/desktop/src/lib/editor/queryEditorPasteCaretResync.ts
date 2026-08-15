@@ -10,7 +10,14 @@
  * Returns a nearby position to briefly move the caret to (and back from)
  * to replicate that nudge, or null if there is nowhere to nudge to.
  */
-export function computePasteCaretResyncTarget(head: number, docLength: number): number | null {
+export interface PasteCaretSelection {
+  ranges: readonly unknown[];
+  main: { empty: boolean; head: number };
+}
+
+export function computePasteCaretResyncTarget(selection: PasteCaretSelection, docLength: number): number | null {
+  if (selection.ranges.length !== 1 || !selection.main.empty) return null;
+  const head = selection.main.head;
   const nudged = head < docLength ? head + 1 : head - 1;
   if (nudged === head || nudged < 0) return null;
   return nudged;

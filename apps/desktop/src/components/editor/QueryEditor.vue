@@ -1492,11 +1492,12 @@ async function pasteClipboardAsSqlInCondition(): Promise<boolean> {
 function resyncCaretAfterPaste(view: EditorViewType) {
   const EditorSelection = codeMirrorEditorSelection;
   if (!EditorSelection) return;
-  const pos = view.state.selection.main.head;
-  const nudged = computePasteCaretResyncTarget(pos, view.state.doc.length);
+  const selection = view.state.selection;
+  const pos = selection.main.head;
+  const nudged = computePasteCaretResyncTarget(selection, view.state.doc.length);
   if (nudged === null) return;
   requestAnimationFrame(() => {
-    if (!view.dom.isConnected || view.state.selection.main.head !== pos || !view.state.selection.main.empty) return;
+    if (!view.dom.isConnected || view.state.selection.ranges.length !== 1 || view.state.selection.main.head !== pos || !view.state.selection.main.empty) return;
     view.dispatch({ selection: EditorSelection.cursor(nudged) });
     view.dispatch({ selection: EditorSelection.cursor(pos) });
   });
