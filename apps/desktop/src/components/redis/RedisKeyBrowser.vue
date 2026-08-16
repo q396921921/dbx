@@ -162,14 +162,28 @@ const createKeyTypeHelpOffsetTop = ref(0);
 let nextEntryId = 0;
 let searchRequestId = 0;
 let loadMoreOperationId = 0;
+// Mutable so `fetchScanPage` can decrement it in place as it consumes real
+// backend calls, without changing its return type.
+interface ScanIterationBudget {
+  remaining: number;
+}
 // Automatic continuation (see `maybeAutoLoadMoreRedisKeys`) has no natural stop
 // condition when a search is sparse: unique visible keys barely grow, so the
-// scroller keeps reporting a short viewport forever. Bound the number of
-// *automatic* pages per operation regardless of how many keys they yield —
-// this is a request/page budget, not a key-count budget. Reset alongside the
-// rest of the per-operation state in `invalidateScanRequests`.
-const AUTO_LOAD_MAX_PAGES = 20;
-let autoLoadPageCount = 0;
+// scroller keeps reporting a short viewport forever. A *page count* budget is
+// not enough on its own: each page's `fetchScanPage` already retries within
+// its own cumulative COUNT budget while a page comes back empty, so a single
+// automatic "page" can still cost dozens of backend calls and SCAN
+// iterations. Give the whole automatic-fill operation ONE shared budget of
+// actual SCAN iterations (the same unit as the `max_iterations` sent to the
+// backend), decremented by every backend call the automatic path makes —
+// regardless of how many pages/keys those calls span — and stop deterministically
+// the moment it's spent. Reset alongside the rest of the per-operation state
+// in `invalidateScanRequests`. An explicit "Load more" click or a real scroll
+// event is a single user-triggered request and keeps its own uncapped
+// per-call budget (see `fetchScanPage`); only the automatic follow-up check
+// they hand off to afterward is constrained by this shared budget.
+const AUTO_LOAD_TOTAL_SCAN_ITERATIONS = 50;
+let autoLoadBudget: ScanIterationBudget = { remaining: AUTO_LOAD_TOTAL_SCAN_ITERATIONS };
 let redisBrowserIsActive = true;
 let reloadKeysOnActivation = false;
 let redisDbFlushedListenerRegistered = false;
@@ -523,7 +537,7 @@ function invalidateScanRequests(): number {
   searchRequestId++;
   loadMoreOperationId++;
   loadingMore.value = false;
-  autoLoadPageCount = 0;
+  autoLoadBudget = { remaining: AUTO_LOAD_TOTAL_SCAN_ITERATIONS };
   return searchRequestId;
 }
 
@@ -531,7 +545,7 @@ function isCurrentScanOperation(requestId: number, operationId?: number): boolea
   return requestId === searchRequestId && (operationId === undefined || operationId === loadMoreOperationId);
 }
 
-async function fetchScanPage(requestId = searchRequestId, operationId?: number): Promise<RedisScanResult> {
+async function fetchScanPage(requestId = searchRequestId, operationId?: number, iterationBudget?: ScanIterationBudget): Promise<RedisScanResult> {
   const pageSize = redisScanPageSize.value;
   if (isValueSearchMode.value) {
     return api.redisScanValues(props.connectionId, props.db, scanCursor.value, "*", valueQuery.value, pageSize, searchMode.value === "all");
@@ -544,23 +558,27 @@ async function fetchScanPage(requestId = searchRequestId, operationId?: number):
   // continue sparse searches without turning one request into a full scan.
   const scanCountBudget = 50_000;
   const iterationsPerCall = 8;
-  const maxIterations = Math.max(1, Math.ceil(scanCountBudget / Math.max(1, pageSize)));
+  const perCallMaxIterations = Math.max(1, Math.ceil(scanCountBudget / Math.max(1, pageSize)));
+  // When part of the automatic-fill chain, also cap this call to whatever is
+  // left of the shared iteration budget — this is what actually bounds the
+  // total backend work across every page that chain triggers, not just this
+  // one call's own per-call cap.
+  const maxIterations = iterationBudget ? Math.max(0, Math.min(perCallMaxIterations, iterationBudget.remaining)) : perCallMaxIterations;
   let completedIterations = 0;
   let cursor = scanCursor.value;
   let totalKeys = 0;
 
   while (completedIterations < maxIterations) {
-    if (!isCurrentScanOperation(requestId, operationId)) {
-      return { cursor, keys: [], total_keys: totalKeys };
-    }
+    if (!isCurrentScanOperation(requestId, operationId)) break;
     const iterations = Math.min(iterationsPerCall, maxIterations - completedIterations);
     const result = await api.redisScanKeysBatch(props.connectionId, props.db, cursor, effectivePattern.value, pageSize, iterations, true);
+    completedIterations += iterations;
+    if (iterationBudget) iterationBudget.remaining -= iterations;
     if (totalKeys === 0) totalKeys = result.total_keys;
     if (result.keys.length > 0 || result.cursor === 0) {
       return { ...result, total_keys: totalKeys };
     }
     cursor = result.cursor;
-    completedIterations += iterations;
   }
 
   return { cursor, keys: [], total_keys: totalKeys };
@@ -615,8 +633,8 @@ function appendScanResult(result: RedisScanResult, options: { updateTree?: boole
   return newKeys.length;
 }
 
-async function scanNextPage(requestId = searchRequestId, operationId?: number): Promise<boolean> {
-  const result = await fetchScanPage(requestId, operationId);
+async function scanNextPage(requestId = searchRequestId, operationId?: number, iterationBudget?: ScanIterationBudget): Promise<boolean> {
+  const result = await fetchScanPage(requestId, operationId, iterationBudget);
   if (!isCurrentScanOperation(requestId, operationId)) return false;
   appendScanResult(result);
   return true;
@@ -673,7 +691,7 @@ async function loadKeys() {
   }
 }
 
-async function loadMore() {
+async function loadMore(iterationBudget?: ScanIterationBudget) {
   // 与 loadKeys 对称：组件被 keep-alive 包裹且停用后，挂起的 rAF 仍可能触发本函数，
   // 守卫掉停用态避免对隐藏组件跑一次冗余 SCAN。
   if (!redisBrowserIsActive) return;
@@ -686,12 +704,17 @@ async function loadMore() {
   // (bounded only by hasMore/viewport state, neither of which a failure changes).
   let applied = false;
   try {
-    applied = await scanNextPage(requestId, operationId);
+    applied = await scanNextPage(requestId, operationId, iterationBudget);
   } finally {
     if (isCurrentScanOperation(requestId, operationId)) {
       loadingMore.value = false;
     }
   }
+  // A manual "Load more" click or scroll-driven page is one user-triggered
+  // request, uncapped by the shared budget (see `iterationBudget` above); but
+  // if the viewport is still short afterward, hand off to the same bounded
+  // automatic-fill check as everywhere else instead of relying on the user to
+  // notice and click again.
   if (applied && isCurrentScanOperation(requestId, operationId)) {
     void maybeAutoLoadMoreRedisKeys();
   }
@@ -711,10 +734,11 @@ async function maybeAutoLoadMoreRedisKeys() {
   // Unique visible/loaded keys are a poor stop condition on their own: an
   // empty, all-duplicate, or sparsely-matching page grows that count by ~0,
   // so relying on it alone lets a short viewport turn an ordinary tree load
-  // into an unbounded chain of full-budget SCAN pages. Cap the number of
-  // automatic pages per operation as a hard backstop, independent of how many
-  // (if any) new keys each page yields.
-  if (autoLoadPageCount >= AUTO_LOAD_MAX_PAGES) return;
+  // into an unbounded chain of SCAN pages. Stop deterministically — with zero
+  // further backend calls — the instant the shared iteration budget for this
+  // operation is spent, independent of how many (if any) new keys prior calls
+  // yielded.
+  if (autoLoadBudget.remaining <= 0) return;
   const scroller = redisKeyScrollerRef.value?.$el as HTMLElement | undefined;
   if (!scroller) return;
   const shouldLoad = shouldLoadMoreRedisKeys({
@@ -728,8 +752,7 @@ async function maybeAutoLoadMoreRedisKeys() {
     scrollHeight: scroller.scrollHeight,
   });
   if (shouldLoad) {
-    autoLoadPageCount++;
-    await loadMore().catch((error) => toast(errorMessage(error), 5000));
+    await loadMore(autoLoadBudget).catch((error) => toast(errorMessage(error), 5000));
   }
 }
 
@@ -1948,7 +1971,7 @@ defineExpose({ focusSearch, insertCommand, executeCommand: executeAiCommand });
           <div v-if="flatKeys.length === 0 && !loading" class="flex-1 flex flex-col items-center justify-center text-muted-foreground text-xs p-4 text-center">
             <template v-if="hasMore">
               <span class="mb-3">{{ t("redis.noKeysInScanHint") }}</span>
-              <Button variant="outline" size="sm" class="h-7 text-xs" :disabled="loadingMore || searchPending || deletingKeys" @click="loadMore">
+              <Button variant="outline" size="sm" class="h-7 text-xs" :disabled="loadingMore || searchPending || deletingKeys" @click="loadMore()">
                 <Loader2 v-if="loadingMore" class="w-3 h-3 mr-1.5 animate-spin" />
                 {{ t("redis.loadMoreKeys") }}
               </Button>
@@ -2021,7 +2044,7 @@ defineExpose({ focusSearch, insertCommand, executeCommand: executeAiCommand });
             {{ t("redis.fuzzyTreeLimit", { count: flatKeys.length }) }}
           </div>
           <div v-if="hasMore && !isFetchingAll" class="shrink-0 border-t px-2 py-1.5 flex items-center gap-1.5">
-            <Button variant="outline" size="sm" class="h-7 text-xs flex-1" :disabled="loadingMore || loading || searchPending || deletingKeys" @click="loadMore">
+            <Button variant="outline" size="sm" class="h-7 text-xs flex-1" :disabled="loadingMore || loading || searchPending || deletingKeys" @click="loadMore()">
               <Loader2 v-if="loadingMore" class="w-3 h-3 mr-1.5 animate-spin" />
               {{ t("redis.loadMoreKeys") }}
             </Button>
