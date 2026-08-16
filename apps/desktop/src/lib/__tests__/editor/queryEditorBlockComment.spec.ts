@@ -27,7 +27,9 @@ describe("QueryEditor block comment", () => {
     expect(queryEditorSource).toContain("codeMirrorToggleBlockComment?.(currentView);");
     expect(queryEditorSource).toContain('label: t("editor.contextMenu.blockCommentSelection")');
     expect(queryEditorSource).toContain("shortcut: shortcuts.toggleBlockComment");
-    expect(queryEditorSource).toContain("...binding(shortcuts.toggleBlockComment, (view) => codeMirrorToggleBlockComment?.(view) ?? false)");
+    expect(queryEditorSource).toContain("...binding(shortcuts.toggleBlockComment, (view) => {");
+    expect(queryEditorSource).toContain("!supportsQueryEditorBlockComments(props.databaseType)");
+    expect(queryEditorSource).toContain("defaultKeymap.filter((item) => item.run !== toggleBlockComment)");
     expect(queryEditorSource).toContain("codeMirrorToggleBlockComment = toggleBlockComment;");
   });
 

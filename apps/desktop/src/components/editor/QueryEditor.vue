@@ -120,7 +120,7 @@ import { LARGE_PASTE_HISTORY_USER_EVENT, normalizeQueryEditorPasteText, recovera
 import { computePasteCaretResyncTarget } from "@/lib/editor/queryEditorPasteCaretResync";
 import { extendQueryEditorSelection, runQueryEditorAltExtendSelection } from "@/lib/editor/queryEditorExtendSelection";
 import type { StatementExecutionMarker } from "@/lib/tabs/tabPresentation";
-import { isSchemaAware, isSingleDatabase, supportsDatabaseNameCompletion, supportsDatabaseSchemaQualifier, supportsSqlInListPaste } from "@/lib/database/databaseFeatureSupport";
+import { isSchemaAware, isSingleDatabase, supportsDatabaseNameCompletion, supportsDatabaseSchemaQualifier, supportsQueryEditorBlockComments, supportsSqlInListPaste } from "@/lib/database/databaseFeatureSupport";
 import { metadataSchemaForConnection, sqlSnippetDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { usesLocalOnlyEditorCompletionMetadata, usesOnDemandOnlyEditorColumnMetadata } from "@/lib/metadata/completionMetadataPolicy";
 import { loadTableMetadata } from "@/lib/metadata/tableMetadataCache";
@@ -1404,7 +1404,7 @@ function toggleCommentFromContextMenu() {
 
 function toggleBlockCommentFromContextMenu() {
   const currentView = view.value;
-  if (!currentView || props.readOnly) return;
+  if (!currentView || props.readOnly || !supportsQueryEditorBlockComments(props.databaseType)) return;
   codeMirrorToggleBlockComment?.(currentView);
   focusEditor();
 }
@@ -1720,7 +1720,7 @@ const contextMenuItems = computed<ContextMenuItem[]>(() => {
     {
       label: t("editor.contextMenu.blockCommentSelection"),
       action: toggleBlockCommentFromContextMenu,
-      disabled: props.readOnly || !canCopySelectedSql.value,
+      disabled: props.readOnly || !canCopySelectedSql.value || !supportsQueryEditorBlockComments(props.databaseType),
       icon: MessageSquareText,
       shortcut: shortcuts.toggleBlockComment,
     },
@@ -1895,7 +1895,10 @@ function runKeymapExtension(codeMirrorKeymap: (typeof import("@codemirror/view")
         ...binding(shortcuts.uppercaseSelection, () => convertSelectedSqlCase("upper")),
         ...binding(shortcuts.lowercaseSelection, () => convertSelectedSqlCase("lower")),
         ...binding(shortcuts.toggleLineComment, (view) => codeMirrorToggleLineComment?.(view) ?? false),
-        ...binding(shortcuts.toggleBlockComment, (view) => codeMirrorToggleBlockComment?.(view) ?? false),
+        ...binding(shortcuts.toggleBlockComment, (view) => {
+          if (!supportsQueryEditorBlockComments(props.databaseType)) return false;
+          return codeMirrorToggleBlockComment?.(view) ?? false;
+        }),
         ...binding(shortcuts.toggleFold, (view) => codeMirrorToggleFold?.(view) ?? false),
         ...binding(shortcuts.exPasteSqlInCondition, () => {
           if (!supportsSqlInListPaste(props.databaseType)) return false;
@@ -4873,7 +4876,13 @@ onMounted(async () => {
       activeLineHighlighter,
       // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
       vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
-      keymap.of([...defaultKeymap, ...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+      keymap.of([
+        ...defaultKeymap.filter((item) => item.run !== toggleBlockComment),
+        ...searchKeymapWithoutModD(searchKeymap),
+        ...historyKeymap,
+        ...foldKeymap,
+        ...completionKeymap,
+      ]),
       sqlLanguageComp.of(buildSqlLanguageExtension()),
       sqlSemanticHighlightComp.of(buildSqlSemanticHighlightExtension()),
       tooltips({ parent: tooltipParent }),
