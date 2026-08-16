@@ -153,25 +153,43 @@ fn postgres_index_column_sql(column: &str, is_expression: bool) -> String {
     }
 }
 
-/// Whether `column` is a bare expression carried over unedited from introspection. The editor
-/// only lets users toggle real table columns onto an index (see TableStructureEditor.vue's
-/// column checkbox list) — there is no free-text expression input — so a key part is only ever
-/// an expression when it matches one from the original introspected snapshot. Matches by value
-/// rather than position so that adding/removing an unrelated key part elsewhere in the same
-/// index doesn't break the match. Falls back to the character-based heuristic only when the
-/// original snapshot has no per-key provenance at all.
-fn key_part_is_expression(index: &EditableStructureIndex, column: &str) -> bool {
-    if let Some(original) = &index.original {
-        if !original.key_is_expression.is_empty() {
-            return original
+/// Per-key expression provenance for `columns` (the edited/current key list), computed once for
+/// the whole index. The editor only lets users toggle real table columns onto an index (see
+/// TableStructureEditor.vue's column checkbox list) — there is no free-text expression input —
+/// so an edited key part is only ever an expression when it corresponds to one from the original
+/// introspected snapshot.
+///
+/// Matches each edited key part against the first *not yet claimed* original key part with the
+/// same text, rather than the first textual match overall: a real column whose name happens to
+/// equal another key's expression text (or two key parts with identical text) can otherwise steal
+/// the wrong original's provenance. Consuming each original slot at most once keeps provenance
+/// tied to its true ordinal position instead of being re-derived by scanning for a text match
+/// (#6312 review). Falls back to the character-based heuristic per key part that has no original
+/// counterpart (a newly added key, or when the original snapshot has no per-key provenance at
+/// all).
+fn key_expression_flags(index: &EditableStructureIndex, columns: &[String]) -> Vec<bool> {
+    let original = match &index.original {
+        Some(original) if !original.key_is_expression.is_empty() => original,
+        _ => return columns.iter().map(|column| looks_like_index_expression(column)).collect(),
+    };
+    let mut consumed = vec![false; original.columns.len()];
+    columns
+        .iter()
+        .map(|column| {
+            let claimed = original
                 .columns
                 .iter()
-                .position(|original_column| original_column == column)
-                .and_then(|position| original.key_is_expression.get(position).copied())
-                .unwrap_or(false);
-        }
-    }
-    looks_like_index_expression(column)
+                .enumerate()
+                .find(|(i, original_column)| !consumed[*i] && *original_column == column);
+            match claimed {
+                Some((i, _)) => {
+                    consumed[i] = true;
+                    original.key_is_expression.get(i).copied().unwrap_or(false)
+                }
+                None => looks_like_index_expression(column),
+            }
+        })
+        .collect()
 }
 
 pub(super) fn build_drop_index_sql(
@@ -221,13 +239,15 @@ pub(super) fn build_create_index_statements(
 
     let unique = if index.is_unique { "UNIQUE " } else { "" };
     let replace = if or_replace { "OR REPLACE " } else { "" };
+    let key_is_expression = key_expression_flags(index, &columns);
     let cols = columns
         .iter()
-        .map(|column| {
+        .enumerate()
+        .map(|(i, column)| {
             if dialect == StructureDialect::Mysql {
                 mysql_index_column_sql(column)
             } else if dialect == StructureDialect::Postgres {
-                postgres_index_column_sql(column, key_part_is_expression(index, column))
+                postgres_index_column_sql(column, key_is_expression[i])
             } else {
                 quote_ident(dialect, column)
             }

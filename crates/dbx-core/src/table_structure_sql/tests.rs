@@ -1698,6 +1698,26 @@ fn preserves_key_provenance_when_rebuilding_an_untouched_postgres_index() {
 }
 
 #[test]
+fn preserves_key_provenance_by_ordinal_position_not_first_text_match() {
+    // PR #6312 review (round 2): provenance must stay tied to each key part's original ordinal
+    // slot, not be re-derived by scanning for the first original key part with matching text. Two
+    // key parts sharing identical text with different provenance (a pathological but real case —
+    // e.g. a genuine expression key part and a real column whose name happens to equal that same
+    // text) must not let the first one's provenance leak onto the second.
+    let mut changed = existing_index("idx_dup", &["dup", "dup"], false);
+    changed.is_unique = true;
+    changed.original.as_mut().unwrap().key_is_expression = vec![true, false];
+
+    let result =
+        build_table_structure_change_sql(index_change_options(DatabaseType::Postgres, Some("public"), changed));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements.len(), 2);
+    assert!(result.statements[0].starts_with("DROP INDEX "));
+    assert_eq!(result.statements[1], "CREATE UNIQUE INDEX \"idx_dup\" ON \"public\".\"USERS\" (dup, \"dup\");");
+}
+
+#[test]
 fn create_table_trims_table_name_whitespace_for_all_statements() {
     let mut id = column("id");
     id.data_type = "integer".to_string();
