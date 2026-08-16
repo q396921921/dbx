@@ -571,9 +571,9 @@ async function fetchScanPage(requestId = searchRequestId, operationId?: number, 
   while (completedIterations < maxIterations) {
     if (!isCurrentScanOperation(requestId, operationId)) break;
     const iterations = Math.min(iterationsPerCall, maxIterations - completedIterations);
+    if (iterationBudget) iterationBudget.remaining -= iterations;
     const result = await api.redisScanKeysBatch(props.connectionId, props.db, cursor, effectivePattern.value, pageSize, iterations, true);
     completedIterations += iterations;
-    if (iterationBudget) iterationBudget.remaining -= iterations;
     if (totalKeys === 0) totalKeys = result.total_keys;
     if (result.keys.length > 0 || result.cursor === 0) {
       return { ...result, total_keys: totalKeys };
@@ -1984,7 +1984,7 @@ defineExpose({ focusSearch, insertCommand, executeCommand: executeAiCommand });
             <Loader2 class="w-3.5 h-3.5 animate-spin" />
             <span>{{ loadingEmptyText }}</span>
           </div>
-          <RecycleScroller v-else ref="redisKeyScrollerRef" class="redis-key-scroller flex-1" :items="visibleRows" :item-size="30" :buffer="600" :skip-hover="true" key-field="id" @scroll="onRedisKeyScroll">
+          <RecycleScroller v-else ref="redisKeyScrollerRef" class="redis-key-scroller flex-1" :items="visibleRows" :item-size="30" :buffer="600" :skip-hover="true" key-field="id" @scroll="onRedisKeyScroll" @resize="maybeAutoLoadMoreRedisKeys">
             <template #default="{ item: row }">
               <CustomContextMenu :items="redisKeyContextMenuItems(row.node)" v-slot="{ onContextMenu, isOpen }">
                 <div

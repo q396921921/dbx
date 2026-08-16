@@ -391,6 +391,31 @@ describe("RedisKeyBrowser infinite scroll auto-continue (issue #6022)", () => {
 
     expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1);
   });
+
+  it("rechecks bounded auto-loading when the viewport grows", async () => {
+    stubNonOverflowingViewport();
+    let overflow = true;
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.classList.contains("redis-key-scroller") ? (overflow ? 5000 : 90) : 0;
+      },
+    });
+    mocks.redisScanKeysBatch.mockImplementation((_connectionId: string, _db: number, cursor: number) => {
+      if (cursor === 0) return Promise.resolve({ cursor: 7, keys: [keyInfo("a")], total_keys: 200_004 });
+      return Promise.resolve({ cursor: 0, keys: [keyInfo("b")], total_keys: 0 });
+    });
+
+    const host = mountBrowser();
+    await settleThoroughly();
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1);
+
+    overflow = false;
+    host.querySelector(".redis-key-scroller")?.dispatchEvent(new Event("resize"));
+    await settleThoroughly();
+
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(2);
+  });
 });
 
 // Use the real production default page size (not an artificial single-call
@@ -404,15 +429,18 @@ describe("RedisKeyBrowser infinite scroll auto-continue (issue #6022)", () => {
 const PRODUCTION_PAGE_SIZE = 1000;
 // Mirrors the constants in RedisKeyBrowser.vue: `iterations` per backend
 // call is capped at 8, and the automatic-fill operation gets a total budget
-// of 50 SCAN iterations. Exhausting that budget always takes exactly
-// ceil(50 / 8) = 7 backend calls, regardless of how those calls are split
-// across automatic pages (a call that finds a key returns after consuming
-// only its own 8-iteration slice; a call that finds nothing keeps consuming
-// 8-iteration slices internally until the whole budget is gone) — as long as
-// the cursor never reaches 0 first.
+// of 50 SCAN iterations. Supported page sizes split that budget differently:
+// 200/1,000-row pages need at most 7 backend calls, while 5,000/10,000-row
+// pages can need at most 10. The shared iteration limit remains the invariant.
 const ITERATIONS_PER_CALL = 8;
 const AUTO_LOAD_TOTAL_SCAN_ITERATIONS = 50;
 const AUTO_LOAD_MAX_CALLS = Math.ceil(AUTO_LOAD_TOTAL_SCAN_ITERATIONS / ITERATIONS_PER_CALL);
+const AUTO_LOAD_PAGE_SIZE_CASES = [
+  { pageSize: 200, maxCalls: 7 },
+  { pageSize: 1000, maxCalls: 7 },
+  { pageSize: 5000, maxCalls: 10 },
+  { pageSize: 10000, maxCalls: 10 },
+] as const;
 
 async function settleThoroughly(rounds = 40) {
   for (let i = 0; i < rounds; i++) await settle();
@@ -434,8 +462,9 @@ describe("RedisKeyBrowser automatic continuation request budget (PR #6313 review
     mocks.redisScanPageSize = PRODUCTION_PAGE_SIZE;
   });
 
-  it("stops after a bounded total of backend calls/SCAN iterations when every page comes back empty, at the production page size", async () => {
+  it.each(AUTO_LOAD_PAGE_SIZE_CASES)("stops after at most $maxCalls automatic backend calls for page size $pageSize", async ({ pageSize, maxCalls }) => {
     stubNonOverflowingViewport();
+    mocks.redisScanPageSize = pageSize;
     let call = 0;
     // The tree-vs-empty-state view only mounts the scroller once at least one
     // key has loaded, so seed exactly one key on the first page — every page
@@ -453,7 +482,7 @@ describe("RedisKeyBrowser automatic continuation request budget (PR #6313 review
     // 1 initial page + the automatic-fill operation's total iteration budget,
     // never the ~147-call amplification a page-count-only cap would allow at
     // this page size.
-    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1 + AUTO_LOAD_MAX_CALLS);
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(1 + maxCalls);
     expect(totalIterationsRequested()).toBeLessThanOrEqual(ITERATIONS_PER_CALL + AUTO_LOAD_TOTAL_SCAN_ITERATIONS);
     const callsAtBound = mocks.redisScanKeysBatch.mock.calls.length;
     await settleThoroughly(10);
@@ -525,5 +554,23 @@ describe("RedisKeyBrowser loadMore failure handling (PR #6313 review)", () => {
 
     await settleThoroughly(10);
     expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("charges a failed automatic request to the shared iteration budget", async () => {
+    stubNonOverflowingViewport();
+    mocks.redisScanKeysBatch
+      .mockResolvedValueOnce({ cursor: 7, keys: [keyInfo("a")], total_keys: 200_004 })
+      .mockRejectedValueOnce(new Error("backend unavailable"))
+      .mockImplementation((_connectionId: string, _db: number, cursor: number) => Promise.resolve({ cursor: cursor + 1, keys: [], total_keys: 0 }));
+
+    const host = mountBrowser();
+    await settleThoroughly();
+    expect(mocks.redisScanKeysBatch).toHaveBeenCalledTimes(2);
+
+    host.querySelector(".redis-key-scroller")?.dispatchEvent(new Event("resize"));
+    await settleThoroughly();
+
+    expect(totalIterationsRequested()).toBeLessThanOrEqual(ITERATIONS_PER_CALL + AUTO_LOAD_TOTAL_SCAN_ITERATIONS);
+    expect(mocks.redisScanKeysBatch.mock.calls.length).toBeLessThanOrEqual(1 + AUTO_LOAD_MAX_CALLS);
   });
 });
