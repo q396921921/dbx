@@ -2,6 +2,7 @@ import { test } from "vitest";
 import assert from "node:assert/strict";
 import { createPinia, setActivePinia } from "pinia";
 import { useConnectionStore } from "../../apps/desktop/src/stores/connectionStore.ts";
+import { hasSidebarLayoutEntries } from "../../apps/desktop/src/lib/sidebar/sidebarLayout.ts";
 import type { ConnectionConfig, SidebarLayout, TreeNode } from "../../apps/desktop/src/types/database.ts";
 
 const PASSPHRASE = "round-trip-pass";
@@ -185,9 +186,13 @@ test("re-importing the same dbx export does not duplicate connections", async ()
     await store.initFromDisk();
 
     const first = await store.importConnectionsFromFile(exported, PASSPHRASE);
-    store.applySidebarLayout(first.layout!);
+    assert.equal(first.count, 4);
+    assert.equal(hasSidebarLayoutEntries(first.layout), true);
+    if (hasSidebarLayoutEntries(first.layout)) store.applySidebarLayout(first.layout);
     const second = await store.importConnectionsFromFile(exported, PASSPHRASE);
-    store.applySidebarLayout(second.layout!);
+    assert.equal(second.count, 0);
+    assert.equal(hasSidebarLayoutEntries(second.layout), true);
+    if (hasSidebarLayoutEntries(second.layout)) store.applySidebarLayout(second.layout);
 
     assert.equal(store.connections.length, 4);
     assert.deepEqual(outline(store.treeNodes), ["[Prod]", "Prod/Prod DB 1", "Prod/Prod DB 2", "[Dev]", "Dev/Dev DB 1", "Scratch"]);

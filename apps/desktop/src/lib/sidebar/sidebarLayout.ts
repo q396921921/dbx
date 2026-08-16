@@ -6,6 +6,10 @@ export function emptyLayout(): SidebarLayout {
   return { groups: [], order: [] };
 }
 
+export function hasSidebarLayoutEntries(layout: SidebarLayout | null | undefined): layout is SidebarLayout {
+  return !!layout && (layout.groups.length > 0 || layout.order.length > 0);
+}
+
 function folderPathSegments(path: string | undefined): string[] {
   return (path ?? "").split("/").filter((segment) => segment.length > 0);
 }
