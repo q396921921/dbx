@@ -1638,17 +1638,15 @@ fn builds_postgres_create_table_with_comments_and_index() {
 }
 
 #[test]
-fn preserves_bare_expression_in_postgres_create_index_statement() {
-    // Regression for #6295: an expression index key part (e.g. from pg_get_indexdef) must
-    // stay a bare expression, not get quoted into a literal (and nonexistent) column name.
-    let expression_key_part = "COALESCE(height, '-1'::integer::double precision)";
-    let idx = index("uq_tankong_sta_type_time", &["sta_id", "data_type", "data_time", expression_key_part]);
+fn quotes_expression_like_new_index_columns_without_provenance() {
+    let expression_like_column = "COALESCE(height, '-1'::integer::double precision)";
+    let idx = index("idx_expression_like_column", &[expression_like_column]);
 
     let result = build_create_table_sql(TableStructureSqlOptions {
-        database_type: Some(DatabaseType::Highgo),
+        database_type: Some(DatabaseType::Kingbase),
         schema: Some("public".to_string()),
         table_name: "tankong_data".to_string(),
-        columns: vec![column("sta_id")],
+        columns: vec![column(expression_like_column)],
         indexes: vec![idx],
         foreign_keys: Vec::new(),
         triggers: Vec::new(),
@@ -1657,17 +1655,7 @@ fn preserves_bare_expression_in_postgres_create_index_statement() {
     });
 
     assert_eq!(result.warnings, Vec::<String>::new());
-    let create_index = result
-        .statements
-        .iter()
-        .find(|statement| statement.starts_with("CREATE INDEX"))
-        .expect("expected a CREATE INDEX statement");
-    assert_eq!(
-        create_index,
-        &format!(
-            "CREATE INDEX \"uq_tankong_sta_type_time\" ON \"public\".\"tankong_data\" (\"sta_id\", \"data_type\", \"data_time\", {expression_key_part});"
-        )
-    );
+    assert!(result.statements.iter().any(|statement| statement.contains(&format!("(\"{expression_like_column}\")"))));
 }
 
 #[test]

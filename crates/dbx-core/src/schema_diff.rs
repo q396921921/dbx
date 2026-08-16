@@ -3180,22 +3180,12 @@ fn is_postgres_family_ddl(db_type: DatabaseType) -> bool {
     )
 }
 
-// Fallback only: used when the introspection source couldn't tell us whether a key part is a
-// real column or an expression (e.g. dialects bridged through the generic Agent/JDBC driver
-// rather than the native Postgres wire protocol). A quoted column identifier can legitimately
-// contain whitespace, `(`, or `::`, so this heuristic must never override real provenance
-// (`IndexInfo::key_is_expression`) when it's available (#6312 review).
-fn looks_like_index_expression(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.contains('(') || trimmed.contains("::") || trimmed.chars().any(char::is_whitespace)
-}
-
 fn postgres_index_column_sql(column: &str, is_expression: Option<bool>, db_type: DatabaseType) -> String {
     // Expression/functional index key parts (e.g. from pg_get_indexdef) arrive as raw
     // expression text, not a plain column name; quoting the whole expression as an
     // identifier turns it into a literal column reference that doesn't exist (#6295).
     let trimmed = column.trim();
-    let is_expression = is_expression.unwrap_or_else(|| looks_like_index_expression(trimmed));
+    let is_expression = is_expression.unwrap_or(false);
     if is_expression {
         trimmed.to_string()
     } else {
@@ -5387,7 +5377,7 @@ mod tests {
             index_type: None,
             included_columns: None,
             comment: None,
-            key_is_expression: Vec::new(),
+            key_is_expression: vec![false, false, false, true],
         });
 
         let sql = generate_schema_sync_sql(
@@ -5504,6 +5494,57 @@ mod tests {
         let statements = Parser::parse_sql(&PostgreSqlDialect {}, create_index_sql)
             .unwrap_or_else(|error| panic!("generated DDL must be valid PostgreSQL: {error}\nSQL: {create_index_sql}"));
         assert_eq!(statements.len(), 1);
+    }
+
+    #[test]
+    fn quotes_expression_like_column_names_without_agent_provenance() {
+        for db_type in [DatabaseType::Kingbase, DatabaseType::Vastbase] {
+            let new_index = index(IndexInfo {
+                name: "idx_weird_columns".to_string(),
+                columns: vec!["order item".to_string(), "a(b)".to_string(), "a::b".to_string()],
+                key_is_expression: Vec::new(),
+                is_unique: false,
+                is_primary: false,
+                filter: None,
+                index_type: None,
+                included_columns: None,
+                comment: None,
+            });
+
+            let sql = generate_schema_sync_sql(
+                &[TableDiff {
+                    diff_type: "modified".to_string(),
+                    object_type: Some("table".to_string()),
+                    name: "tankong_data".to_string(),
+                    columns: None,
+                    indexes: Some(vec![IndexDiff {
+                        diff_type: "added".to_string(),
+                        name: new_index.name.clone(),
+                        source: Some(new_index),
+                        target: None,
+                        changes: vec![],
+                    }]),
+                    foreign_keys: None,
+                    triggers: None,
+                    ddl: None,
+                    target_ddl: None,
+                    source_table_comment: None,
+                    target_table_comment: None,
+                    sync_sql: None,
+                }],
+                &[],
+                &[],
+                &[],
+                &[],
+                db_type,
+                Some("public"),
+                false,
+                None,
+                &[],
+            );
+
+            assert!(sql.contains("(\"order item\", \"a(b)\", \"a::b\")"), "{db_type:?}: {sql}");
+        }
     }
 
     #[tokio::test]

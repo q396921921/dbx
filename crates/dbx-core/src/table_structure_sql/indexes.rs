@@ -132,16 +132,6 @@ fn mysql_index_column_sql(column: &str) -> String {
     }
 }
 
-// Fallback only: used when the original snapshot has no per-key provenance at all (dialects
-// bridged through the generic Agent/JDBC driver rather than the native Postgres wire protocol,
-// e.g. Firebird/Vertica). A quoted column identifier can legitimately contain whitespace, `(`,
-// or `::`, so this heuristic must never override real provenance when it's available (#6312
-// review).
-fn looks_like_index_expression(value: &str) -> bool {
-    let trimmed = value.trim();
-    trimmed.contains('(') || trimmed.contains("::") || trimmed.chars().any(char::is_whitespace)
-}
-
 fn postgres_index_column_sql(column: &str, is_expression: bool) -> String {
     // Expression/functional index key parts arrive as raw expression text, not a plain
     // column name; quoting the whole expression as an identifier turns it into a literal
@@ -164,13 +154,12 @@ fn postgres_index_column_sql(column: &str, is_expression: bool) -> String {
 /// equal another key's expression text (or two key parts with identical text) can otherwise steal
 /// the wrong original's provenance. Consuming each original slot at most once keeps provenance
 /// tied to its true ordinal position instead of being re-derived by scanning for a text match
-/// (#6312 review). Falls back to the character-based heuristic per key part that has no original
-/// counterpart (a newly added key, or when the original snapshot has no per-key provenance at
-/// all).
+/// (#6312 review). A key without explicit provenance is treated as a real column: the editor can
+/// only add table columns, and guessing from the identifier text breaks valid quoted names.
 fn key_expression_flags(index: &EditableStructureIndex, columns: &[String]) -> Vec<bool> {
     let original = match &index.original {
         Some(original) if !original.key_is_expression.is_empty() => original,
-        _ => return columns.iter().map(|column| looks_like_index_expression(column)).collect(),
+        _ => return vec![false; columns.len()],
     };
     let mut consumed = vec![false; original.columns.len()];
     columns
@@ -186,7 +175,7 @@ fn key_expression_flags(index: &EditableStructureIndex, columns: &[String]) -> V
                     consumed[i] = true;
                     original.key_is_expression.get(i).copied().unwrap_or(false)
                 }
-                None => looks_like_index_expression(column),
+                None => false,
             }
         })
         .collect()
