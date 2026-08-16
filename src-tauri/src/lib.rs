@@ -2218,6 +2218,7 @@ pub fn run() {
             commands::database_export::begin_database_backup_snapshot,
             commands::database_export::export_database_sql,
             commands::database_export::cancel_database_export,
+            commands::database_export::record_database_export_destination,
             commands::table_export::start_table_export,
             commands::table_export::cancel_table_export,
             commands::query_result_export::start_query_result_export,

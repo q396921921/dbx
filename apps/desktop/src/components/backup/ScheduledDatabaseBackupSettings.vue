@@ -208,6 +208,11 @@ async function submitSchedule() {
       databases: allDatabases.value ? [] : [...selectedDatabases.value],
       tablePatterns: draft.value.tableFilterMode === "all" ? [] : normalizeDatabaseBackupTablePatterns(tablePatternsInput.value),
     });
+    // Best-effort: records the destination's filesystem identity as of
+    // configuration time so a mount that disappears before this schedule's
+    // very first run is refused instead of silently recreated elsewhere.
+    // Must not block saving the schedule itself on failure.
+    await api.recordDatabaseExportDestination(draft.value.destinationDirectory).catch(() => {});
     scheduleDialogOpen.value = false;
     toast(t(editingScheduleId.value ? "databaseBackup.scheduleUpdated" : "databaseBackup.scheduleCreated"), 2500);
   } catch (error: any) {

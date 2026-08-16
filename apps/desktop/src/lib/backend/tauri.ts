@@ -4366,6 +4366,10 @@ export async function cancelDatabaseExport(exportId: string): Promise<void> {
   await invoke("cancel_database_export", { exportId });
 }
 
+export async function recordDatabaseExportDestination(directory: string): Promise<void> {
+  await invoke("record_database_export_destination", { directory });
+}
+
 export async function exportQueryResultCsv(filePath: string, columns: string[], rows: readonly (readonly XlsxCellValue[])[]): Promise<void> {
   return invoke("export_query_result_csv", {
     request: {

@@ -2211,6 +2211,10 @@ export async function cancelDatabaseExport(exportId: string): Promise<void> {
   await post("/api/export/database/cancel", { exportId });
 }
 
+export async function recordDatabaseExportDestination(_directory: string): Promise<void> {
+  throw new Error("Scheduled database backups are only available in the desktop app.");
+}
+
 // --- Table Export ---
 
 export async function startTableExport(request: TableExportRequest, onProgress: (progress: TableExportProgress) => void): Promise<TableExportProgress> {

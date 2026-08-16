@@ -53,6 +53,7 @@ vi.mock("@/lib/backend/api", () => ({
   listDatabases: mocks.listDatabases,
   deleteDatabaseBackupFiles: vi.fn(),
   revealPathInFileManager: vi.fn(),
+  recordDatabaseExportDestination: vi.fn(async () => {}),
 }));
 
 const mountedApps: App[] = [];
