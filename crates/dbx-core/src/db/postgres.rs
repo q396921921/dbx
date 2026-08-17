@@ -11,7 +11,7 @@ use rustls::server::ParsedCertificate;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -90,6 +90,21 @@ pub struct PostgresTablePartitionInfo {
     pub foreign_options: Vec<(String, String)>,
 }
 
+/// The state of a partition-local column DEFAULT relative to the parent's
+/// default for the same column (a partition with no entry in the owning
+/// `column_defaults` map simply inherits the parent's default unchanged).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresColumnDefaultState {
+    /// This partition's own default differs from (or has no counterpart in)
+    /// the parent's default — declared via `column WITH OPTIONS DEFAULT ...`.
+    Overridden,
+    /// The parent has a default for this column, but this partition
+    /// explicitly ran `ALTER TABLE ONLY ... ALTER COLUMN ... DROP DEFAULT`
+    /// to remove its own (otherwise auto-inherited-at-creation) copy —
+    /// replayed as a standalone `ALTER TABLE ONLY ... DROP DEFAULT;`.
+    Dropped,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PostgresTablePartitionLocalObjects {
     pub has_primary_key: bool,
@@ -100,11 +115,9 @@ pub struct PostgresTablePartitionLocalObjects {
     /// constraints — CHECK constraints use the legacy inheritance-count
     /// mechanism rather than the conparentid tracking PK/FK use.
     pub check_constraints: BTreeSet<String>,
-    /// Columns whose default expression on this partition differs from (or
-    /// has no counterpart in) the parent's default for the same column —
-    /// PostgreSQL lets a partition override a column's DEFAULT independently
-    /// of its parent via `column WITH OPTIONS DEFAULT ...`.
-    pub column_defaults: BTreeSet<String>,
+    /// Columns with a local override or explicit drop of the parent's
+    /// default; a column absent from this map is purely inherited.
+    pub column_defaults: BTreeMap<String, PostgresColumnDefaultState>,
 }
 
 fn pg_temporal_to_json_value(row: &Row, idx: usize) -> Option<serde_json::Value> {
@@ -2894,12 +2907,459 @@ pub async fn get_table_partition_local_objects(
                 result.indexes.insert(object_name);
             }
             "column_default" if !object_name.is_empty() => {
-                result.column_defaults.insert(object_name);
+                let state = if object_type == "dropped" {
+                    PostgresColumnDefaultState::Dropped
+                } else {
+                    PostgresColumnDefaultState::Overridden
+                };
+                result.column_defaults.insert(object_name, state);
             }
             _ => {}
         }
     }
     Ok(result)
+}
+
+/// One relation in a partition tree, as discovered by
+/// `fetch_postgres_partition_tree`.
+#[derive(Debug, Clone)]
+pub struct PostgresPartitionTreeNode {
+    pub oid: i64,
+    pub schema: String,
+    pub table: String,
+    pub parent_oid: Option<i64>,
+    pub parent_schema: Option<String>,
+    pub parent_table: Option<String>,
+    pub partition_info: PostgresTablePartitionInfo,
+}
+
+fn postgres_partition_tree_sql() -> &'static str {
+    "WITH RECURSIVE tree AS ( \
+       SELECT c.oid::bigint AS oid, n.nspname::text AS schema, c.relname::text AS relname, \
+              NULL::bigint AS parent_oid, NULL::text COLLATE \"C\" AS parent_schema, NULL::text COLLATE \"C\" AS parent_relname, \
+              c.relkind::text AS relkind \
+       FROM pg_catalog.pg_class c \
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+       WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r','p','f') \
+       UNION ALL \
+       SELECT c.oid::bigint, n.nspname::text, c.relname::text, tree.oid, tree.schema, tree.relname, c.relkind::text \
+       FROM pg_catalog.pg_inherits i \
+       JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid AND c.relispartition \
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+       JOIN tree ON tree.oid = i.inhparent \
+     ) \
+     SELECT t.oid, t.schema, t.relname, t.parent_oid, t.parent_schema, t.parent_relname, t.relkind, \
+            pg_catalog.pg_get_expr(c.relpartbound, c.oid, true) AS partition_bound, \
+            CASE WHEN t.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid) ELSE NULL END AS partition_key, \
+            fs.srvname AS foreign_server, \
+            ft.ftoptions AS foreign_options \
+     FROM tree t \
+     JOIN pg_catalog.pg_class c ON c.oid = t.oid \
+     LEFT JOIN pg_catalog.pg_foreign_table ft ON ft.ftrelid = c.oid \
+     LEFT JOIN pg_catalog.pg_foreign_server fs ON fs.oid = ft.ftserver \
+     ORDER BY t.oid"
+}
+
+/// The whole partition tree rooted at (schema, table) — the root itself plus
+/// every descendant partition at any depth — plus each node's partition info,
+/// in a single round trip. Used by `pg_ddl_with_partitions` instead of
+/// recursing per-relation (which reruns the full metadata query chain once
+/// per node and scales the request count linearly with tree size).
+pub async fn fetch_postgres_partition_tree(
+    pool: &Pool,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<PostgresPartitionTreeNode>, String> {
+    let schema = if schema.is_empty() { "public" } else { schema };
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_partition_tree_sql(), &[&schema, &table])
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let oid = row.try_get::<_, i64>(0).ok()?;
+            let node_schema = row.try_get::<_, String>(1).ok()?;
+            let node_table = row.try_get::<_, String>(2).ok()?;
+            let parent_oid = row.try_get::<_, Option<i64>>(3).ok().flatten();
+            let parent_schema = row.try_get::<_, Option<String>>(4).ok().flatten();
+            let parent_table = row.try_get::<_, Option<String>>(5).ok().flatten();
+            let relkind = row.try_get::<_, String>(6).unwrap_or_default();
+            let is_foreign = relkind == "f";
+            let foreign_options = row
+                .try_get::<_, Option<Vec<String>>>(10)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|option| option.split_once('=').map(|(key, value)| (key.to_string(), value.to_string())))
+                .collect();
+            let partition_info = PostgresTablePartitionInfo {
+                is_partition: parent_oid.is_some(),
+                parent_schema: parent_schema.clone().filter(|value| !value.is_empty()),
+                parent_table: parent_table.clone().filter(|value| !value.is_empty()),
+                bound: row.try_get::<_, Option<String>>(7).ok().flatten().filter(|value| !value.is_empty()),
+                key: row.try_get::<_, Option<String>>(8).ok().flatten().filter(|value| !value.is_empty()),
+                is_foreign,
+                foreign_server: row.try_get::<_, Option<String>>(9).ok().flatten().filter(|value| !value.is_empty()),
+                foreign_options,
+            };
+            Some(PostgresPartitionTreeNode {
+                oid,
+                schema: node_schema,
+                table: node_table,
+                parent_oid,
+                parent_schema,
+                parent_table,
+                partition_info,
+            })
+        })
+        .collect())
+}
+
+/// Batched sibling of `get_columns`, fetching all columns for every relation
+/// in `oids` in one round trip instead of one query per relation.
+pub async fn get_columns_for_relations(pool: &Pool, oids: &[i64]) -> Result<HashMap<i64, Vec<ColumnInfo>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_columns_for_relations_sql(), &[&oids])
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, Vec<ColumnInfo>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        result.entry(relid).or_default().push(column_info_from_row_offset(row, 1));
+    }
+    Ok(result)
+}
+
+fn postgres_columns_for_relations_sql() -> &'static str {
+    "SELECT c.oid::bigint AS relid, a.attname AS column_name, \
+             format_type(a.atttypid, a.atttypmod) AS full_type, \
+             COALESCE(ic.is_nullable = 'YES', NOT a.attnotnull) AS is_nullable, \
+             CASE WHEN a.attgenerated <> '' THEN NULL ELSE pg_get_expr(ad.adbin, ad.adrelid) END AS column_default, \
+             EXISTS ( \
+               SELECT 1 FROM pg_constraint co \
+               JOIN pg_index i ON i.indrelid = co.conrelid AND co.conindid = i.indexrelid \
+               WHERE co.conrelid = a.attrelid AND co.contype = 'p' \
+               AND a.attnum = ANY(i.indkey) \
+             ) AS is_pk, \
+             col_description(a.attrelid, a.attnum) AS column_comment, \
+             CASE a.attidentity \
+               WHEN 'd' THEN 'generated by default as identity' || CASE WHEN pseq.seqstart IS NOT NULL THEN format(' (start with %s increment by %s)', pseq.seqstart, pseq.seqincrement) ELSE '' END \
+               WHEN 'a' THEN 'generated always as identity' || CASE WHEN pseq.seqstart IS NOT NULL THEN format(' (start with %s increment by %s)', pseq.seqstart, pseq.seqincrement) ELSE '' END \
+               ELSE CASE a.attgenerated \
+                 WHEN 's' THEN 'generated always as (' || pg_get_expr(ad.adbin, ad.adrelid) || ') stored' \
+                 WHEN 'v' THEN 'generated always as (' || pg_get_expr(ad.adbin, ad.adrelid) || ') virtual' \
+                 ELSE NULL \
+               END \
+             END AS column_extra, \
+             CASE WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
+               THEN ((a.atttypmod - 4) >> 16) & 65535 ELSE NULL END AS numeric_precision, \
+             CASE WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
+               THEN (a.atttypmod - 4) & 65535 ELSE NULL END AS numeric_scale, \
+             CASE WHEN t.typname IN ('varchar', 'bpchar') AND a.atttypmod > 0 \
+               THEN a.atttypmod - 4 ELSE NULL END AS character_maximum_length, \
+             CASE WHEN enum_t.oid IS NULL THEN NULL \
+               ELSE COALESCE((SELECT array_to_json(array_agg(e.enumlabel ORDER BY e.enumsortorder))::text \
+                              FROM pg_enum e WHERE e.enumtypid = enum_t.oid), '[]') END AS enum_values \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             LEFT JOIN pg_type enum_t ON enum_t.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype WHEN t.typtype = 'e' THEN t.oid ELSE NULL END AND enum_t.typtype = 'e' \
+             LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+             LEFT JOIN pg_depend dep ON dep.refobjid = a.attrelid AND dep.refobjsubid = a.attnum AND dep.deptype = 'i' \
+             LEFT JOIN pg_sequence pseq ON pseq.seqrelid = dep.objid \
+             LEFT JOIN information_schema.columns ic \
+               ON ic.table_schema = n.nspname AND ic.table_name = c.relname AND ic.column_name = a.attname \
+             WHERE c.oid = ANY($1::bigint[]) \
+             AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY c.oid, a.attnum"
+}
+
+/// Same field layout as `column_info_from_row`, offset by one leading `relid`
+/// column.
+fn column_info_from_row_offset(row: &Row, offset: usize) -> ColumnInfo {
+    let full_type = row.try_get::<_, Option<String>>(offset + 1).ok().flatten().unwrap_or_default();
+    ColumnInfo {
+        name: pg_row_try_string(row, offset),
+        data_type: full_type,
+        is_nullable: pg_row_try_bool(row, offset + 2).unwrap_or(true),
+        column_default: row.try_get::<_, Option<String>>(offset + 3).ok().flatten(),
+        is_primary_key: pg_row_try_bool(row, offset + 4).unwrap_or(false),
+        extra: row.try_get::<_, Option<String>>(offset + 6).ok().flatten(),
+        comment: row.try_get::<_, Option<String>>(offset + 5).ok().flatten(),
+        numeric_precision: row.try_get::<_, Option<i32>>(offset + 7).ok().flatten(),
+        numeric_scale: row.try_get::<_, Option<i32>>(offset + 8).ok().flatten(),
+        character_maximum_length: row.try_get::<_, Option<i32>>(offset + 9).ok().flatten(),
+        enum_values: parse_enum_values_from_row(row, offset + 10),
+        ..Default::default()
+    }
+}
+
+/// Batched sibling of `list_indexes`.
+pub async fn list_indexes_for_relations(pool: &Pool, oids: &[i64]) -> Result<HashMap<i64, Vec<IndexInfo>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_indexes_for_relations_sql(), &[&oids])
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, Vec<IndexInfo>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let all_cols: Vec<String> = row.try_get::<_, Vec<String>>(2).unwrap_or_default();
+        let nkeyatts = row.try_get::<_, Option<i16>>(7).ok().flatten().unwrap_or(all_cols.len() as i16) as usize;
+        let split_at = nkeyatts.min(all_cols.len());
+        let key_cols = all_cols[..split_at].to_vec();
+        let included = if split_at < all_cols.len() { all_cols[split_at..].to_vec() } else { vec![] };
+        result.entry(relid).or_default().push(IndexInfo {
+            name: pg_row_try_string(row, 1),
+            columns: key_cols,
+            is_unique: pg_row_try_bool(row, 3).unwrap_or(false),
+            is_primary: pg_row_try_bool(row, 4).unwrap_or(false),
+            filter: row.try_get::<_, Option<String>>(5).ok().flatten(),
+            index_type: row.try_get::<_, Option<String>>(6).ok().flatten(),
+            included_columns: if included.is_empty() { None } else { Some(included) },
+            comment: row.try_get::<_, Option<String>>(9).ok().flatten(),
+        });
+    }
+    Ok(result)
+}
+
+fn postgres_indexes_for_relations_sql() -> &'static str {
+    "SELECT t.oid::bigint AS relid, i.relname AS index_name, \
+             array_agg(COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, k.n::int, true)) ORDER BY k.n) AS columns, \
+             ix.indisunique AS is_unique, \
+             ix.indisprimary AS is_primary, \
+             pg_get_expr(ix.indpred, ix.indrelid) AS filter_expr, \
+             am.amname AS index_type, \
+             ix.indnkeyatts AS nkeyatts, \
+             ix.indkey AS indkey, \
+             obj_description(i.oid, 'pg_class') AS index_comment \
+             FROM pg_index ix \
+             JOIN pg_class t ON t.oid = ix.indrelid \
+             JOIN pg_class i ON i.oid = ix.indexrelid \
+             JOIN pg_am am ON am.oid = i.relam \
+             JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS k(attnum, n) ON true \
+             LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum AND k.attnum > 0 \
+             WHERE t.oid = ANY($1::bigint[]) \
+             GROUP BY t.oid, i.relname, i.oid, ix.indisunique, ix.indisprimary, ix.indpred, ix.indrelid, am.amname, ix.indnkeyatts, ix.indkey \
+             ORDER BY t.oid, i.relname"
+}
+
+/// Batched sibling of `list_foreign_keys`, keyed by `(schema, table)` since
+/// this query is `information_schema`-based rather than oid-based.
+pub async fn list_foreign_keys_for_relations(
+    pool: &Pool,
+    relations: &[(String, String)],
+) -> Result<HashMap<(String, String), Vec<ForeignKeyInfo>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let schemas: Vec<&str> = relations.iter().map(|(schema, _)| schema.as_str()).collect();
+    let tables: Vec<&str> = relations.iter().map(|(_, table)| table.as_str()).collect();
+    let rows = postgres_query_cached(&client, postgres_foreign_keys_for_relations_sql(), &[&schemas, &tables])
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut result: HashMap<(String, String), Vec<ForeignKeyInfo>> = HashMap::new();
+    for row in &rows {
+        let key = (pg_row_try_string(row, 0), pg_row_try_string(row, 1));
+        result.entry(key).or_default().push(ForeignKeyInfo {
+            name: pg_row_try_string(row, 2),
+            column: pg_row_try_string(row, 3),
+            ref_schema: Some(pg_row_try_string(row, 4)),
+            ref_table: pg_row_try_string(row, 5),
+            ref_column: pg_row_try_string(row, 6),
+            on_update: postgres_foreign_key_action(pg_row_try_string(row, 7)),
+            on_delete: postgres_foreign_key_action(pg_row_try_string(row, 8)),
+        });
+    }
+    Ok(result)
+}
+
+fn postgres_foreign_keys_for_relations_sql() -> &'static str {
+    "SELECT rel.rel_schema, rel.rel_table, \
+     fk.constraint_name, fk.column_name, \
+     pk.table_schema AS ref_schema, pk.table_name AS ref_table, pk.column_name AS ref_column, \
+     rc.update_rule AS on_update, rc.delete_rule AS on_delete \
+     FROM unnest($1::text[], $2::text[]) AS rel(rel_schema, rel_table) \
+     JOIN information_schema.table_constraints tc \
+       ON tc.table_schema = rel.rel_schema AND tc.table_name = rel.rel_table \
+     JOIN information_schema.key_column_usage fk \
+       ON fk.constraint_name = tc.constraint_name \
+       AND fk.constraint_schema = tc.constraint_schema \
+       AND fk.table_schema = tc.table_schema \
+       AND fk.table_name = tc.table_name \
+     JOIN information_schema.referential_constraints rc \
+       ON rc.constraint_name = tc.constraint_name \
+       AND rc.constraint_schema = tc.constraint_schema \
+     JOIN information_schema.key_column_usage pk \
+       ON pk.constraint_name = rc.unique_constraint_name \
+       AND pk.constraint_schema = rc.unique_constraint_schema \
+       AND pk.ordinal_position = fk.position_in_unique_constraint \
+     WHERE tc.constraint_type = 'FOREIGN KEY' \
+     ORDER BY rel.rel_schema, rel.rel_table, fk.constraint_name, fk.ordinal_position"
+}
+
+/// Batched sibling of `get_table_comment`.
+pub async fn get_table_comments_for_relations(
+    pool: &Pool,
+    oids: &[i64],
+) -> Result<HashMap<i64, Option<String>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(
+        &client,
+        "SELECT c.oid::bigint AS relid, obj_description(c.oid) AS table_comment \
+         FROM pg_catalog.pg_class c WHERE c.oid = ANY($1::bigint[])",
+        &[&oids],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, Option<String>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let comment = row.try_get::<_, Option<String>>(1).ok().flatten().filter(|s| !s.is_empty());
+        result.insert(relid, comment);
+    }
+    Ok(result)
+}
+
+/// Batched sibling of `list_trigger_definitions`, with the same pre-13
+/// `tgparentid` capability probe.
+pub async fn list_trigger_definitions_for_relations(
+    pool: &Pool,
+    oids: &[i64],
+) -> Result<HashMap<i64, Vec<String>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let sql = if postgres_trigger_has_tgparentid(&client).await? {
+        postgres_trigger_definitions_for_relations_sql()
+    } else {
+        postgres_trigger_definitions_for_relations_sql_without_tgparentid()
+    };
+    let rows = postgres_query_cached(&client, sql, &[&oids]).await.map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, Vec<String>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let definition = pg_row_try_string(row, 1);
+        if !definition.trim().is_empty() {
+            result.entry(relid).or_default().push(definition);
+        }
+    }
+    Ok(result)
+}
+
+fn postgres_trigger_definitions_for_relations_sql() -> &'static str {
+    "SELECT t.tgrelid::bigint AS relid, pg_catalog.pg_get_triggerdef(t.oid, true) AS trigger_definition \
+     FROM pg_catalog.pg_trigger t \
+     WHERE t.tgrelid = ANY($1::bigint[]) AND NOT t.tgisinternal AND t.tgparentid = 0 \
+     ORDER BY t.tgrelid, t.tgname, t.oid"
+}
+
+fn postgres_trigger_definitions_for_relations_sql_without_tgparentid() -> &'static str {
+    "SELECT t.tgrelid::bigint AS relid, pg_catalog.pg_get_triggerdef(t.oid, true) AS trigger_definition \
+     FROM pg_catalog.pg_trigger t \
+     WHERE t.tgrelid = ANY($1::bigint[]) AND NOT t.tgisinternal \
+     ORDER BY t.tgrelid, t.tgname, t.oid"
+}
+
+/// Batched sibling of `list_check_constraints`.
+pub async fn list_check_constraints_for_relations(
+    pool: &Pool,
+    oids: &[i64],
+) -> Result<HashMap<i64, Vec<(String, String)>>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(
+        &client,
+        "SELECT con.conrelid::bigint AS relid, con.conname, pg_catalog.pg_get_constraintdef(con.oid, true) AS definition \
+         FROM pg_catalog.pg_constraint con \
+         WHERE con.conrelid = ANY($1::bigint[]) AND con.contype = 'c' \
+         ORDER BY con.conrelid, con.conname",
+        &[&oids],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let name = pg_row_try_string(row, 1);
+        let definition = pg_row_try_string(row, 2);
+        if !name.is_empty() && !definition.is_empty() {
+            result.entry(relid).or_default().push((name, definition));
+        }
+    }
+    Ok(result)
+}
+
+/// Batched sibling of `get_table_partition_local_objects`.
+pub async fn get_table_partition_local_objects_for_relations(
+    pool: &Pool,
+    oids: &[i64],
+) -> Result<HashMap<i64, PostgresTablePartitionLocalObjects>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let rows = postgres_query_cached(&client, postgres_table_partition_local_objects_for_relations_sql(), &[&oids])
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut result: HashMap<i64, PostgresTablePartitionLocalObjects> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let object_kind = row.try_get::<_, String>(1).unwrap_or_default();
+        let object_name = row.try_get::<_, String>(2).unwrap_or_default();
+        let object_type = row.try_get::<_, Option<String>>(3).ok().flatten().unwrap_or_default();
+        let entry = result.entry(relid).or_default();
+        match object_kind.as_str() {
+            "constraint" if object_type == "p" => entry.has_primary_key = true,
+            "constraint" if object_type == "f" && !object_name.is_empty() => {
+                entry.foreign_keys.insert(object_name);
+            }
+            "check" if !object_name.is_empty() => {
+                entry.check_constraints.insert(object_name);
+            }
+            "index" if !object_name.is_empty() => {
+                entry.indexes.insert(object_name);
+            }
+            "column_default" if !object_name.is_empty() => {
+                let state = if object_type == "dropped" {
+                    PostgresColumnDefaultState::Dropped
+                } else {
+                    PostgresColumnDefaultState::Overridden
+                };
+                entry.column_defaults.insert(object_name, state);
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
+}
+
+fn postgres_table_partition_local_objects_for_relations_sql() -> &'static str {
+    "SELECT con.conrelid::bigint AS relid, 'constraint'::text AS object_kind, con.conname AS object_name, con.contype::text AS object_type \
+     FROM pg_catalog.pg_constraint con \
+     WHERE con.conrelid = ANY($1::bigint[]) AND con.contype IN ('p','f') \
+       AND COALESCE(NULLIF(pg_catalog.row_to_json(con)->>'conparentid', '')::oid, 0) = 0 \
+     UNION ALL \
+     SELECT con.conrelid::bigint, 'check'::text AS object_kind, con.conname AS object_name, NULL::text AS object_type \
+     FROM pg_catalog.pg_constraint con \
+     WHERE con.conrelid = ANY($1::bigint[]) AND con.contype = 'c' AND con.coninhcount = 0 \
+     UNION ALL \
+     SELECT ix.indrelid::bigint, 'index'::text AS object_kind, idx.relname AS object_name, NULL::text AS object_type \
+     FROM pg_catalog.pg_index ix \
+     JOIN pg_catalog.pg_class idx ON idx.oid = ix.indexrelid \
+     WHERE ix.indrelid = ANY($1::bigint[]) \
+       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid = idx.oid) \
+     UNION ALL \
+     SELECT a.attrelid::bigint, 'column_default'::text AS object_kind, a.attname AS object_name, \
+            CASE WHEN ad.oid IS NOT NULL THEN 'overridden' ELSE 'dropped' END AS object_type \
+     FROM pg_catalog.pg_attribute a \
+     JOIN pg_catalog.pg_inherits i ON i.inhrelid = a.attrelid \
+     JOIN pg_catalog.pg_attribute pa \
+       ON pa.attrelid = i.inhparent AND pa.attname = a.attname AND pa.attnum > 0 AND NOT pa.attisdropped \
+     LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+     LEFT JOIN pg_catalog.pg_attrdef pad ON pad.adrelid = pa.attrelid AND pad.adnum = pa.attnum \
+     WHERE a.attrelid = ANY($1::bigint[]) AND a.attnum > 0 AND NOT a.attisdropped \
+       AND ( \
+         (ad.oid IS NOT NULL AND (pad.oid IS NULL \
+              OR pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) \
+                 IS DISTINCT FROM pg_catalog.pg_get_expr(pad.adbin, pad.adrelid))) \
+         OR (ad.oid IS NULL AND pad.oid IS NOT NULL) \
+       ) \
+     ORDER BY relid, object_kind, object_name"
 }
 
 /// CHECK constraints on a table, as (name, definition) pairs (definition
@@ -2994,19 +3454,23 @@ fn postgres_table_partition_local_objects_sql() -> &'static str {
      WHERE n.nspname = $1 AND c.relname = $2 \
        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits i WHERE i.inhrelid = idx.oid) \
      UNION ALL \
-     SELECT 'column_default'::text AS object_kind, a.attname AS object_name, NULL::text AS object_type \
+     SELECT 'column_default'::text AS object_kind, a.attname AS object_name, \
+            CASE WHEN ad.oid IS NOT NULL THEN 'overridden' ELSE 'dropped' END AS object_type \
      FROM pg_catalog.pg_class c \
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
      JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-     JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
      JOIN pg_catalog.pg_inherits i ON i.inhrelid = c.oid \
      JOIN pg_catalog.pg_attribute pa \
        ON pa.attrelid = i.inhparent AND pa.attname = a.attname AND pa.attnum > 0 AND NOT pa.attisdropped \
+     LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
      LEFT JOIN pg_catalog.pg_attrdef pad ON pad.adrelid = pa.attrelid AND pad.adnum = pa.attnum \
      WHERE n.nspname = $1 AND c.relname = $2 \
-       AND (pad.oid IS NULL \
-            OR pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) \
-               IS DISTINCT FROM pg_catalog.pg_get_expr(pad.adbin, pad.adrelid)) \
+       AND ( \
+         (ad.oid IS NOT NULL AND (pad.oid IS NULL \
+              OR pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) \
+                 IS DISTINCT FROM pg_catalog.pg_get_expr(pad.adbin, pad.adrelid))) \
+         OR (ad.oid IS NULL AND pad.oid IS NOT NULL) \
+       ) \
      ORDER BY object_kind, object_name"
 }
 
@@ -3371,6 +3835,27 @@ fn postgres_proc_has_prokind_sql() -> &'static str {
 async fn postgres_proc_has_prokind(client: &deadpool_postgres::Client) -> Result<bool, String> {
     let row =
         postgres_query_one_cached(client, postgres_proc_has_prokind_sql(), &[]).await.map_err(|e| e.to_string())?;
+    Ok(pg_row_try_bool(&row, 0).unwrap_or(false))
+}
+
+fn postgres_trigger_has_tgparentid_sql() -> &'static str {
+    "SELECT EXISTS ( \
+       SELECT 1 \
+       FROM pg_catalog.pg_attribute \
+       WHERE attrelid = 'pg_catalog.pg_trigger'::regclass \
+         AND attname = 'tgparentid' \
+         AND NOT attisdropped \
+     )"
+}
+
+/// PostgreSQL 13 added `pg_trigger.tgparentid`, tracking a partition's
+/// automatically-cloned copy of its parent's trigger. Servers older than 13
+/// lack the column (and never clone triggers onto partitions in the first
+/// place, so `tgisinternal` alone is sufficient there).
+async fn postgres_trigger_has_tgparentid(client: &deadpool_postgres::Client) -> Result<bool, String> {
+    let row = postgres_query_one_cached(client, postgres_trigger_has_tgparentid_sql(), &[])
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(pg_row_try_bool(&row, 0).unwrap_or(false))
 }
 
@@ -5723,20 +6208,17 @@ pub async fn list_triggers(pool: &Pool, schema: &str, table: &str) -> Result<Vec
 // partition already recreates them — so they must be excluded here, or the
 // partition's own DDL would re-declare (and fail to create, or duplicate) a
 // trigger the parent's DDL already installs. PostgreSQL servers older than 13
-// lack the tgparentid column, so fall back to the pre-13 query on that error;
-// those servers never clone triggers onto partitions, so tgisinternal alone
-// is sufficient there.
+// lack the tgparentid column (probed via postgres_trigger_has_tgparentid), so
+// use the pre-13 query there; those servers never clone triggers onto
+// partitions, so tgisinternal alone is sufficient there.
 pub async fn list_trigger_definitions(pool: &Pool, schema: &str, table: &str) -> Result<Vec<String>, String> {
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    let rows = match postgres_query_cached(&client, postgres_trigger_definitions_sql(), &[&schema, &table]).await {
-        Ok(rows) => rows,
-        Err(error) if postgres_missing_tgparentid_error(&error.to_string()) => {
-            postgres_query_cached(&client, postgres_trigger_definitions_sql_without_tgparentid(), &[&schema, &table])
-                .await
-                .map_err(|e| e.to_string())?
-        }
-        Err(error) => return Err(error.to_string()),
+    let sql = if postgres_trigger_has_tgparentid(&client).await? {
+        postgres_trigger_definitions_sql()
+    } else {
+        postgres_trigger_definitions_sql_without_tgparentid()
     };
+    let rows = postgres_query_cached(&client, sql, &[&schema, &table]).await.map_err(|e| e.to_string())?;
 
     Ok(rows.iter().map(|row| pg_row_try_string(row, 0)).filter(|definition| !definition.trim().is_empty()).collect())
 }
@@ -5757,14 +6239,6 @@ fn postgres_trigger_definitions_sql_without_tgparentid() -> &'static str {
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
      WHERE n.nspname = $1 AND c.relname = $2 AND NOT t.tgisinternal \
      ORDER BY t.tgname, t.oid"
-}
-
-fn postgres_missing_tgparentid_error(err: &str) -> bool {
-    let lower = err.to_ascii_lowercase();
-    lower.contains("does not exist")
-        && (lower.contains("column t.tgparentid")
-            || lower.contains("column \"t\".\"tgparentid\"")
-            || lower.contains("column \"tgparentid\""))
 }
 
 fn postgres_functions_sql(has_proc_prokind: bool) -> &'static str {
@@ -8643,21 +9117,31 @@ mod tests {
         let inherited_child_local_objects = get_table_partition_local_objects(&pool, &schema, "inherited_child")
             .await
             .expect("inherited child local objects");
-        let parent_ddl = crate::schema::pg_ddl(&pool, &schema, "parent").await.expect("parent ddl");
+        let parent_ddl = crate::schema::pg_ddl_with_partitions(&pool, &schema, "parent").await.expect("parent ddl");
         let child_ddl = crate::schema::pg_ddl(&pool, &schema, "child").await.expect("child ddl");
         let default_ddl = crate::schema::pg_ddl(&pool, &schema, "child_default").await.expect("default ddl");
         let subpartition_ddl = crate::schema::pg_ddl(&pool, &schema, "subpartition").await.expect("subpartition ddl");
-        let inherited_parent_ddl =
-            crate::schema::pg_ddl(&pool, &schema, "inherited_parent").await.expect("inherited parent ddl");
+        let inherited_parent_ddl = crate::schema::pg_ddl_with_partitions(&pool, &schema, "inherited_parent")
+            .await
+            .expect("inherited parent ddl");
         let inherited_child_ddl =
             crate::schema::pg_ddl(&pool, &schema, "inherited_child").await.expect("inherited child ddl");
+        // The bare (non-recursive) parent DDL, exactly what database export
+        // and table transfer produce per-relation — used below to give the
+        // single-relation partition ddls (child_ddl, default_ddl,
+        // subpartition_ddl, inherited_child_ddl) a real parent shell to
+        // replay against, so their syntax is actually exercised by
+        // PostgreSQL rather than only checked with string assertions.
+        let bare_parent_ddl = crate::schema::pg_ddl(&pool, &schema, "parent").await.expect("bare parent ddl");
+        let bare_inherited_parent_ddl =
+            crate::schema::pg_ddl(&pool, &schema, "inherited_parent").await.expect("bare inherited parent ddl");
 
         // `parent_ddl`/`inherited_parent_ddl` already embed their full
         // partition subtree (that's the fix under test), so replaying the
         // per-partition ddl strings on top would recreate the same relations
         // twice. Only the two top-level requests need replaying; the
-        // individually-fetched partition ddls above are still asserted on
-        // for shape without being replayed a second time.
+        // individually-fetched partition ddls above are replayed separately
+        // below, on top of a bare (childless) copy of their parent.
         execute_query(&pool, &format!("CREATE SCHEMA {replay_schema_ident}")).await.expect("create replay schema");
         for ddl in [&parent_ddl, &inherited_parent_ddl] {
             client
@@ -8666,10 +9150,30 @@ mod tests {
                 .unwrap_or_else(|error| panic!("replay partition ddl failed: {error:?}; ddl: {ddl}"));
         }
 
+        // Single-relation partition ddls are now a real production code
+        // path (database export/table transfer fetch each partition this
+        // way), so replay them for real too: a fresh schema gets just the
+        // bare parents, then each single-relation partition ddl on top.
+        let bare_schema = format!("{schema}_bare");
+        let bare_schema_ident = pg_quote_ident(&bare_schema);
+        execute_query(&pool, &format!("CREATE SCHEMA {bare_schema_ident}")).await.expect("create bare schema");
+        for ddl in [&bare_parent_ddl, &bare_inherited_parent_ddl] {
+            client
+                .batch_execute(&ddl.replace(&schema, &bare_schema))
+                .await
+                .unwrap_or_else(|error| panic!("replay bare parent ddl failed: {error:?}; ddl: {ddl}"));
+        }
+        for ddl in [&child_ddl, &default_ddl, &subpartition_ddl, &inherited_child_ddl] {
+            client
+                .batch_execute(&ddl.replace(&schema, &bare_schema))
+                .await
+                .unwrap_or_else(|error| panic!("replay single-relation partition ddl failed: {error:?}; ddl: {ddl}"));
+        }
+
         client
             .batch_execute(&format!(
                 "DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE; \
-                 DROP FUNCTION IF EXISTS {trigger_fn}()"
+                 DROP SCHEMA {bare_schema_ident} CASCADE; DROP FUNCTION IF EXISTS {trigger_fn}()"
             ))
             .await
             .expect("drop schemas and trigger function");
@@ -8683,7 +9187,7 @@ mod tests {
         assert!(child_local_objects.indexes.contains("child_payload_idx"));
         assert!(child_local_objects.check_constraints.contains("child_payload_not_blank"));
         assert!(!child_local_objects.check_constraints.contains("parent_id_positive"));
-        assert!(child_local_objects.column_defaults.contains("status"));
+        assert_eq!(child_local_objects.column_defaults.get("status"), Some(&PostgresColumnDefaultState::Overridden));
         assert!(!inherited_child_local_objects.has_primary_key);
         assert!(inherited_child_local_objects.indexes.is_empty());
         assert_eq!(default_info.bound.as_deref(), Some("DEFAULT"));
@@ -8751,7 +9255,7 @@ mod tests {
 
         let foreign_info = get_table_partition_info(&pool, &schema, "foreign_child").await.expect("foreign child info");
         let local_info = get_table_partition_info(&pool, &schema, "local_child").await.expect("local child info");
-        let parent_ddl = crate::schema::pg_ddl(&pool, &schema, "parent").await.expect("parent ddl");
+        let parent_ddl = crate::schema::pg_ddl_with_partitions(&pool, &schema, "parent").await.expect("parent ddl");
         let foreign_ddl = crate::schema::pg_ddl(&pool, &schema, "foreign_child").await.expect("foreign child ddl");
 
         execute_query(&pool, &format!("CREATE SCHEMA {replay_schema_ident}")).await.expect("create replay schema");
@@ -9589,10 +10093,10 @@ mod tests {
     }
 
     #[test]
-    fn detects_postgres_missing_tgparentid_errors() {
-        assert!(postgres_missing_tgparentid_error("ERROR: column t.tgparentid does not exist"));
-        assert!(postgres_missing_tgparentid_error("ERROR: column \"t\".\"tgparentid\" does not exist"));
-        assert!(!postgres_missing_tgparentid_error("ERROR: relation public.tgparentid does not exist"));
+    fn postgres_trigger_has_tgparentid_sql_checks_catalog_attribute() {
+        let sql = postgres_trigger_has_tgparentid_sql();
+        assert!(sql.contains("pg_catalog.pg_trigger"));
+        assert!(sql.contains("attname = 'tgparentid'"));
     }
 
     #[test]
