@@ -2040,7 +2040,7 @@ async function cancelStream() {
     currentGeneration: () => aiGenerationGuard.peek(),
     isGenerationCurrent: (generation) => aiGenerationGuard.isCurrent(generation),
     currentSessionId: () => currentSessionId.value,
-    cancelSession: aiCancelStream,
+    cancelSession: (sessionId) => aiCancelStream(sessionId).then(() => undefined),
     waitForGenerationToClear: () => waitForGenerationToClear(STOP_FORCE_ABANDON_MS),
     flushPending: () => {
       if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
