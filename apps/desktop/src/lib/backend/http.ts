@@ -98,6 +98,7 @@ import type {
   EtcdWatchPollResponse,
   EtcdLeaseListResponse,
   DocumentQueryResult,
+  DynamoDbTableDescription,
   MongoDocumentResult,
   MongoCollectionStatsResult,
   MongoCloneCollectionResult,
@@ -185,6 +186,17 @@ import type {
   NacosConfigUpsert,
   NacosConnectionInfo,
   NacosRNacosConsoleCaptcha,
+  NacosUserQuery,
+  NacosUserList,
+  NacosUserCreate,
+  NacosUserUpdate,
+  NacosRoleQuery,
+  NacosRoleList,
+  NacosRoleBinding,
+  NacosAccessControlSnapshot,
+  NacosAccessOperationRequest,
+  NacosAccessOperationResult,
+  NacosAccessOperationRetry,
   NacosInstanceInfo,
   NacosInstanceRef,
   NacosInstanceRegistration,
@@ -194,6 +206,7 @@ import type {
   NacosDashboardSnapshot,
   NacosNamespaceCreate,
   NacosNamespaceInfo,
+  NacosNamespaceSidebarSnapshot,
   NacosNamespaceUpdate,
   NacosRawRequest,
   NacosRawResponse,
@@ -3162,6 +3175,10 @@ export async function nacosListNamespaces(connectionId: string): Promise<NacosNa
   return post("/api/nacos/namespaces/list", { connectionId });
 }
 
+export async function nacosSidebarSnapshot(connectionId: string): Promise<NacosNamespaceSidebarSnapshot> {
+  return post("/api/nacos/sidebar/snapshot", { connectionId });
+}
+
 export async function nacosCreateNamespace(connectionId: string, req: NacosNamespaceCreate): Promise<void> {
   return post("/api/nacos/namespaces/create", { connectionId, req });
 }
@@ -3301,6 +3318,54 @@ export async function nacosGetRNacosConsoleCaptcha(connectionId: string): Promis
 
 export async function nacosLoginRNacosConsole(connectionId: string, captcha?: string): Promise<void> {
   return post("/api/nacos/rnacos-console/login", { connectionId, captcha });
+}
+
+export async function nacosListUsers(connectionId: string, query: NacosUserQuery): Promise<NacosUserList> {
+  return post("/api/nacos/users/list", { connectionId, query });
+}
+
+export async function nacosCreateUser(connectionId: string, req: NacosUserCreate): Promise<void> {
+  return post("/api/nacos/users/create", { connectionId, req });
+}
+
+export async function nacosUpdateUser(connectionId: string, req: NacosUserUpdate): Promise<void> {
+  return post("/api/nacos/users/update", { connectionId, req });
+}
+
+export async function nacosDeleteUser(connectionId: string, username: string): Promise<void> {
+  return post("/api/nacos/users/delete", { connectionId, username });
+}
+
+export async function nacosListRoleBindings(connectionId: string, query: NacosRoleQuery): Promise<NacosRoleList> {
+  return post("/api/nacos/roles/list", { connectionId, query });
+}
+
+export async function nacosAssignRole(connectionId: string, binding: NacosRoleBinding): Promise<void> {
+  return post("/api/nacos/roles/assign", { connectionId, binding });
+}
+
+export async function nacosRemoveRole(connectionId: string, binding: NacosRoleBinding): Promise<void> {
+  return post("/api/nacos/roles/remove", { connectionId, binding });
+}
+
+export async function nacosAccessSnapshot(connectionId: string): Promise<NacosAccessControlSnapshot> {
+  return post("/api/nacos/access/snapshot", { connectionId });
+}
+
+export async function nacosStartAccessOperation(connectionId: string, req: NacosAccessOperationRequest): Promise<NacosAccessOperationResult> {
+  return post("/api/nacos/access/operations/start", { connectionId, req });
+}
+
+export async function nacosGetAccessOperation(connectionId: string, operationId: string): Promise<NacosAccessOperationResult> {
+  return post("/api/nacos/access/operations/get", { connectionId, operationId });
+}
+
+export async function nacosRetryAccessOperation(connectionId: string, retry: NacosAccessOperationRetry): Promise<NacosAccessOperationResult> {
+  return post("/api/nacos/access/operations/retry", { connectionId, retry });
+}
+
+export async function nacosUndoAccessOperation(connectionId: string, operationId: string): Promise<NacosAccessOperationResult> {
+  return post("/api/nacos/access/operations/undo", { connectionId, operationId });
 }
 
 export async function nacosListServices(connectionId: string, query: NacosServiceQuery): Promise<NacosServiceList> {
@@ -3497,7 +3562,7 @@ export async function mongoFindOne(connectionId: string, database: string, colle
   });
 }
 
-export async function documentFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, collation?: string, executionId?: string): Promise<DocumentQueryResult> {
+export async function documentFindDocuments(connectionId: string, database: string, collection: string, skip: number, limit: number, filter?: string, projection?: string, sort?: string, collation?: string, executionId?: string, cursor?: string): Promise<DocumentQueryResult> {
   return post("/api/document-store/find-documents", {
     connectionId,
     database,
@@ -3508,8 +3573,22 @@ export async function documentFindDocuments(connectionId: string, database: stri
     projection,
     sort,
     collation,
+    cursor,
     executionId,
   });
+}
+
+export async function documentCountDocuments(connectionId: string, collection: string, filter?: string, executionId?: string): Promise<number> {
+  return post("/api/document-store/count-documents", {
+    connectionId,
+    collection,
+    filter,
+    executionId,
+  });
+}
+
+export async function dynamodbDescribeTable(connectionId: string, table: string): Promise<DynamoDbTableDescription> {
+  return post("/api/document-store/dynamodb-describe-table", { connectionId, table });
 }
 
 export async function elasticsearchCountDocuments(connectionId: string, index: string, filter?: string, executionId?: string): Promise<number> {

@@ -20,11 +20,14 @@ const leafTypes: Set<TreeNodeType> = new Set([
   "etcd-root",
   "etcd-dashboard",
   "etcd-access-control",
+  "nacos-namespace",
+  "nacos-access-control",
   "zookeeper-root",
   "consul-root",
   "consul-overview",
   "mongo-gridfs",
   "mongo-bucket",
+  "dynamodb-table",
   "vector-collection",
   "elasticsearch-index",
   "user-admin",
@@ -36,7 +39,7 @@ const leafTypes: Set<TreeNodeType> = new Set([
   "extension",
 ]);
 
-const fullWidthLabelTypes: Set<TreeNodeType> = new Set(["table", "view", "materialized_view", "mongo-collection", "mongo-bucket", "vector-collection", "elasticsearch-index"]);
+const fullWidthLabelTypes: Set<TreeNodeType> = new Set(["table", "view", "materialized_view", "mongo-collection", "mongo-bucket", "dynamodb-table", "vector-collection", "elasticsearch-index"]);
 
 const emptyContainerTypes: Set<TreeNodeType> = new Set(["saved-sql-root", "saved-sql-folder", "type"]);
 
@@ -56,12 +59,13 @@ const pinnableTypes: Set<TreeNodeType> = new Set([
   "mongo-gridfs",
   "mongo-bucket",
   "mongo-collection",
+  "dynamodb-table",
   "vector-collection",
   "elasticsearch-index",
   "nacos-namespace",
 ]);
 
-const commentTypes: Set<TreeNodeType> = new Set(["connection", "schema", "table", "view", "materialized_view", "column", "mongo-collection", "vector-collection", "elasticsearch-index"]);
+const commentTypes: Set<TreeNodeType> = new Set(["connection", "schema", "table", "view", "materialized_view", "column", "mongo-collection", "dynamodb-table", "vector-collection", "elasticsearch-index"]);
 
 export const SIDEBAR_INDENT_DEFAULT_PX = 16;
 
