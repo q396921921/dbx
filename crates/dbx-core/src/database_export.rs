@@ -1640,15 +1640,19 @@ fn export_destination_state_key(dir: &std::path::Path) -> String {
 /// an eager record here, a destination whose mount disappears before its
 /// very first run is indistinguishable from a brand-new local folder to
 /// `ensure_export_destination_dir` (both have no recorded state) and gets
-/// silently recreated on the wrong filesystem. Directories that don't exist
-/// yet at configuration time are skipped -- those are genuinely new local
-/// folders and remain safe to auto-create on first run. See #6327.
+/// silently recreated on the wrong filesystem. The schedule editor only
+/// accepts directories selected from the filesystem, so a missing path here
+/// means the destination vanished before its identity could be recorded and
+/// the schedule must not be saved. See #6327.
 pub async fn record_export_destination_identity(
     state: &crate::connection::AppState,
     dir: &std::path::Path,
 ) -> Result<(), String> {
     if !dir.is_dir() {
-        return Ok(());
+        return Err(format!(
+            "Backup directory {} does not exist or is not a directory. Select an existing destination before saving the schedule.",
+            dir.display()
+        ));
     }
     save_export_destination_dir_device_id(state, dir).await
 }
@@ -1725,11 +1729,11 @@ async fn ensure_export_destination_dir(
 
 /// Whether a destination's identity, checked once via [`ensure_export_destination_dir`]
 /// and then again against the file dbx actually opened, indicates the mount
-/// changed in between. `None` on either side means the platform (or that
-/// particular check) could not determine a device identity, in which case
-/// there is nothing to compare and the write is allowed to proceed.
+/// changed in between. An unknown expected identity has nothing to compare,
+/// but once an expected identity is known, failing to identify the opened
+/// handle must fail closed rather than allowing an unverified write.
 fn export_destination_identity_mismatch(expected: Option<u64>, actual: Option<u64>) -> bool {
-    matches!((expected, actual), (Some(expected), Some(actual)) if expected != actual)
+    expected.is_some_and(|expected| actual != Some(expected))
 }
 
 #[cfg(unix)]
@@ -4222,24 +4226,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn record_export_destination_identity_skips_a_directory_that_does_not_exist_yet() {
+    async fn record_export_destination_identity_rejects_a_directory_that_disappeared_before_save() {
         let scratch = std::env::temp_dir().join(format!("dbx-export-dest-eager-new-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&scratch).unwrap();
         let state = test_app_state(&scratch).await;
 
-        // A schedule configured against a local folder that has not been
-        // created yet must remain safe to auto-create on first run, exactly
-        // like the existing lazy-recording path.
+        // The schedule editor only accepts an existing directory. If that
+        // directory disappears before the save request reaches the backend,
+        // the schedule must not be persisted without a recorded identity.
         let destination = scratch.join("backups").join("mydb");
         assert!(!destination.exists());
-        record_export_destination_identity(&state, &destination)
+        let error = record_export_destination_identity(&state, &destination)
             .await
-            .expect("recording a not-yet-existing destination is a no-op");
+            .expect_err("a missing scheduled destination must be rejected");
 
-        ensure_export_destination_dir(&state, &destination)
-            .await
-            .expect("first-time local directory should still be created");
-        assert!(destination.is_dir());
+        assert!(error.contains("does not exist or is not a directory"));
+        assert!(!destination.exists());
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -4260,8 +4262,8 @@ mod tests {
             "an unknown expected device has nothing to compare against"
         );
         assert!(
-            !export_destination_identity_mismatch(Some(1), None),
-            "an unknown actual device has nothing to compare against"
+            export_destination_identity_mismatch(Some(1), None),
+            "an opened file with unknown identity must not bypass a known expected device"
         );
         assert!(!export_destination_identity_mismatch(None, None));
     }
