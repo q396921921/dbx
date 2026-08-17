@@ -12,17 +12,10 @@ import { describe, expect, it } from "vitest";
 // whatever conversation is active by the time they run — even if the backend cancel
 // RPC itself is a no-op because the request hadn't registered a session id yet.
 //
-// (b) is what `AiGenerationGuard` (lib/ai/aiGenerationGuard.ts) exists for; its own
-// spec (lib/__tests__/ai/aiGenerationGuard.spec.ts) exercises the two races requested
-// in review with real async ordering ("cancel before stream registration" and "cancel
-// then immediately send a new request, old one resolves later"). This file instead
-// pins that AiAssistant.vue actually *wires* the guard at every point that touches
-// shared state, following this repo's established pattern for wiring checks on this
-// component (see AiAssistant.messageCopy.spec.ts): assert against the component's own
-// source text rather than mounting it, since AiAssistant.vue pulls in a large number
-// of stores/composables. A real end-to-end browser repro (stub HTTP server simulating
-// a stalled AI provider stream + real dbx-web backend + real UI) was used to confirm
-// the underlying before/after runtime behavior.
+// (b) is what `AiGenerationGuard` (lib/ai/aiGenerationGuard.ts) exists for. Its own
+// spec and aiConversationLifecycle.spec.ts exercise the async ordering directly;
+// this file pins that AiAssistant.vue wires those tested lifecycle helpers into the
+// component paths that own the shared state.
 const source = readFileSync(new URL("../AiAssistant.vue", import.meta.url), "utf8");
 
 function bodyOf(fnSignature: string): string {
@@ -65,85 +58,22 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     expect(body.indexOf("if (isGenerating.value) abandonInFlightRequest();")).toBeLessThan(body.indexOf("conversationId.value = conv.id;"));
   });
 
-  it("cancelStream() forces the abandon path if the backend never actually stops the stream", () => {
-    // Reviewed on PR #6332: the backend cancel RPC only *requests* cancellation
-    // (a tokio::sync::Notify) — a hung MCP tool call isn't listening for it while
-    // executing (agent_loop.rs), so send()'s own finally may never run on its own.
-    // cancelStream() must not invalidate immediately (the common case — backend
-    // actually stops promptly — should still go through send()'s normal
-    // persistConversation()/agent-step-building cleanup), but it must force the
-    // same abandon path clear/switch use if the backend hasn't actually stopped
-    // the stream within a bounded grace period, so Stop can never leave
-    // isGenerating stranded the way issue #5941 originally reported.
+  it("cancelStream() delegates live state readers to the tested stop lifecycle", () => {
     const body = bodyOf("async function cancelStream()");
-    const rpcIdx = body.indexOf("await aiCancelStream(");
-    const waitIdx = body.indexOf("await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);");
-    const abandonIdx = body.indexOf("abandonInFlightRequest(sessionId);");
-    expect(rpcIdx).toBeGreaterThanOrEqual(0);
-    expect(waitIdx).toBeGreaterThan(rpcIdx);
-    expect(abandonIdx).toBeGreaterThan(waitIdx);
-    // Must re-check the generation, not currentSessionId — a newer send() may have
-    // legitimately started (cancel, then immediately send again) during the grace
-    // period and must not be torn down by this stale Stop click. See the
-    // "does not no-op before a session id is registered" test below for why
-    // currentSessionId specifically can't be used for this check.
-    expect(body).toContain("isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)");
+    expect(body).toContain("await stopAiGenerationWithFallback({");
+    expect(body).toContain("currentGeneration: () => aiGenerationGuard.peek()");
+    expect(body).toContain("currentAssistantMessageIndex: () => currentAssistantMessageIndex");
+    expect(body).toContain("abandon: (sessionId) => abandonInFlightRequest(sessionId)");
+    expect(body).toContain("persistConversation,");
   });
 
-  it("cancelStream() does not no-op just because a session id hasn't been registered yet", () => {
-    // Reviewed on PR #6332: send() sets currentSessionId partway through, after a
-    // real await (ensureLoaded()). Gating the whole function on `sessionId`
-    // truthiness meant clicking Stop inside that window did nothing at all — no
-    // RPC, no wait, no abandon — leaving isGenerating stranded exactly like issue
-    // #5941, just via the Stop button instead of clear/switch.
-    const body = bodyOf("async function cancelStream()");
-    expect(body).not.toContain("if (!sessionId) return;");
-    const guardIdx = body.indexOf("if (!isGenerating.value) return;");
-    const peekIdx = body.indexOf("aiGenerationGuard.peek();");
-    const sessionReadIdx = body.indexOf("const sessionId = currentSessionId.value;");
-    expect(guardIdx).toBeGreaterThanOrEqual(0);
-    expect(peekIdx).toBeGreaterThan(guardIdx);
-    // The generation must be snapshotted independent of whether a session id
-    // exists yet, so peek() has to run whether or not sessionId is set.
-    expect(peekIdx).toBeLessThan(sessionReadIdx);
-    // The RPC itself still only fires when there's an actual session to cancel.
-    expect(body).toContain("if (sessionId) {\n    await aiCancelStream(sessionId).catch(() => {});\n  }");
-  });
-
-  it("cancelStream()'s forced-abandon path finalizes the stuck placeholder message instead of leaving it forever", () => {
-    // Reviewed on PR #6332: abandonInFlightRequest() doesn't touch messages.value
-    // (it's also used by clear/switch/unmount, where the array is discarded/
-    // replaced right after). Left alone, the empty "thinking" assistant
-    // placeholder send() pushed would stay stuck in the still-current conversation
-    // forever — later persisted with empty content and fed to the LLM as empty
-    // history.
-    const body = bodyOf("async function cancelStream()");
-    const waitIdx = body.indexOf("await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);");
-    const forcedBlockStart = body.indexOf("if (isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)) {", waitIdx);
-    const abandonIdx = body.indexOf("abandonInFlightRequest(sessionId);", forcedBlockStart);
-    expect(forcedBlockStart).toBeGreaterThan(waitIdx);
-    expect(abandonIdx).toBeGreaterThan(forcedBlockStart);
-    const forcedBlock = body.slice(forcedBlockStart, abandonIdx);
-    expect(forcedBlock).toContain("flushAssistantDeltas();");
-    expect(forcedBlock).toContain("messages.value[assistantIdx]");
-    expect(forcedBlock).toContain("msg.isThinking = false;");
-    expect(forcedBlock).toContain('msg.content = t("ai.requestCancelled");');
-    // Must not clobber content the assistant had already streamed before hanging.
-    expect(forcedBlock).toContain("if (!msg.content)");
-  });
-
-  it("cancelStream() forwards the already-cancelled session id so abandonInFlightRequest() doesn't double-RPC", () => {
-    // Reviewed on PR #6332 (efficiency): cancelStream() already awaits
-    // aiCancelStream(sessionId) itself; abandonInFlightRequest() re-firing it for
-    // the same session on the forced-abandon path is a redundant RPC.
-    const body = bodyOf("async function cancelStream()");
-    expect(body).toContain("abandonInFlightRequest(sessionId);");
-    expect(body).not.toContain("abandonInFlightRequest();");
-  });
-
-  it("startNewChat() and deleteConversation() funnel through the guarded clearMessages()", () => {
+  it("startNewChat() clears through the guarded path and deleteConversation() uses the tested delete lifecycle", () => {
     expect(bodyOf("function startNewChat()")).toContain("clearMessages();");
-    expect(bodyOf("async function deleteConversation(id: string)")).toContain("clearMessages();");
+    const deleteBody = bodyOf("async function deleteConversation(id: string)");
+    expect(deleteBody).toContain("await deleteConversationWithCancellation({");
+    expect(deleteBody).toContain("abandon: () => abandonInFlightRequest()");
+    expect(deleteBody).toContain("deletePersisted: () => deleteAiConversation(id).catch(() => {})");
+    expect(deleteBody).toContain("if (conversationId.value === id) clearMessages();");
   });
 
   it("send() claims a generation id right after setting isGenerating and re-checks it after the first await", () => {

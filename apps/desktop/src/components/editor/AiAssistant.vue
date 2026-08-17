@@ -57,6 +57,7 @@ import { useToast } from "@/composables/useToast";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
 import { buildAiContext, resolveAiDatabaseTarget, resolveAiNamespaceSelection, resolveDefaultAiSchema, runAgentStream, isVectorDbType, isValidActionForMode, defaultActionForMode, type AiAction, type AiAssistantMode, type AiSqlFileContext, type CustomPromptContext } from "@/lib/ai/ai";
 import { isAiConfigModelCandidate } from "@/lib/ai/aiConfigCandidates";
+import { deleteConversationWithCancellation, stopAiGenerationWithFallback } from "@/lib/ai/aiConversationLifecycle";
 import { AiGenerationGuard } from "@/lib/ai/aiGenerationGuard";
 import { isTauriRuntime } from "@/lib/backend/tauriRuntime";
 import { addConfiguredAiModel, aiModelOptions } from "@/lib/ai/aiConfigList";
@@ -2034,64 +2035,23 @@ function waitForGenerationToClear(timeoutMs: number): Promise<void> {
 }
 
 async function cancelStream() {
-  // Plain "stop generating" (button click): the SAME conversation stays
-  // current, so send()'s own finally — once the backend actually acknowledges
-  // the cancellation — still owns cleanup normally (write final content,
-  // build agent steps, persistConversation()).
-  if (!isGenerating.value) return;
-  // Snapshot the generation (not currentSessionId) this click is stopping.
-  // Reviewed on PR #6332: gating everything below on `sessionId` truthiness
-  // used to make this whole function a no-op if Stop was clicked before
-  // send() reached `currentSessionId.value = sessionId` — which sits after a
-  // real await, so it's a reachable window, not a theoretical one. That left
-  // isGenerating stranded exactly like issue #5941's original bug, just via
-  // the Stop button instead of clear/switch. The generation id is set before
-  // send()'s first await, so peek()/isCurrent() work regardless of whether a
-  // session has been registered with the backend yet.
-  const myGeneration = aiGenerationGuard.peek();
-  const assistantIdx = currentAssistantMessageIndex;
-  const sessionId = currentSessionId.value;
-  if (sessionId) {
-    await aiCancelStream(sessionId).catch(() => {});
-  }
-  // The backend cancel RPC only *requests* cancellation (a tokio::sync::Notify
-  // that a hung tool call isn't listening for while it's actually executing —
-  // see crates/dbx-core/src/agent_loop.rs), so a genuinely stuck request
-  // (issue #5941's original repro: a hung MCP tool call) may never let
-  // send()'s finally run on its own. Give the backend a bounded grace period
-  // to stop normally; if it hasn't by then, force the same abandon path
-  // clear/switch uses, so Stop — the most visible "unstick" affordance in the
-  // UI — can never leave isGenerating stranded, even though the backend may
-  // keep running the hung call in the background. (The real fix is backend
-  // -side: agent_loop.rs's tool-execution await isn't raced against the
-  // cancellation notify the way ai_cli_agent.rs's subprocess path already is.)
-  await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);
-  // Re-check the generation, not just isGenerating: a newer send() may have
-  // legitimately started (and be currently generating) during the grace
-  // period if the user cancelled and immediately sent a new message — that
-  // request must not be torn down by this stale Stop click.
-  if (isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)) {
-    // The backend never acked in time. Flush and finalize the placeholder
-    // assistant message BEFORE abandoning: abandonInFlightRequest() only
-    // resets shared request state, it has no notion of "this generation's
-    // message" (it's also used by clear/switch/unmount, where messages.value
-    // is discarded/replaced right after, so there's nothing to finalize
-    // there). Without this, the message send() pushed stays permanently
-    // stuck mid-"thinking" in the still-current conversation — persisted as
-    // empty content on the next turn and fed to the LLM as empty history.
-    if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
-    flushAssistantDeltas();
-    const msg = messages.value[assistantIdx];
-    if (msg) {
-      msg.isThinking = false;
-      if (!msg.content) msg.content = t("ai.requestCancelled");
-    }
-    // Pass the session id already RPC'd above (possibly "") so
-    // abandonInFlightRequest() doesn't fire a redundant second cancel RPC for
-    // the same session — but still fires one if send() only registered a
-    // session AFTER this click (sessionId was "" here but isn't anymore).
-    abandonInFlightRequest(sessionId);
-  }
+  await stopAiGenerationWithFallback({
+    isGenerating: () => isGenerating.value,
+    currentGeneration: () => aiGenerationGuard.peek(),
+    isGenerationCurrent: (generation) => aiGenerationGuard.isCurrent(generation),
+    currentSessionId: () => currentSessionId.value,
+    cancelSession: aiCancelStream,
+    waitForGenerationToClear: () => waitForGenerationToClear(STOP_FORCE_ABANDON_MS),
+    flushPending: () => {
+      if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
+      flushAssistantDeltas();
+    },
+    currentAssistantMessageIndex: () => currentAssistantMessageIndex,
+    messageAt: (index) => messages.value[index],
+    cancelledMessage: () => t("ai.requestCancelled"),
+    abandon: (sessionId) => abandonInFlightRequest(sessionId),
+    persistConversation,
+  });
 }
 
 // Neutralizes all per-request transient state that must never survive into a
@@ -2291,9 +2251,17 @@ function selectConversation(conv: AiConversation) {
 }
 
 async function deleteConversation(id: string) {
-  await deleteAiConversation(id).catch(() => {});
-  conversations.value = conversations.value.filter((c) => c.id !== id);
-  if (conversationId.value === id) clearMessages();
+  await deleteConversationWithCancellation({
+    id,
+    currentConversationId: () => conversationId.value,
+    isGenerating: () => isGenerating.value,
+    abandon: () => abandonInFlightRequest(),
+    deletePersisted: () => deleteAiConversation(id).catch(() => {}),
+    afterDelete: () => {
+      conversations.value = conversations.value.filter((c) => c.id !== id);
+      if (conversationId.value === id) clearMessages();
+    },
+  });
 }
 
 function startNewChat() {
