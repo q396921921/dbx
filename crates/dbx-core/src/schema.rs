@@ -7,7 +7,7 @@ use crate::db;
 use crate::models::connection::{ConnectionConfig, DatabaseType};
 use crate::query::{agent_execute_query_params, should_discard_pool_after_error, QueryExecutionOptions};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -6917,6 +6917,14 @@ fn pg_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
+/// Whether a `pg_get_constraintdef` result ends in the ` NOT VALID` suffix
+/// Postgres appends for an unvalidated constraint. That suffix is only legal
+/// after `ALTER TABLE ADD CONSTRAINT`, never inside a `CREATE TABLE` column
+/// list.
+fn is_not_valid_constraintdef(definition: &str) -> bool {
+    definition.to_ascii_uppercase().trim_end().ends_with("NOT VALID")
+}
+
 fn sqlserver_ident(value: &str) -> String {
     format!("[{}]", value.replace(']', "]]"))
 }
@@ -9591,11 +9599,21 @@ pub async fn pg_ddl_with_partitions(
     table: &str,
 ) -> Result<String, String> {
     let tree = db::postgres::fetch_postgres_partition_tree(pool, schema, table).await?;
-    let Some(root) = tree.iter().find(|node| node.parent_oid.is_none()) else {
-        return Ok(String::new());
+    let tree_oids: HashSet<i64> = tree.iter().map(|node| node.oid).collect();
+    // The requested relation is the tree root: it's the only node whose parent
+    // (if it has one at all — it may itself be a partition of a table outside
+    // this tree) isn't also a node we fetched.
+    let Some(root) =
+        tree.iter().find(|node| !node.parent_oid.is_some_and(|parent_oid| tree_oids.contains(&parent_oid)))
+    else {
+        return Err(format!(
+            "relation \"{schema}\".\"{table}\" was not found or is not a table/partition/foreign table"
+        ));
     };
 
     let oids: Vec<i64> = tree.iter().map(|node| node.oid).collect();
+    let relations: Vec<(i64, String, String)> =
+        tree.iter().map(|node| (node.oid, node.schema.clone(), node.table.clone())).collect();
     let relation_pairs: Vec<(String, String)> =
         tree.iter().map(|node| (node.schema.clone(), node.table.clone())).collect();
 
@@ -9608,8 +9626,8 @@ pub async fn pg_ddl_with_partitions(
         checks_by_oid,
         local_objects_by_oid,
     ) = tokio::try_join!(
-        db::postgres::get_columns_for_relations(pool, &oids),
-        db::postgres::list_indexes_for_relations(pool, &oids),
+        db::postgres::get_columns_for_relations(pool, &relations),
+        db::postgres::list_indexes_for_relations(pool, &relations),
         db::postgres::list_foreign_keys_for_relations(pool, &relation_pairs),
         db::postgres::get_table_comments_for_relations(pool, &oids),
         db::postgres::list_trigger_definitions_for_relations(pool, &oids),
@@ -9645,9 +9663,14 @@ pub async fn pg_ddl_with_partitions(
     Ok(ddl)
 }
 
+/// Renders `root` and every descendant reachable through `children_by_parent`.
+/// Iterative (an explicit stack, not function-call recursion) so that a
+/// pathologically deep partition hierarchy can't overflow the stack; `visited`
+/// additionally guards against a corrupted catalog (or non-PostgreSQL fork)
+/// whose `pg_inherits` data forms a cycle, which would otherwise loop forever.
 #[allow(clippy::too_many_arguments)]
 fn render_postgres_partition_tree_node(
-    node: &db::postgres::PostgresPartitionTreeNode,
+    root: &db::postgres::PostgresPartitionTreeNode,
     children_by_parent: &HashMap<i64, Vec<&db::postgres::PostgresPartitionTreeNode>>,
     columns_by_oid: &HashMap<i64, Vec<db::ColumnInfo>>,
     indexes_by_oid: &HashMap<i64, Vec<db::IndexInfo>>,
@@ -9665,46 +9688,45 @@ fn render_postgres_partition_tree_node(
     let empty_checks = Vec::new();
     let empty_local_objects = db::postgres::PostgresTablePartitionLocalObjects::default();
 
-    let columns = columns_by_oid.get(&node.oid).unwrap_or(&empty_columns);
-    let indexes = indexes_by_oid.get(&node.oid).unwrap_or(&empty_indexes);
-    let fkeys = fkeys_by_relation.get(&(node.schema.clone(), node.table.clone())).unwrap_or(&empty_fkeys);
-    let comment = comments_by_oid.get(&node.oid).cloned().flatten();
-    let triggers = triggers_by_oid.get(&node.oid).unwrap_or(&empty_triggers);
-    let checks = checks_by_oid.get(&node.oid).unwrap_or(&empty_checks);
-    let local_objects = local_objects_by_oid.get(&node.oid).unwrap_or(&empty_local_objects);
+    let mut visited: HashSet<i64> = HashSet::new();
+    let mut stack: Vec<&db::postgres::PostgresPartitionTreeNode> = vec![root];
+    while let Some(node) = stack.pop() {
+        if !visited.insert(node.oid) {
+            continue;
+        }
 
-    if !ddl.is_empty() {
-        ddl.push('\n');
-    }
-    ddl.push_str(&append_postgres_trigger_definitions(
-        render_postgres_table_ddl_with_partition_info(
-            &node.schema,
-            &node.table,
-            columns,
-            indexes,
-            fkeys,
-            checks,
-            comment.as_deref(),
-            &node.partition_info,
-            local_objects,
-        ),
-        triggers,
-    ));
+        let columns = columns_by_oid.get(&node.oid).unwrap_or(&empty_columns);
+        let indexes = indexes_by_oid.get(&node.oid).unwrap_or(&empty_indexes);
+        let fkeys = fkeys_by_relation.get(&(node.schema.clone(), node.table.clone())).unwrap_or(&empty_fkeys);
+        let comment = comments_by_oid.get(&node.oid).cloned().flatten();
+        let triggers = triggers_by_oid.get(&node.oid).unwrap_or(&empty_triggers);
+        let checks = checks_by_oid.get(&node.oid).unwrap_or(&empty_checks);
+        let local_objects = local_objects_by_oid.get(&node.oid).unwrap_or(&empty_local_objects);
 
-    if let Some(children) = children_by_parent.get(&node.oid) {
-        for child in children {
-            render_postgres_partition_tree_node(
-                child,
-                children_by_parent,
-                columns_by_oid,
-                indexes_by_oid,
-                fkeys_by_relation,
-                comments_by_oid,
-                triggers_by_oid,
-                checks_by_oid,
-                local_objects_by_oid,
-                ddl,
-            );
+        if !ddl.is_empty() {
+            ddl.push('\n');
+        }
+        ddl.push_str(&append_postgres_trigger_definitions(
+            render_postgres_table_ddl_with_partition_info(
+                &node.schema,
+                &node.table,
+                columns,
+                indexes,
+                fkeys,
+                checks,
+                comment.as_deref(),
+                &node.partition_info,
+                local_objects,
+            ),
+            triggers,
+        ));
+
+        if let Some(children) = children_by_parent.get(&node.oid) {
+            // Push in reverse so children are popped (and rendered) in their
+            // original relname-sorted order.
+            for child in children.iter().rev() {
+                stack.push(child);
+            }
         }
     }
 }
@@ -10130,11 +10152,22 @@ fn render_postgres_table_ddl_with_partition_info(
             ref_columns
         ));
     }
+    // `pg_get_constraintdef` appends ` NOT VALID` for an unvalidated CHECK
+    // constraint, but that suffix is only legal after `ALTER TABLE ADD
+    // CONSTRAINT` — it's a syntax error inside a `CREATE TABLE` column list.
+    // Emit those as a separate statement below instead, so the constraint's
+    // unvalidated state round-trips instead of producing invalid DDL.
+    let mut not_valid_check_constraints: Vec<(&str, &str)> = Vec::new();
     for (name, definition) in check_constraints {
         if is_partition && !partition_local_objects.check_constraints.contains(name) {
             continue;
         }
-        definition_lines.push(format!("  CONSTRAINT {} {}", pg_ident(name), definition.trim()));
+        let definition = definition.trim();
+        if is_not_valid_constraintdef(definition) {
+            not_valid_check_constraints.push((name.as_str(), definition));
+            continue;
+        }
+        definition_lines.push(format!("  CONSTRAINT {} {}", pg_ident(name), definition));
     }
     if is_partition {
         // A partition can override a column's default independently of the
@@ -10182,6 +10215,10 @@ fn render_postgres_table_ddl_with_partition_info(
         ddl.push_str(&format!(" PARTITION BY {partition_key}"));
     }
     ddl.push_str(";\n");
+
+    for (name, definition) in &not_valid_check_constraints {
+        ddl.push_str(&format!("\nALTER TABLE {table_name} ADD CONSTRAINT {} {};", pg_ident(name), definition));
+    }
 
     if is_partition {
         // A dropped default has no counterpart in the PARTITION OF column
