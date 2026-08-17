@@ -42,14 +42,14 @@ function bodyOf(fnSignature: string): string {
 
 describe("AI assistant clear/switch cancels an in-flight request (issue #5941, PR #6332)", () => {
   it("abandonInFlightRequest() invalidates the generation guard before/regardless of the backend RPC", () => {
-    const body = bodyOf("function abandonInFlightRequest()");
+    const body = bodyOf("function abandonInFlightRequest(alreadyCancelledSessionId?: string)");
     expect(body).toContain("aiGenerationGuard.invalidate();");
     expect(body).toContain("isGenerating.value = false;");
     expect(body).toContain('currentSessionId.value = "";');
     // Invalidation (and resetting isGenerating/currentSessionId/delta buffers) must
     // happen unconditionally and before the best-effort backend RPC, so a send()
     // that hasn't registered a session id yet is still cut off from shared state.
-    expect(body.indexOf("aiGenerationGuard.invalidate();")).toBeLessThan(body.indexOf("if (sessionId) {"));
+    expect(body.indexOf("aiGenerationGuard.invalidate();")).toBeLessThan(body.indexOf("if (sessionId && sessionId !== alreadyCancelledSessionId) {"));
   });
 
   it("clearMessages() abandons a stuck stream before wiping history", () => {
@@ -78,14 +78,67 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     const body = bodyOf("async function cancelStream()");
     const rpcIdx = body.indexOf("await aiCancelStream(");
     const waitIdx = body.indexOf("await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);");
-    const abandonIdx = body.indexOf("abandonInFlightRequest();");
+    const abandonIdx = body.indexOf("abandonInFlightRequest(sessionId);");
     expect(rpcIdx).toBeGreaterThanOrEqual(0);
     expect(waitIdx).toBeGreaterThan(rpcIdx);
     expect(abandonIdx).toBeGreaterThan(waitIdx);
-    // Must re-check currentSessionId too, not just isGenerating — a newer send()
-    // may have legitimately started (cancel, then immediately send again) during
-    // the grace period and must not be torn down by this stale Stop click.
-    expect(body).toContain("isGenerating.value && currentSessionId.value === sessionId");
+    // Must re-check the generation, not currentSessionId — a newer send() may have
+    // legitimately started (cancel, then immediately send again) during the grace
+    // period and must not be torn down by this stale Stop click. See the
+    // "does not no-op before a session id is registered" test below for why
+    // currentSessionId specifically can't be used for this check.
+    expect(body).toContain("isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)");
+  });
+
+  it("cancelStream() does not no-op just because a session id hasn't been registered yet", () => {
+    // Reviewed on PR #6332: send() sets currentSessionId partway through, after a
+    // real await (ensureLoaded()). Gating the whole function on `sessionId`
+    // truthiness meant clicking Stop inside that window did nothing at all — no
+    // RPC, no wait, no abandon — leaving isGenerating stranded exactly like issue
+    // #5941, just via the Stop button instead of clear/switch.
+    const body = bodyOf("async function cancelStream()");
+    expect(body).not.toContain("if (!sessionId) return;");
+    const guardIdx = body.indexOf("if (!isGenerating.value) return;");
+    const peekIdx = body.indexOf("aiGenerationGuard.peek();");
+    const sessionReadIdx = body.indexOf("const sessionId = currentSessionId.value;");
+    expect(guardIdx).toBeGreaterThanOrEqual(0);
+    expect(peekIdx).toBeGreaterThan(guardIdx);
+    // The generation must be snapshotted independent of whether a session id
+    // exists yet, so peek() has to run whether or not sessionId is set.
+    expect(peekIdx).toBeLessThan(sessionReadIdx);
+    // The RPC itself still only fires when there's an actual session to cancel.
+    expect(body).toContain("if (sessionId) {\n    await aiCancelStream(sessionId).catch(() => {});\n  }");
+  });
+
+  it("cancelStream()'s forced-abandon path finalizes the stuck placeholder message instead of leaving it forever", () => {
+    // Reviewed on PR #6332: abandonInFlightRequest() doesn't touch messages.value
+    // (it's also used by clear/switch/unmount, where the array is discarded/
+    // replaced right after). Left alone, the empty "thinking" assistant
+    // placeholder send() pushed would stay stuck in the still-current conversation
+    // forever — later persisted with empty content and fed to the LLM as empty
+    // history.
+    const body = bodyOf("async function cancelStream()");
+    const waitIdx = body.indexOf("await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);");
+    const forcedBlockStart = body.indexOf("if (isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)) {", waitIdx);
+    const abandonIdx = body.indexOf("abandonInFlightRequest(sessionId);", forcedBlockStart);
+    expect(forcedBlockStart).toBeGreaterThan(waitIdx);
+    expect(abandonIdx).toBeGreaterThan(forcedBlockStart);
+    const forcedBlock = body.slice(forcedBlockStart, abandonIdx);
+    expect(forcedBlock).toContain("flushAssistantDeltas();");
+    expect(forcedBlock).toContain("messages.value[assistantIdx]");
+    expect(forcedBlock).toContain("msg.isThinking = false;");
+    expect(forcedBlock).toContain('msg.content = t("ai.requestCancelled");');
+    // Must not clobber content the assistant had already streamed before hanging.
+    expect(forcedBlock).toContain("if (!msg.content)");
+  });
+
+  it("cancelStream() forwards the already-cancelled session id so abandonInFlightRequest() doesn't double-RPC", () => {
+    // Reviewed on PR #6332 (efficiency): cancelStream() already awaits
+    // aiCancelStream(sessionId) itself; abandonInFlightRequest() re-firing it for
+    // the same session on the forced-abandon path is a redundant RPC.
+    const body = bodyOf("async function cancelStream()");
+    expect(body).toContain("abandonInFlightRequest(sessionId);");
+    expect(body).not.toContain("abandonInFlightRequest();");
   });
 
   it("startNewChat() and deleteConversation() funnel through the guarded clearMessages()", () => {
@@ -188,6 +241,40 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     expect(runIdx).toBeGreaterThan(secondRecheckIdx);
   });
 
+  it("send() tracks the current assistant message index alongside currentSessionId, for cancelStream() to finalize", () => {
+    // cancelStream()'s forced-abandon path needs to know which message in
+    // messages.value belongs to this generation so it can finalize it (see the
+    // "finalizes the stuck placeholder message" test above). Must be set at the
+    // same point currentSessionId is, and cleared alongside it too.
+    const sendBody = bodyOf("async function send()");
+    const pushIdx = sendBody.indexOf('messages.value.push({ role: "assistant"');
+    const assistantIdxIdx = sendBody.indexOf("const assistantIdx = messages.value.length - 1;", pushIdx);
+    const trackIdx = sendBody.indexOf("currentAssistantMessageIndex = assistantIdx;", assistantIdxIdx);
+    const sessionSetIdx = sendBody.indexOf("currentSessionId.value = sessionId;", trackIdx);
+    expect(pushIdx).toBeGreaterThanOrEqual(0);
+    expect(assistantIdxIdx).toBeGreaterThan(pushIdx);
+    expect(trackIdx).toBeGreaterThan(assistantIdxIdx);
+    expect(sessionSetIdx).toBeGreaterThan(trackIdx);
+
+    const start = sendBody.indexOf("} finally {");
+    const finallyBody = sendBody.slice(start);
+    const sessionResetIdx = finallyBody.indexOf('currentSessionId.value = "";');
+    const indexResetIdx = finallyBody.indexOf("currentAssistantMessageIndex = -1;");
+    expect(sessionResetIdx).toBeGreaterThanOrEqual(0);
+    expect(indexResetIdx).toBeGreaterThan(sessionResetIdx);
+  });
+
+  it("abandonInFlightRequest() skips the cancel RPC for a session the caller already cancelled", () => {
+    // Reviewed on PR #6332 (efficiency): cancelStream() awaits aiCancelStream()
+    // itself before deciding to force-abandon, so re-firing it unconditionally
+    // here would double-RPC the same session. Must still fire for a session
+    // registered AFTER the caller's own RPC attempt (i.e. not simply skipped
+    // whenever a caller happened to pass an argument).
+    const body = bodyOf("function abandonInFlightRequest(alreadyCancelledSessionId?: string)");
+    expect(body).toContain("if (sessionId && sessionId !== alreadyCancelledSessionId) {");
+    expect(body).not.toContain("if (sessionId) {\n    aiCancelStream(sessionId).catch(() => {});\n  }");
+  });
+
   it("resetPendingRequestState() resets all per-request transient state, and abandonInFlightRequest() uses it", () => {
     // Reviewed on PR #6332: this reset logic used to be duplicated inline across
     // send()'s finally, abandonInFlightRequest(), and flushAssistantDeltas() —
@@ -208,7 +295,7 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     // block.
     expect(resetBody).toContain("pendingCompaction.value = null;");
 
-    const abandonBody = bodyOf("function abandonInFlightRequest()");
+    const abandonBody = bodyOf("function abandonInFlightRequest(alreadyCancelledSessionId?: string)");
     expect(abandonBody).toContain("resetPendingRequestState();");
   });
 

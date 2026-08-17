@@ -2427,6 +2427,7 @@ export default withEnglishFallback({
     clear: "チャットをクリア",
     welcome: "クエリしたい内容を教えてください。SQLを作成します",
     requestFailed: "AIリクエストに失敗しました",
+    requestCancelled: "AIリクエストがキャンセルされました",
     newChat: "新しいチャット",
     thinking: "思考中...",
     reasoningProcess: "思考プロセス",

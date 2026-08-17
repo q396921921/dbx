@@ -2279,6 +2279,7 @@ export default withEnglishFallback({
     clear: "清空对话",
     welcome: "聊聊你想查什么，我来写 SQL",
     requestFailed: "AI 请求失败",
+    requestCancelled: "请求已取消",
     newChat: "新对话",
     thinking: "思考中...",
     reasoningProcess: "思考过程",

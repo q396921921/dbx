@@ -24,6 +24,32 @@ describe("AiGenerationGuard", () => {
     expect(guard.isCurrent(g1)).toBe(false);
   });
 
+  // peek() lets a caller that isn't itself a send() invocation (the Stop button —
+  // see AiAssistant.vue's cancelStream()) snapshot the active generation without
+  // starting a new one, then later check isCurrent() against that snapshot. This
+  // is what lets Stop detect "did the request I clicked on get superseded" even
+  // when there's no session id registered yet to compare against instead
+  // (reviewed on PR #6332).
+  it("peek() snapshots the current generation without advancing it", () => {
+    const guard = new AiGenerationGuard();
+    const g1 = guard.begin();
+    const snapshot = guard.peek();
+    expect(snapshot).toBe(g1);
+    expect(guard.isCurrent(snapshot)).toBe(true);
+    // peek() itself must not consume/advance the generation the way begin() does.
+    expect(guard.peek()).toBe(snapshot);
+  });
+
+  it("peek() reflects invalidation the same way isCurrent() does", () => {
+    const guard = new AiGenerationGuard();
+    const clickedGeneration = guard.peek();
+    expect(guard.isCurrent(clickedGeneration)).toBe(true);
+    // A newer send() starting (begin()) or an abandon (invalidate()) after the
+    // click must both make the snapshot stale.
+    guard.begin();
+    expect(guard.isCurrent(clickedGeneration)).toBe(false);
+  });
+
   // Race 1: clear/switch fires before send() has registered a stream id with the
   // backend (cancelStream() would be a no-op in this window). The guard must still
   // mark the generation stale immediately and synchronously.

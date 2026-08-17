@@ -285,6 +285,14 @@ let lastAssistantFlushAt = 0;
 let pendingAssistantDelta = "";
 let pendingAssistantReasoning = "";
 let pendingAssistantIndex = -1;
+// Index into `messages.value` of the current generation's assistant placeholder,
+// mirroring `currentSessionId` (set alongside it in send(), cleared in its finally
+// and in resetPendingRequestState()). Lets cancelStream()'s forced-abandon path
+// finalize that specific message — the backend session id alone doesn't identify
+// it, and abandonInFlightRequest() itself is also used by clear/switch/unmount,
+// where messages.value is being discarded/replaced anyway so it has no reason to
+// know about individual messages.
+let currentAssistantMessageIndex = -1;
 // Identifies which send() invocation is still allowed to write into `messages`/
 // `isGenerating`/`currentSessionId` and the delta buffers above.
 // abandonInFlightRequest() (used by clearMessages()/selectConversation()) invalidates
@@ -1852,6 +1860,7 @@ async function send() {
   confirmedSchema = undefined;
   messages.value.push({ role: "assistant", content: "", sourceConnectionName: connection.name });
   const assistantIdx = messages.value.length - 1;
+  currentAssistantMessageIndex = assistantIdx;
   const sessionId = uuid();
   currentSessionId.value = sessionId;
   const agentEvents: AgentEvent[] = [];
@@ -1981,6 +1990,7 @@ async function send() {
         if (agentPlan.handoffSql) emit("requestAutoExecuteSql", agentPlan.handoffSql);
       }
       currentSessionId.value = "";
+      currentAssistantMessageIndex = -1;
       // Apply deferred context compaction after streaming so assistantIdx stays stable.
       // Visible chat history is kept for the user; future LLM history starts from this hidden summary.
       if (pendingCompaction.value) {
@@ -2028,9 +2038,22 @@ async function cancelStream() {
   // current, so send()'s own finally — once the backend actually acknowledges
   // the cancellation — still owns cleanup normally (write final content,
   // build agent steps, persistConversation()).
+  if (!isGenerating.value) return;
+  // Snapshot the generation (not currentSessionId) this click is stopping.
+  // Reviewed on PR #6332: gating everything below on `sessionId` truthiness
+  // used to make this whole function a no-op if Stop was clicked before
+  // send() reached `currentSessionId.value = sessionId` — which sits after a
+  // real await, so it's a reachable window, not a theoretical one. That left
+  // isGenerating stranded exactly like issue #5941's original bug, just via
+  // the Stop button instead of clear/switch. The generation id is set before
+  // send()'s first await, so peek()/isCurrent() work regardless of whether a
+  // session has been registered with the backend yet.
+  const myGeneration = aiGenerationGuard.peek();
+  const assistantIdx = currentAssistantMessageIndex;
   const sessionId = currentSessionId.value;
-  if (!sessionId) return;
-  await aiCancelStream(sessionId).catch(() => {});
+  if (sessionId) {
+    await aiCancelStream(sessionId).catch(() => {});
+  }
   // The backend cancel RPC only *requests* cancellation (a tokio::sync::Notify
   // that a hung tool call isn't listening for while it's actually executing —
   // see crates/dbx-core/src/agent_loop.rs), so a genuinely stuck request
@@ -2043,12 +2066,31 @@ async function cancelStream() {
   // -side: agent_loop.rs's tool-execution await isn't raced against the
   // cancellation notify the way ai_cli_agent.rs's subprocess path already is.)
   await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);
-  // Re-check currentSessionId, not just isGenerating: a newer send() may have
+  // Re-check the generation, not just isGenerating: a newer send() may have
   // legitimately started (and be currently generating) during the grace
   // period if the user cancelled and immediately sent a new message — that
   // request must not be torn down by this stale Stop click.
-  if (isGenerating.value && currentSessionId.value === sessionId) {
-    abandonInFlightRequest();
+  if (isGenerating.value && aiGenerationGuard.isCurrent(myGeneration)) {
+    // The backend never acked in time. Flush and finalize the placeholder
+    // assistant message BEFORE abandoning: abandonInFlightRequest() only
+    // resets shared request state, it has no notion of "this generation's
+    // message" (it's also used by clear/switch/unmount, where messages.value
+    // is discarded/replaced right after, so there's nothing to finalize
+    // there). Without this, the message send() pushed stays permanently
+    // stuck mid-"thinking" in the still-current conversation — persisted as
+    // empty content on the next turn and fed to the LLM as empty history.
+    if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
+    flushAssistantDeltas();
+    const msg = messages.value[assistantIdx];
+    if (msg) {
+      msg.isThinking = false;
+      if (!msg.content) msg.content = t("ai.requestCancelled");
+    }
+    // Pass the session id already RPC'd above (possibly "") so
+    // abandonInFlightRequest() doesn't fire a redundant second cancel RPC for
+    // the same session — but still fires one if send() only registered a
+    // session AFTER this click (sessionId was "" here but isn't anymore).
+    abandonInFlightRequest(sessionId);
   }
 }
 
@@ -2070,7 +2112,11 @@ function resetPendingRequestState() {
   pendingCompaction.value = null;
 }
 
-function abandonInFlightRequest() {
+// `alreadyCancelledSessionId`: the session id a caller (cancelStream()) has
+// already sent the backend cancel RPC for, if any — pass it so this function
+// doesn't fire a second, redundant RPC for the same session. Left undefined
+// by clear/switch/unmount, which never RPC before calling this.
+function abandonInFlightRequest(alreadyCancelledSessionId?: string) {
   // Used when the UI is about to move to a different conversation/transcript
   // (clear chat, switch conversation, new chat) while a request may still be
   // in flight. Unlike cancelStream() above, this must reset shared state
@@ -2089,8 +2135,9 @@ function abandonInFlightRequest() {
   aiGenerationGuard.invalidate();
   isGenerating.value = false;
   currentSessionId.value = "";
+  currentAssistantMessageIndex = -1;
   resetPendingRequestState();
-  if (sessionId) {
+  if (sessionId && sessionId !== alreadyCancelledSessionId) {
     aiCancelStream(sessionId).catch(() => {});
   }
 }

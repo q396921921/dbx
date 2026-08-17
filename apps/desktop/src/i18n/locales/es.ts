@@ -2393,6 +2393,7 @@ export default withEnglishFallback({
     clear: "Limpiar chat",
     welcome: "Dime qué quieres consultar y escribiré el SQL",
     requestFailed: "La solicitud de AI falló",
+    requestCancelled: "Solicitud de AI cancelada",
     newChat: "Nuevo chat",
     thinking: "Procesando...",
     reasoningProcess: "Proceso de razonamiento",

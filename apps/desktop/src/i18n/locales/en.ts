@@ -2355,6 +2355,7 @@ export default {
     clear: "Clear Chat",
     welcome: "Tell me what you'd like to query, and I'll write the SQL",
     requestFailed: "AI request failed",
+    requestCancelled: "Request cancelled",
     newChat: "New Chat",
     thinking: "Thinking...",
     reasoningProcess: "Thinking process",

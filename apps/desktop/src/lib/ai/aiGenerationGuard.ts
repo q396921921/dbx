@@ -37,4 +37,15 @@ export class AiGenerationGuard {
   isCurrent(generation: number): boolean {
     return generation === this.current;
   }
+
+  /**
+   * Snapshots the active generation without starting a new one. Lets a caller that
+   * isn't itself a `send()` invocation (e.g. the Stop button) later ask "is the
+   * request I observed at snapshot time still the one running?" via `isCurrent()`
+   * — this is what lets that check work even when there's no session id yet to
+   * compare against instead.
+   */
+  peek(): number {
+    return this.current;
+  }
 }

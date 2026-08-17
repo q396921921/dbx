@@ -2213,6 +2213,7 @@ export default withEnglishFallback({
     clear: "채팅 지우기",
     welcome: "쿼리할 내용을 말씀해 주세요. SQL을 작성해 드릴게요",
     requestFailed: "AI 요청 실패",
+    requestCancelled: "AI 요청이 취소되었습니다",
     newChat: "새 채팅",
     thinking: "생각하는 중...",
     reasoningProcess: "사고 과정",
