@@ -6509,21 +6509,10 @@ struct TableDdlOptions {
 }
 
 impl TableDdlOptions {
-    const SINGLE_RELATION: Self = Self {
-        include_postgres_access: false,
-        include_partitions: false,
-        portable_oracle: false,
-    };
-    const EXPORT: Self = Self {
-        include_postgres_access: false,
-        include_partitions: false,
-        portable_oracle: true,
-    };
-    const DISPLAY: Self = Self {
-        include_postgres_access: true,
-        include_partitions: true,
-        portable_oracle: false,
-    };
+    const SINGLE_RELATION: Self =
+        Self { include_postgres_access: false, include_partitions: false, portable_oracle: false };
+    const EXPORT: Self = Self { include_postgres_access: false, include_partitions: false, portable_oracle: true };
+    const DISPLAY: Self = Self { include_postgres_access: true, include_partitions: true, portable_oracle: false };
 }
 
 pub async fn get_table_ddl_core(
@@ -6554,16 +6543,8 @@ pub async fn get_table_export_ddl_core(
     table: &str,
     object_type: Option<db::ObjectSourceKind>,
 ) -> Result<String, String> {
-    get_table_ddl_core_with_options(
-        state,
-        connection_id,
-        database,
-        schema,
-        table,
-        object_type,
-        TableDdlOptions::EXPORT,
-    )
-    .await
+    get_table_ddl_core_with_options(state, connection_id, database, schema, table, object_type, TableDdlOptions::EXPORT)
+        .await
 }
 
 pub async fn get_table_display_ddl_core(

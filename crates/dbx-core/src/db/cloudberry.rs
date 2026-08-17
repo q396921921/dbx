@@ -344,7 +344,8 @@ mod tests {
         // The generic renderer now derives `is_foreign` straight from relkind
         // and may hand back a `CREATE FOREIGN TABLE ... SERVER ...` fallback
         // DDL directly, not just plain `CREATE TABLE`.
-        let ddl = "CREATE FOREIGN TABLE \"public\".\"external_events\" (\n  \"id\" integer\n) SERVER \"stale_server\";\n";
+        let ddl =
+            "CREATE FOREIGN TABLE \"public\".\"external_events\" (\n  \"id\" integer\n) SERVER \"stale_server\";\n";
         let rendered = append_table_modifiers(
             ddl,
             &TableModifiers {

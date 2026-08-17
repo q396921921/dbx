@@ -110,10 +110,9 @@ pub struct PostgresTablePartitionLocalObjects {
     pub has_primary_key: bool,
     pub foreign_keys: BTreeSet<String>,
     pub indexes: BTreeSet<String>,
-    /// CHECK constraints declared directly on this partition (coninhcount =
-    /// 0), as opposed to ones propagated from the parent's own CHECK
-    /// constraints — CHECK constraints use the legacy inheritance-count
-    /// mechanism rather than the conparentid tracking PK/FK use.
+    /// CHECK constraints with a local definition on this partition, as
+    /// reported by pg_constraint.conislocal. A merged constraint may remain
+    /// local even when coninhcount is greater than zero.
     pub check_constraints: BTreeSet<String>,
     /// Columns with a local override or explicit drop of the parent's
     /// default; a column absent from this map is purely inherited.
@@ -3019,40 +3018,50 @@ pub async fn fetch_postgres_partition_tree(
         .collect())
 }
 
-/// Batched sibling of `get_columns`, fetching all columns for every relation
-/// in `relations` in one round trip instead of one query per relation. Unlike
-/// `get_columns`, the batched query has no COMPAT/`information_schema`
-/// fallback tier of its own (some of the catalog columns it reads, e.g.
-/// `attgenerated`/`pg_sequence`, don't exist on older/compatible servers) —
-/// on failure it degrades to `get_columns` per relation instead of failing
-/// the whole tree.
+/// Batched sibling of get_columns, fetching every relation through at most
+/// two OID-scoped catalog queries. The compatibility tier avoids PostgreSQL
+/// 12+ catalog fields so PostgreSQL 10-compatible servers remain bounded.
 pub async fn get_columns_for_relations(
     pool: &Pool,
     relations: &[(i64, String, String)],
 ) -> Result<HashMap<i64, Vec<ColumnInfo>>, String> {
     let oids: Vec<i64> = relations.iter().map(|(oid, _, _)| *oid).collect();
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    match postgres_query_cached(&client, postgres_columns_for_relations_sql(), &[&oids]).await {
-        Ok(rows) => {
-            let mut result: HashMap<i64, Vec<ColumnInfo>> = HashMap::new();
-            for row in &rows {
-                let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
-                result.entry(relid).or_default().push(column_info_from_row_offset(row, 1));
+    let [primary_sql, compat_sql] = postgres_columns_for_relations_query_tiers();
+    match get_columns_for_relations_with_sql(&client, primary_sql, &oids).await {
+        Ok(columns) => Ok(columns),
+        Err(primary_error) => match get_columns_for_relations_with_sql(&client, compat_sql, &oids).await {
+            Ok(columns) => Ok(columns),
+            Err(fallback_error) => {
+                let primary_message = pg_error_to_string(primary_error);
+                let fallback_message = pg_error_to_string(fallback_error);
+                log::debug!(
+                    "[postgres][get_columns_for_relations:compat-failed] primary_error={} fallback_error={}",
+                    primary_message,
+                    fallback_message
+                );
+                Err(fallback_message)
             }
-            Ok(result)
-        }
-        Err(batch_error) => {
-            log::debug!(
-                "[postgres][get_columns_for_relations:batch-failed] falling back to per-relation get_columns error={}",
-                pg_error_to_string(batch_error)
-            );
-            let mut result: HashMap<i64, Vec<ColumnInfo>> = HashMap::new();
-            for (oid, schema, table) in relations {
-                result.insert(*oid, get_columns(pool, schema, table).await?);
-            }
-            Ok(result)
-        }
+        },
     }
+}
+
+async fn get_columns_for_relations_with_sql(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    oids: &[i64],
+) -> Result<HashMap<i64, Vec<ColumnInfo>>, tokio_postgres::Error> {
+    let rows = postgres_query_cached(client, sql, &[&oids]).await?;
+    let mut result: HashMap<i64, Vec<ColumnInfo>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        result.entry(relid).or_default().push(column_info_from_row_offset(row, 1));
+    }
+    Ok(result)
+}
+
+fn postgres_columns_for_relations_query_tiers() -> [&'static str; 2] {
+    [postgres_columns_for_relations_sql(), postgres_columns_for_relations_compat_sql()]
 }
 
 fn postgres_columns_for_relations_sql() -> &'static str {
@@ -3073,7 +3082,14 @@ fn postgres_columns_for_relations_sql() -> &'static str {
                ELSE CASE a.attgenerated \
                  WHEN 's' THEN 'generated always as (' || pg_get_expr(ad.adbin, ad.adrelid) || ') stored' \
                  WHEN 'v' THEN 'generated always as (' || pg_get_expr(ad.adbin, ad.adrelid) || ') virtual' \
-                 ELSE NULL \
+                 ELSE CASE WHEN a.atttypid IN (20, 21, 23) AND dep.deptype = 'a' \
+                   AND pseq.seqrelid IS NOT NULL AND default_dep.objid IS NOT NULL \
+                   AND pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', dep.objid::regclass::text) \
+                 THEN CASE a.atttypid \
+                   WHEN 21 THEN 'smallserial' \
+                   WHEN 23 THEN 'serial' \
+                   WHEN 20 THEN 'bigserial' \
+                 END ELSE NULL END \
                END \
              END AS column_extra, \
              CASE WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
@@ -3091,8 +3107,71 @@ fn postgres_columns_for_relations_sql() -> &'static str {
              JOIN pg_type t ON t.oid = a.atttypid \
              LEFT JOIN pg_type enum_t ON enum_t.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype WHEN t.typtype = 'e' THEN t.oid ELSE NULL END AND enum_t.typtype = 'e' \
              LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
-             LEFT JOIN pg_depend dep ON dep.refobjid = a.attrelid AND dep.refobjsubid = a.attnum AND dep.deptype = 'i' \
+             LEFT JOIN pg_depend dep ON dep.classid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+               AND dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+               AND dep.refobjid = a.attrelid AND dep.refobjsubid = a.attnum AND dep.deptype IN ('a', 'i') \
              LEFT JOIN pg_sequence pseq ON pseq.seqrelid = dep.objid \
+             LEFT JOIN pg_catalog.pg_depend default_dep \
+               ON default_dep.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass \
+              AND default_dep.objid = ad.oid \
+              AND default_dep.objsubid = 0 \
+              AND default_dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND default_dep.refobjid = dep.objid \
+              AND default_dep.refobjsubid = 0 \
+              AND default_dep.deptype = 'n' \
+             LEFT JOIN information_schema.columns ic \
+               ON ic.table_schema = n.nspname AND ic.table_name = c.relname AND ic.column_name = a.attname \
+             WHERE c.oid = ANY($1::bigint[]) \
+             AND a.attnum > 0 AND NOT a.attisdropped \
+             ORDER BY c.oid, a.attnum"
+}
+
+fn postgres_columns_for_relations_compat_sql() -> &'static str {
+    "SELECT c.oid::bigint AS relid, a.attname AS column_name, \
+             format_type(a.atttypid, a.atttypmod) AS full_type, \
+             COALESCE(ic.is_nullable = 'YES', NOT a.attnotnull) AS is_nullable, \
+             pg_get_expr(ad.adbin, ad.adrelid) AS column_default, \
+             EXISTS ( \
+               SELECT 1 FROM pg_constraint co \
+               JOIN pg_index i ON i.indrelid = co.conrelid AND co.conindid = i.indexrelid \
+               WHERE co.conrelid = a.attrelid AND co.contype = 'p' \
+               AND a.attnum = ANY(i.indkey) \
+             ) AS is_pk, \
+             col_description(a.attrelid, a.attnum) AS column_comment, \
+             CASE WHEN a.atttypid IN (20, 21, 23) AND serial_seq.oid IS NOT NULL \
+               AND serial_default_dep.objid IS NOT NULL \
+               AND pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', serial_seq.oid::regclass::text) \
+             THEN CASE a.atttypid \
+               WHEN 21 THEN 'smallserial' \
+               WHEN 23 THEN 'serial' \
+               WHEN 20 THEN 'bigserial' \
+             END ELSE NULL END AS column_extra, \
+             CASE WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
+               THEN ((a.atttypmod - 4) >> 16) & 65535 ELSE NULL END AS numeric_precision, \
+             CASE WHEN t.typname = 'numeric' AND a.atttypmod > 0 \
+               THEN (a.atttypmod - 4) & 65535 ELSE NULL END AS numeric_scale, \
+             CASE WHEN t.typname IN ('varchar', 'bpchar') AND a.atttypmod > 0 \
+               THEN a.atttypmod - 4 ELSE NULL END AS character_maximum_length, \
+             NULL::text AS enum_values \
+             FROM pg_attribute a \
+             JOIN pg_class c ON c.oid = a.attrelid \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             JOIN pg_type t ON t.oid = a.atttypid \
+             LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum \
+             LEFT JOIN pg_catalog.pg_depend serial_dep \
+               ON serial_dep.classid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND serial_dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND serial_dep.refobjid = a.attrelid AND serial_dep.refobjsubid = a.attnum \
+              AND serial_dep.deptype = 'a' \
+             LEFT JOIN pg_catalog.pg_class serial_seq ON serial_seq.oid = serial_dep.objid AND serial_seq.relkind = 'S' \
+             LEFT JOIN pg_catalog.pg_depend serial_default_dep \
+               ON serial_default_dep.classid = 'pg_catalog.pg_attrdef'::pg_catalog.regclass \
+              AND serial_default_dep.objid = ad.oid \
+              AND serial_default_dep.objsubid = 0 \
+              AND serial_default_dep.refclassid = 'pg_catalog.pg_class'::pg_catalog.regclass \
+              AND serial_default_dep.refobjid = serial_seq.oid \
+              AND serial_default_dep.refobjsubid = 0 \
+              AND serial_default_dep.deptype = 'n' \
              LEFT JOIN information_schema.columns ic \
                ON ic.table_schema = n.nspname AND ic.table_name = c.relname AND ic.column_name = a.attname \
              WHERE c.oid = ANY($1::bigint[]) \
@@ -3120,52 +3199,67 @@ fn column_info_from_row_offset(row: &Row, offset: usize) -> ColumnInfo {
     }
 }
 
-/// Batched sibling of `list_indexes`. Unlike `list_indexes`, the batched
-/// query (which reads `indnkeyatts`, absent on older/compatible servers) has
-/// no COMPAT fallback tier of its own — on failure it degrades to
-/// `list_indexes` per relation instead of failing the whole tree.
+/// Batched sibling of list_indexes, using a modern and a PostgreSQL 10
+/// compatible OID-scoped tier so the request count stays bounded.
 pub async fn list_indexes_for_relations(
     pool: &Pool,
     relations: &[(i64, String, String)],
 ) -> Result<HashMap<i64, Vec<IndexInfo>>, String> {
     let oids: Vec<i64> = relations.iter().map(|(oid, _, _)| *oid).collect();
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    match postgres_query_cached(&client, postgres_indexes_for_relations_sql(), &[&oids]).await {
-        Ok(rows) => {
-            let mut result: HashMap<i64, Vec<IndexInfo>> = HashMap::new();
-            for row in &rows {
-                let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
-                let all_cols: Vec<String> = row.try_get::<_, Vec<String>>(2).unwrap_or_default();
-                let nkeyatts =
-                    row.try_get::<_, Option<i16>>(7).ok().flatten().unwrap_or(all_cols.len() as i16) as usize;
-                let split_at = nkeyatts.min(all_cols.len());
-                let key_cols = all_cols[..split_at].to_vec();
-                let included = if split_at < all_cols.len() { all_cols[split_at..].to_vec() } else { vec![] };
-                result.entry(relid).or_default().push(IndexInfo {
-                    name: pg_row_try_string(row, 1),
-                    columns: key_cols,
-                    is_unique: pg_row_try_bool(row, 3).unwrap_or(false),
-                    is_primary: pg_row_try_bool(row, 4).unwrap_or(false),
-                    filter: row.try_get::<_, Option<String>>(5).ok().flatten(),
-                    index_type: row.try_get::<_, Option<String>>(6).ok().flatten(),
-                    included_columns: if included.is_empty() { None } else { Some(included) },
-                    comment: row.try_get::<_, Option<String>>(9).ok().flatten(),
-                });
+    let [primary_sql, compat_sql] = postgres_indexes_for_relations_query_tiers();
+    match list_indexes_for_relations_with_sql(&client, primary_sql, &oids).await {
+        Ok(indexes) => Ok(indexes),
+        Err(primary_error) => match list_indexes_for_relations_with_sql(&client, compat_sql, &oids).await {
+            Ok(indexes) => Ok(indexes),
+            Err(fallback_error) => {
+                let primary_message = pg_error_to_string(primary_error);
+                let fallback_message = pg_error_to_string(fallback_error);
+                log::debug!(
+                    "[postgres][list_indexes_for_relations:compat-failed] primary_error={} fallback_error={}",
+                    primary_message,
+                    fallback_message
+                );
+                Err(fallback_message)
             }
-            Ok(result)
-        }
-        Err(batch_error) => {
-            log::debug!(
-                "[postgres][list_indexes_for_relations:batch-failed] falling back to per-relation list_indexes error={}",
-                pg_error_to_string(batch_error)
-            );
-            let mut result: HashMap<i64, Vec<IndexInfo>> = HashMap::new();
-            for (oid, schema, table) in relations {
-                result.insert(*oid, list_indexes(pool, schema, table).await?);
-            }
-            Ok(result)
-        }
+        },
     }
+}
+
+async fn list_indexes_for_relations_with_sql(
+    client: &deadpool_postgres::Client,
+    sql: &str,
+    oids: &[i64],
+) -> Result<HashMap<i64, Vec<IndexInfo>>, tokio_postgres::Error> {
+    let rows = postgres_query_cached(client, sql, &[&oids]).await?;
+    let mut result: HashMap<i64, Vec<IndexInfo>> = HashMap::new();
+    for row in &rows {
+        let Ok(relid) = row.try_get::<_, i64>(0) else { continue };
+        let all_cols: Vec<String> = row.try_get::<_, Vec<String>>(2).unwrap_or_default();
+        let nkeyatts = row.try_get::<_, Option<i16>>(7).ok().flatten().unwrap_or(all_cols.len() as i16) as usize;
+        let split_at = nkeyatts.min(all_cols.len());
+        let key_cols = all_cols[..split_at].to_vec();
+        let included = if split_at < all_cols.len() { all_cols[split_at..].to_vec() } else { vec![] };
+        let all_is_expr: Vec<bool> = row.try_get::<_, Vec<bool>>(10).unwrap_or_default();
+        let key_is_expression =
+            if all_is_expr.len() == all_cols.len() { all_is_expr[..split_at].to_vec() } else { Vec::new() };
+        result.entry(relid).or_default().push(IndexInfo {
+            name: pg_row_try_string(row, 1),
+            columns: key_cols,
+            is_unique: pg_row_try_bool(row, 3).unwrap_or(false),
+            is_primary: pg_row_try_bool(row, 4).unwrap_or(false),
+            filter: row.try_get::<_, Option<String>>(5).ok().flatten(),
+            index_type: row.try_get::<_, Option<String>>(6).ok().flatten(),
+            included_columns: if included.is_empty() { None } else { Some(included) },
+            comment: row.try_get::<_, Option<String>>(9).ok().flatten(),
+            key_is_expression,
+        });
+    }
+    Ok(result)
+}
+
+fn postgres_indexes_for_relations_query_tiers() -> [&'static str; 2] {
+    [postgres_indexes_for_relations_sql(), postgres_indexes_for_relations_compat_sql()]
 }
 
 fn postgres_indexes_for_relations_sql() -> &'static str {
@@ -3177,7 +3271,8 @@ fn postgres_indexes_for_relations_sql() -> &'static str {
              am.amname AS index_type, \
              ix.indnkeyatts AS nkeyatts, \
              ix.indkey AS indkey, \
-             obj_description(i.oid, 'pg_class') AS index_comment \
+             obj_description(i.oid, 'pg_class') AS index_comment, \
+             array_agg(a.attname IS NULL ORDER BY k.n) AS key_is_expression \
              FROM pg_index ix \
              JOIN pg_class t ON t.oid = ix.indrelid \
              JOIN pg_class i ON i.oid = ix.indexrelid \
@@ -3186,6 +3281,41 @@ fn postgres_indexes_for_relations_sql() -> &'static str {
              LEFT JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = k.attnum AND k.attnum > 0 \
              WHERE t.oid = ANY($1::bigint[]) \
              GROUP BY t.oid, i.relname, i.oid, ix.indisunique, ix.indisprimary, ix.indpred, ix.indrelid, am.amname, ix.indnkeyatts, ix.indkey \
+             ORDER BY t.oid, i.relname"
+}
+
+fn postgres_indexes_for_relations_compat_sql() -> &'static str {
+    "SELECT t.oid::bigint AS relid, i.relname AS index_name, \
+             ARRAY( \
+               SELECT COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, pos.n, true)) \
+               FROM generate_series(1, array_length(string_to_array(ix.indkey::text, ' '), 1)) AS pos(n) \
+               LEFT JOIN pg_attribute a \
+                 ON a.attrelid = t.oid \
+                AND a.attnum = (string_to_array(ix.indkey::text, ' '))[pos.n]::int2 \
+                AND a.attnum > 0 \
+               ORDER BY pos.n \
+             ) AS columns, \
+             ix.indisunique AS is_unique, \
+             ix.indisprimary AS is_primary, \
+             pg_get_expr(ix.indpred, ix.indrelid) AS filter_expr, \
+             am.amname AS index_type, \
+             NULL::smallint AS nkeyatts, \
+             ix.indkey AS indkey, \
+             obj_description(i.oid, 'pg_class') AS index_comment, \
+             ARRAY( \
+               SELECT a.attname IS NULL \
+               FROM generate_series(1, array_length(string_to_array(ix.indkey::text, ' '), 1)) AS pos(n) \
+               LEFT JOIN pg_attribute a \
+                 ON a.attrelid = t.oid \
+                AND a.attnum = (string_to_array(ix.indkey::text, ' '))[pos.n]::int2 \
+                AND a.attnum > 0 \
+               ORDER BY pos.n \
+             ) AS key_is_expression \
+             FROM pg_index ix \
+             JOIN pg_class t ON t.oid = ix.indrelid \
+             JOIN pg_class i ON i.oid = ix.indexrelid \
+             JOIN pg_am am ON am.oid = i.relam \
+             WHERE t.oid = ANY($1::bigint[]) \
              ORDER BY t.oid, i.relname"
 }
 
@@ -3358,7 +3488,7 @@ fn postgres_table_partition_local_objects_for_relations_sql() -> &'static str {
      UNION ALL \
      SELECT con.conrelid::bigint, 'check'::text AS object_kind, con.conname AS object_name, NULL::text AS object_type \
      FROM pg_catalog.pg_constraint con \
-     WHERE con.conrelid = ANY($1::bigint[]) AND con.contype = 'c' AND con.coninhcount = 0 \
+     WHERE con.conrelid = ANY($1::bigint[]) AND con.contype = 'c' AND con.conislocal \
      UNION ALL \
      SELECT ix.indrelid::bigint, 'index'::text AS object_kind, idx.relname AS object_name, NULL::text AS object_type \
      FROM pg_catalog.pg_index ix \
@@ -3455,7 +3585,7 @@ fn postgres_table_partition_local_objects_sql() -> &'static str {
      FROM pg_catalog.pg_constraint con \
      JOIN pg_catalog.pg_class c ON c.oid = con.conrelid \
      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
-     WHERE n.nspname = $1 AND c.relname = $2 AND con.contype = 'c' AND con.coninhcount = 0 \
+     WHERE n.nspname = $1 AND c.relname = $2 AND con.contype = 'c' AND con.conislocal \
      UNION ALL \
      SELECT 'index'::text AS object_kind, idx.relname AS object_name, NULL::text AS object_type \
      FROM pg_catalog.pg_index ix \
@@ -8738,9 +8868,8 @@ mod tests {
         assert!(local_objects_sql.contains("row_to_json(con)->>'conparentid'"));
         assert!(local_objects_sql.contains("con.contype IN ('p','f')"));
         assert!(local_objects_sql.contains("i.inhrelid = idx.oid"));
-        // CHECK constraints propagated from the parent use the legacy
-        // inheritance-count mechanism (coninhcount), not conparentid.
-        assert!(local_objects_sql.contains("con.contype = 'c' AND con.coninhcount = 0"));
+        assert!(local_objects_sql.contains("con.contype = 'c' AND con.conislocal"));
+        assert!(!local_objects_sql.contains("con.coninhcount = 0"));
         assert!(local_objects_sql.contains("pg_catalog.pg_attrdef"));
     }
 
@@ -8767,29 +8896,63 @@ mod tests {
 
     #[test]
     fn postgres_column_metadata_marks_only_owned_integer_sequence_defaults_as_serial() {
-        for sql in [POSTGRES_COLUMNS_SQL, POSTGRES_COLUMNS_COMPAT_SQL] {
+        let modern_sql = [POSTGRES_COLUMNS_SQL, postgres_columns_for_relations_sql()];
+        let compat_sql = [POSTGRES_COLUMNS_COMPAT_SQL, postgres_columns_for_relations_compat_sql()];
+        for sql in modern_sql.into_iter().chain(compat_sql) {
             assert!(sql.contains("a.atttypid IN (20, 21, 23)"));
             assert!(sql.contains("WHEN 21 THEN 'smallserial'"));
             assert!(sql.contains("WHEN 23 THEN 'serial'"));
             assert!(sql.contains("WHEN 20 THEN 'bigserial'"));
         }
-        assert!(POSTGRES_COLUMNS_SQL.contains("dep.deptype IN ('a', 'i')"));
-        assert!(POSTGRES_COLUMNS_SQL.contains("pseq.seqrelid IS NOT NULL"));
-        assert!(POSTGRES_COLUMNS_SQL.contains("default_dep.objid = ad.oid"));
-        assert!(POSTGRES_COLUMNS_SQL.contains("default_dep.refobjid = dep.objid"));
-        assert!(POSTGRES_COLUMNS_SQL.contains(
-            "pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', dep.objid::regclass::text)"
-        ));
-        assert!(POSTGRES_COLUMNS_COMPAT_SQL.contains("serial_dep.deptype = 'a'"));
-        assert!(POSTGRES_COLUMNS_COMPAT_SQL.contains("serial_seq.relkind = 'S'"));
-        assert!(POSTGRES_COLUMNS_COMPAT_SQL.contains("serial_default_dep.objid = ad.oid"));
-        assert!(POSTGRES_COLUMNS_COMPAT_SQL.contains("serial_default_dep.refobjid = serial_seq.oid"));
-        assert!(POSTGRES_COLUMNS_COMPAT_SQL.contains(
-            "pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', serial_seq.oid::regclass::text)"
-        ));
+        for sql in modern_sql {
+            assert!(sql.contains("dep.deptype IN ('a', 'i')"));
+            assert!(sql.contains("pseq.seqrelid IS NOT NULL"));
+            assert!(sql.contains("default_dep.objid = ad.oid"));
+            assert!(sql.contains("default_dep.refobjid = dep.objid"));
+            assert!(sql.contains(
+                "pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', dep.objid::regclass::text)"
+            ));
+        }
+        for sql in compat_sql {
+            assert!(sql.contains("serial_dep.deptype = 'a'"));
+            assert!(sql.contains("serial_seq.relkind = 'S'"));
+            assert!(sql.contains("serial_default_dep.objid = ad.oid"));
+            assert!(sql.contains("serial_default_dep.refobjid = serial_seq.oid"));
+            assert!(sql.contains(
+                "pg_get_expr(ad.adbin, ad.adrelid) = format('nextval(%L::regclass)', serial_seq.oid::regclass::text)"
+            ));
+        }
 
         assert!(!POSTGRES_COLUMNS_INFORMATION_SCHEMA_SQL.contains("serial_dep"));
         assert!(POSTGRES_COLUMNS_INFORMATION_SCHEMA_SQL.contains("NULL::text AS column_extra"));
+    }
+
+    #[test]
+    fn postgres_partition_local_checks_keep_merged_local_definitions() {
+        for sql in
+            [postgres_table_partition_local_objects_sql(), postgres_table_partition_local_objects_for_relations_sql()]
+        {
+            assert!(sql.contains("con.contype = 'c' AND con.conislocal"));
+            assert!(!sql.contains("con.coninhcount = 0"));
+        }
+    }
+
+    #[test]
+    fn postgres_partition_batch_metadata_uses_bounded_compat_tiers() {
+        let column_tiers = postgres_columns_for_relations_query_tiers();
+        assert_eq!(column_tiers.len(), 2);
+        assert!(column_tiers.iter().all(|sql| sql.contains("c.oid = ANY($1::bigint[])")));
+        assert!(column_tiers[0].contains("a.attgenerated"));
+        assert!(!column_tiers[1].contains("a.attgenerated"));
+        assert!(!column_tiers[1].contains("pg_sequence"));
+        assert!(column_tiers[1].contains("serial_dep.deptype = 'a'"));
+
+        let index_tiers = postgres_indexes_for_relations_query_tiers();
+        assert_eq!(index_tiers.len(), 2);
+        assert!(index_tiers.iter().all(|sql| sql.contains("t.oid = ANY($1::bigint[])")));
+        assert!(index_tiers[0].contains("ix.indnkeyatts"));
+        assert!(!index_tiers[1].contains("ix.indnkeyatts"));
+        assert!(index_tiers[1].contains("string_to_array(ix.indkey::text, ' ')"));
     }
 
     #[test]
@@ -9098,9 +9261,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("replay not-valid-check ddl failed: {error:?}; ddl: {ddl}"));
 
         client
-            .batch_execute(&format!(
-                "DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE"
-            ))
+            .batch_execute(&format!("DROP SCHEMA {schema_ident} CASCADE; DROP SCHEMA {replay_schema_ident} CASCADE"))
             .await
             .expect("drop schemas");
 
