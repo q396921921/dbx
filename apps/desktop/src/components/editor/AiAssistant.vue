@@ -275,6 +275,11 @@ let messageScrollViewport: HTMLElement | null = null;
 let messageTouchStartY: number | null = null;
 let lastMessageScrollTop = 0;
 const STREAM_RENDER_INTERVAL_MS = 33;
+// How long cancelStream() (the Stop button) waits for the backend to actually
+// acknowledge a cancellation before forcing the same abandon path clear/switch
+// uses. See cancelStream() for why the backend RPC alone can't be trusted to
+// unstick a genuinely hung tool call.
+const STOP_FORCE_ABANDON_MS = 5000;
 let assistantDeltaFrame: number | null = null;
 let lastAssistantFlushAt = 0;
 let pendingAssistantDelta = "";
@@ -1752,8 +1757,15 @@ async function send() {
   }
   // Superseded (chat cleared/switched, or a newer send() started) while awaiting
   // the prompt templates above — bail before touching messages/mentions that now
-  // belong to a different conversation.
-  if (!aiGenerationGuard.isCurrent(myGeneration)) return;
+  // belong to a different conversation. Also clear the pending write-SQL grant:
+  // it hasn't been read/reset yet (that happens below, right before
+  // runAgentStream()), so a bare return here would leave a previously-confirmed
+  // write grant sitting in the module-scope vars, live to be replayed against
+  // whatever unrelated send() the next conversation issues.
+  if (!aiGenerationGuard.isCurrent(myGeneration)) {
+    clearPendingWriteGrant();
+    return;
+  }
   // Snapshot the selected custom prompts at send time so later async context loading
   // cannot change the instructions for an already-submitted request.
   const customPromptContext: CustomPromptContext = {
@@ -1845,10 +1857,23 @@ async function send() {
   const agentEvents: AgentEvent[] = [];
   try {
     const sqlFiles = await loadReferencedSqlFiles(selectedSqlFiles);
+    // Superseded while awaiting loadReferencedSqlFiles() above — bail before
+    // paying for buildAiContext() too; it can do real backend/schema work that
+    // would be entirely wasted on an already-abandoned request.
+    if (!aiGenerationGuard.isCurrent(myGeneration)) return;
     const context = await buildAiContext(tab, connection, {
       mentionedTables,
       sqlFiles,
     });
+    // Superseded while awaiting buildAiContext() above — must bail before ever
+    // calling runAgentStream(), not just before writing its results. Without
+    // this recheck, a clear/switch/unmount that fires during context
+    // preparation invalidates the generation but the request still gets sent to
+    // the backend and starts executing tools/SQL; the best-effort cancel RPC
+    // fired by abandonInFlightRequest() is a no-op here since no session has
+    // been registered with the backend yet (registration happens inside
+    // runAgentStream() itself).
+    if (!aiGenerationGuard.isCurrent(myGeneration)) return;
     const history: AiMessage[] = messagesForAgentHistory(messages.value.slice(0, -2));
     await runAgentStream(
       {
@@ -1921,6 +1946,12 @@ async function send() {
     // A superseded generation's cleanup is a no-op: abandonInFlightRequest()
     // already reset isGenerating/currentSessionId/delta buffers synchronously
     // when it invalidated this generation.
+    // This block CONSUMES this generation's per-request transient state
+    // (applies flushed deltas to the message, splices the compaction summary
+    // into history) rather than just discarding it — see
+    // resetPendingRequestState() below for the abandon-path equivalent that
+    // discards it instead. If you add a new piece of per-request transient
+    // state, it must be handled on both paths.
     if (aiGenerationGuard.isCurrent(myGeneration)) {
       if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
       flushAssistantDeltas();
@@ -1970,16 +2001,73 @@ async function send() {
   }
 }
 
+// Resolves once `isGenerating` goes false, or after `timeoutMs` — whichever
+// comes first. Used by cancelStream() to bound how long it waits for the
+// backend to actually acknowledge a cancellation before forcing it.
+function waitForGenerationToClear(timeoutMs: number): Promise<void> {
+  return new Promise((resolve) => {
+    if (!isGenerating.value) {
+      resolve();
+      return;
+    }
+    const stopWatch = watch(isGenerating, (value) => {
+      if (value) return;
+      stopWatch();
+      clearTimeout(timer);
+      resolve();
+    });
+    const timer = setTimeout(() => {
+      stopWatch();
+      resolve();
+    }, timeoutMs);
+  });
+}
+
 async function cancelStream() {
-  // Plain "stop generating" (button click / component unmount): the SAME
-  // conversation stays current, so send()'s own finally — once the backend
-  // actually acknowledges the cancellation — still owns cleanup normally
-  // (write final content, build agent steps, persistConversation()). No need
-  // to force shared state here; see abandonInFlightRequest() for the case
-  // where that assumption doesn't hold.
-  if (currentSessionId.value) {
-    await aiCancelStream(currentSessionId.value).catch(() => {});
+  // Plain "stop generating" (button click): the SAME conversation stays
+  // current, so send()'s own finally — once the backend actually acknowledges
+  // the cancellation — still owns cleanup normally (write final content,
+  // build agent steps, persistConversation()).
+  const sessionId = currentSessionId.value;
+  if (!sessionId) return;
+  await aiCancelStream(sessionId).catch(() => {});
+  // The backend cancel RPC only *requests* cancellation (a tokio::sync::Notify
+  // that a hung tool call isn't listening for while it's actually executing —
+  // see crates/dbx-core/src/agent_loop.rs), so a genuinely stuck request
+  // (issue #5941's original repro: a hung MCP tool call) may never let
+  // send()'s finally run on its own. Give the backend a bounded grace period
+  // to stop normally; if it hasn't by then, force the same abandon path
+  // clear/switch uses, so Stop — the most visible "unstick" affordance in the
+  // UI — can never leave isGenerating stranded, even though the backend may
+  // keep running the hung call in the background. (The real fix is backend
+  // -side: agent_loop.rs's tool-execution await isn't raced against the
+  // cancellation notify the way ai_cli_agent.rs's subprocess path already is.)
+  await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);
+  // Re-check currentSessionId, not just isGenerating: a newer send() may have
+  // legitimately started (and be currently generating) during the grace
+  // period if the user cancelled and immediately sent a new message — that
+  // request must not be torn down by this stale Stop click.
+  if (isGenerating.value && currentSessionId.value === sessionId) {
+    abandonInFlightRequest();
   }
+}
+
+// Neutralizes all per-request transient state that must never survive into a
+// different generation/conversation. abandonInFlightRequest() calls this to
+// discard it immediately. send()'s finally does NOT call it — that block must
+// first CONSUME this state (apply flushed deltas to the message, splice the
+// compaction summary into history) rather than discard it — but if you add a
+// new piece of per-request transient state, add its reset here so it can't be
+// missed the way pendingCompaction was (see PR #6332 review).
+function resetPendingRequestState() {
+  if (assistantDeltaFrame !== null) {
+    cancelAnimationFrame(assistantDeltaFrame);
+    assistantDeltaFrame = null;
+  }
+  pendingAssistantDelta = "";
+  pendingAssistantReasoning = "";
+  pendingAssistantIndex = -1;
+  pendingCompaction.value = null;
 }
 
 function abandonInFlightRequest() {
@@ -2001,13 +2089,7 @@ function abandonInFlightRequest() {
   aiGenerationGuard.invalidate();
   isGenerating.value = false;
   currentSessionId.value = "";
-  if (assistantDeltaFrame !== null) {
-    cancelAnimationFrame(assistantDeltaFrame);
-    assistantDeltaFrame = null;
-  }
-  pendingAssistantDelta = "";
-  pendingAssistantReasoning = "";
-  pendingAssistantIndex = -1;
+  resetPendingRequestState();
   if (sessionId) {
     aiCancelStream(sessionId).catch(() => {});
   }
@@ -2251,7 +2333,13 @@ onUnmounted(() => {
   if (assistantDeltaFrame !== null) cancelAnimationFrame(assistantDeltaFrame);
   clearTimeout(mentionTimer);
   clearEffortMenuCloseTimer();
-  cancelStream();
+  // Must invalidate the generation the same way clearMessages()/selectConversation()
+  // do, not just fire the best-effort cancelStream() RPC: if a request is still
+  // mid-await (context preparation, or the backend hasn't registered a session id
+  // yet) when this component unmounts, cancelStream() alone leaves the generation
+  // current, so the request still starts and its event callback/catch/finally keep
+  // writing into refs this now-unmounted instance's closures still hold.
+  if (isGenerating.value) abandonInFlightRequest();
   detachMessageScrollListener();
   // 清理拖拽事件监听，防止内存泄漏
   document.removeEventListener("mousemove", handleResize);

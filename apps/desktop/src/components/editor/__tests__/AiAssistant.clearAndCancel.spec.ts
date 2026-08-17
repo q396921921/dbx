@@ -65,18 +65,27 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     expect(body.indexOf("if (isGenerating.value) abandonInFlightRequest();")).toBeLessThan(body.indexOf("conversationId.value = conv.id;"));
   });
 
-  it("cancelStream() (the plain stop-generating button) does not invalidate the generation", () => {
-    // cancelStream() is used by the stop button and onUnmounted, where the SAME
-    // conversation stays current — send()'s own finally still owns cleanup once
-    // the backend acknowledges the cancellation. Only abandonInFlightRequest()
-    // (clear/switch/new chat) needs to force an immediate, synchronous reset.
-    // If this ever regresses to always invalidating, a plain stop-click would
-    // silently start skipping persistConversation()/agent-step building for
-    // every cancelled response, not just when the chat is actually being
-    // cleared/switched.
+  it("cancelStream() forces the abandon path if the backend never actually stops the stream", () => {
+    // Reviewed on PR #6332: the backend cancel RPC only *requests* cancellation
+    // (a tokio::sync::Notify) — a hung MCP tool call isn't listening for it while
+    // executing (agent_loop.rs), so send()'s own finally may never run on its own.
+    // cancelStream() must not invalidate immediately (the common case — backend
+    // actually stops promptly — should still go through send()'s normal
+    // persistConversation()/agent-step-building cleanup), but it must force the
+    // same abandon path clear/switch use if the backend hasn't actually stopped
+    // the stream within a bounded grace period, so Stop can never leave
+    // isGenerating stranded the way issue #5941 originally reported.
     const body = bodyOf("async function cancelStream()");
-    expect(body).not.toContain("aiGenerationGuard.invalidate();");
-    expect(body).not.toContain("isGenerating.value = false;");
+    const rpcIdx = body.indexOf("await aiCancelStream(");
+    const waitIdx = body.indexOf("await waitForGenerationToClear(STOP_FORCE_ABANDON_MS);");
+    const abandonIdx = body.indexOf("abandonInFlightRequest();");
+    expect(rpcIdx).toBeGreaterThanOrEqual(0);
+    expect(waitIdx).toBeGreaterThan(rpcIdx);
+    expect(abandonIdx).toBeGreaterThan(waitIdx);
+    // Must re-check currentSessionId too, not just isGenerating — a newer send()
+    // may have legitimately started (cancel, then immediately send again) during
+    // the grace period and must not be torn down by this stale Stop click.
+    expect(body).toContain("isGenerating.value && currentSessionId.value === sessionId");
   });
 
   it("startNewChat() and deleteConversation() funnel through the guarded clearMessages()", () => {
@@ -92,8 +101,29 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     // Must re-validate after the first await point (ensureLoaded()) before doing
     // anything that touches messages/mentions belonging to whatever conversation
     // is current by the time it resolves.
-    const recheckIdx = sendBody.indexOf("if (!aiGenerationGuard.isCurrent(myGeneration)) return;");
-    expect(recheckIdx).toBeGreaterThan(claimIdx);
+    const ensureLoadedAwaitIdx = sendBody.indexOf("await promptTemplateStore.ensureLoaded()");
+    const recheckIdx = sendBody.indexOf("if (!aiGenerationGuard.isCurrent(myGeneration))", ensureLoadedAwaitIdx);
+    expect(ensureLoadedAwaitIdx).toBeGreaterThan(claimIdx);
+    expect(recheckIdx).toBeGreaterThan(ensureLoadedAwaitIdx);
+  });
+
+  it("send() clears the pending write-SQL grant when superseded before it's consumed", () => {
+    // Reviewed on PR #6332: at this point in send(), the write-SQL grant
+    // (allowWriteSqlForNextRun/confirmedWriteSqlText/...) hasn't been read/reset
+    // yet — that happens later, right before runAgentStream(). A bare `return`
+    // here would leave a previously-confirmed write grant sitting in the
+    // module-scope vars, live to be replayed against whatever unrelated send()
+    // the next conversation issues.
+    const sendBody = bodyOf("async function send()");
+    const ensureLoadedAwaitIdx = sendBody.indexOf("await promptTemplateStore.ensureLoaded()");
+    const grantConsumedIdx = sendBody.indexOf("const allowWriteSql = requestedMode", ensureLoadedAwaitIdx);
+    const recheckIdx = sendBody.indexOf("if (!aiGenerationGuard.isCurrent(myGeneration)) {", ensureLoadedAwaitIdx);
+    expect(recheckIdx).toBeGreaterThan(ensureLoadedAwaitIdx);
+    expect(recheckIdx).toBeLessThan(grantConsumedIdx);
+    const recheckEnd = sendBody.indexOf("}", recheckIdx);
+    const recheckBlock = sendBody.slice(recheckIdx, recheckEnd);
+    expect(recheckBlock).toContain("clearPendingWriteGrant();");
+    expect(recheckBlock).toContain("return;");
   });
 
   it("send()'s agent-event callback bails immediately if superseded", () => {
@@ -134,5 +164,62 @@ describe("AI assistant clear/switch cancels an in-flight request (issue #5941, P
     const sessionResetIdx = finallyBody.indexOf('currentSessionId.value = "";');
     expect(isGeneratingIdx).toBeGreaterThan(guardIdx);
     expect(sessionResetIdx).toBeGreaterThan(guardIdx);
+  });
+
+  // The three gaps below were called out on review of PR #6332: the generation guard
+  // stopped *writes* from a superseded generation, but didn't stop the generation from
+  // starting a stream, leaking pending-compaction state, or from surviving unmount.
+  it("send() rechecks the generation after EACH context-preparation await, before ever starting the stream", () => {
+    const sendBody = bodyOf("async function send()");
+    const sqlFilesIdx = sendBody.indexOf("await loadReferencedSqlFiles(");
+    const firstRecheckIdx = sendBody.indexOf("if (!aiGenerationGuard.isCurrent(myGeneration)) return;", sqlFilesIdx);
+    const contextIdx = sendBody.indexOf("const context = await buildAiContext(");
+    const secondRecheckIdx = sendBody.indexOf("if (!aiGenerationGuard.isCurrent(myGeneration)) return;", contextIdx);
+    const runIdx = sendBody.indexOf("await runAgentStream(", contextIdx);
+    // A clear/switch/unmount firing during EITHER await invalidates the generation
+    // but doesn't touch the backend (no session registered yet) — without a
+    // recheck immediately after each one, send() would resume into further wasted
+    // work (buildAiContext() can do real backend/schema work) and eventually call
+    // runAgentStream() anyway, starting a request nobody can reach anymore.
+    expect(sqlFilesIdx).toBeGreaterThanOrEqual(0);
+    expect(firstRecheckIdx).toBeGreaterThan(sqlFilesIdx);
+    expect(firstRecheckIdx).toBeLessThan(contextIdx);
+    expect(secondRecheckIdx).toBeGreaterThan(contextIdx);
+    expect(runIdx).toBeGreaterThan(secondRecheckIdx);
+  });
+
+  it("resetPendingRequestState() resets all per-request transient state, and abandonInFlightRequest() uses it", () => {
+    // Reviewed on PR #6332: this reset logic used to be duplicated inline across
+    // send()'s finally, abandonInFlightRequest(), and flushAssistantDeltas() —
+    // duplication that already let the pendingCompaction reset get missed once.
+    // Consolidating it into one function means a newly-added piece of per-request
+    // state only needs to be added here to be covered by the abandon path.
+    const resetBody = bodyOf("function resetPendingRequestState()");
+    expect(resetBody).toContain("cancelAnimationFrame(assistantDeltaFrame);");
+    expect(resetBody).toContain("assistantDeltaFrame = null;");
+    expect(resetBody).toContain('pendingAssistantDelta = "";');
+    expect(resetBody).toContain('pendingAssistantReasoning = "";');
+    expect(resetBody).toContain("pendingAssistantIndex = -1;");
+    // A context_compacted event on the abandoned generation may have already set
+    // pendingCompaction before invalidation took effect. It's request-owned, not
+    // conversation-owned, so it must be reset here — otherwise the next send() (in
+    // a brand-new, just-cleared conversation) would splice the OLD conversation's
+    // compaction summary into the NEW conversation's transcript in its finally
+    // block.
+    expect(resetBody).toContain("pendingCompaction.value = null;");
+
+    const abandonBody = bodyOf("function abandonInFlightRequest()");
+    expect(abandonBody).toContain("resetPendingRequestState();");
+  });
+
+  it("onUnmounted() invalidates the generation instead of only firing the best-effort cancel RPC", () => {
+    const body = bodyOf("onUnmounted(() => {");
+    // Plain cancelStream() leaves the generation current: a request still mid-await
+    // when the component unmounts would resume, call runAgentStream(), and its event
+    // callback/catch/finally would keep writing into refs this now-unmounted
+    // instance's closures still hold. Must go through the same invalidating path as
+    // clearMessages()/selectConversation().
+    expect(body).toContain("if (isGenerating.value) abandonInFlightRequest();");
+    expect(body).not.toContain("cancelStream();");
   });
 });

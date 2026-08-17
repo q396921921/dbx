@@ -4,11 +4,12 @@
  * `currentSessionId`, the streaming delta buffers).
  *
  * `messages`/`isGenerating` are plain component refs, not per-conversation state.
- * Clearing the chat, switching to a different saved conversation, or starting a
- * new one replaces `messages.value` and must invalidate whatever `send()` call is
- * still running — otherwise its async event callbacks, `catch`, or `finally` can
- * keep writing into the array that now belongs to a different conversation, or
- * clear `isGenerating` for a request that has nothing to do with them.
+ * Clearing the chat, switching to a different saved conversation, starting a new
+ * one, or unmounting the component replaces/abandons `messages.value` and must
+ * invalidate whatever `send()` call is still running — otherwise its async event
+ * callbacks, `catch`, or `finally` can keep writing into the array that now
+ * belongs to a different conversation (or to an unmounted instance), or clear
+ * `isGenerating` for a request that has nothing to do with them.
  *
  * The backend cancel RPC is a best-effort companion to this guard, not a
  * substitute for it: it depends on the stream having already registered a
