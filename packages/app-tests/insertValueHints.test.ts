@@ -302,6 +302,66 @@ test("expandToSqlStatementWindow reuses the cached result for identical (sql, fr
   assert.notEqual(third, first, "a different dialectId must not reuse another dialect's cached window");
 });
 
+test("expandToSqlStatementWindow does not treat a backslash-escaped quote as closing the string", () => {
+  const sql = "SELECT 'it\\'s a test; end' FROM t;";
+  const cursor = sql.indexOf("FROM") + 2;
+  const window = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.equal(
+    sql.slice(window.from, window.to),
+    "SELECT 'it\\'s a test; end' FROM t",
+    "the ';' inside the backslash-escaped string must not be mistaken for the statement boundary",
+  );
+});
+
+test("expandToSqlStatementWindow terminates a line comment at a bare '\\r' (no trailing '\\n')", () => {
+  const sql = "SELECT 1; -- comment\rSELECT 2;";
+  const cursor = sql.indexOf("SELECT 2") + 4;
+  const window = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.equal(
+    sql.slice(window.from, window.to),
+    "-- comment\rSELECT 2",
+    "the comment must end at '\\r' so the trailing ';' is recognized as the real statement boundary",
+  );
+});
+
+test("expandToSqlStatementWindow finds the real end of a single statement larger than one lookahead window, instead of truncating", () => {
+  const bigString = "x".repeat(100_000);
+  const sql = `INSERT INTO t (a) VALUES ('${bigString}');`;
+  const cursor = sql.indexOf(bigString) + 10;
+  const window = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.equal(window.to, sql.length - 1, "must resume scanning past the first lookahead miss instead of stopping at an arbitrary hardStop");
+});
+
+test("parseInsertValuesClauses honors a dialectId so postgres '#' does not hide a following INSERT", () => {
+  const sql = "SELECT 5 # 3; INSERT INTO t (a) VALUES (1);";
+  assert.deepEqual(
+    parseInsertValuesClauses(sql, "postgres").map((clause) => clause.table),
+    ["t"],
+  );
+  assert.deepEqual(
+    parseInsertValuesClauses(sql).map((clause) => clause.table),
+    [],
+    "default (mysql) dialect treats '#' as an unterminated comment, swallowing the INSERT -- unchanged prior behavior",
+  );
+});
+
+test("documents a known limitation: a huge run of lexically-inert statements inside an unclosed dollar-quoted body can fool resolveStatementStart's widen-and-agree check", () => {
+  // See the "IMPORTANT" note on expandToSqlStatementWindow's doc comment: verifying a backward
+  // scan's starting state by widening until two scans agree is a heuristic, not a proof. It is
+  // fooled when the content between the two scan-start points is lexically inert (no quotes,
+  // parens, comments, or dollar-quote markers) -- both scans converge on the same wrong answer
+  // regardless of the true (hidden) state. This test pins the current, known-imperfect behavior
+  // so it's visible and intentional rather than a silent regression; a real fix needs cached/
+  // incremental lexical state or a syntax-tree boundary, not another local heuristic (a stricter
+  // check would also break the "many small statements" fast path this windowing exists for --
+  // see the perf test above).
+  const body = Array.from({ length: 60_000 }, (_, index) => `SELECT ${index};`).join(" ");
+  const sql = `CREATE FUNCTION f() RETURNS void AS $$ ${body} $$ LANGUAGE sql;`;
+  const cursor = sql.indexOf(body) + 500_000;
+  const window = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.notEqual(window.from, 0, "known-imperfect: a correct implementation would return 0 here (the whole CREATE FUNCTION is one statement)");
+});
+
 test("ignores statements that are not INSERT VALUES", () => {
   const sql = "SELECT 1; UPDATE users SET name = 'a' WHERE id = 1;";
   assert.deepEqual(parseInsertValueHints(sql), []);

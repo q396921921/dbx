@@ -236,12 +236,26 @@ function shiftClause(clause: InsertValuesClause, offset: number): InsertValuesCl
  * a comment? inside a dollar-quoted body? how deep in nested parens?) cannot simply be assumed
  * clean -- if the cursor sits more than LOOKBACK bytes into such a construct, that assumption is
  * wrong and the scan can find a bogus statement boundary (e.g. a ';' inside an unclosed string or
- * a dollar-quoted function body). `resolveStatementStart` guards against this by verifying the
- * assumption instead of trusting it: it widens the backward window until two consecutive scans
- * agree on the same boundary, or until it reaches the true start of the document (index 0), where
- * the clean-state assumption is always correct. Realistic documents ground out in one or two
- * bounded scans; only a construct spanning tens of megabytes forces widening all the way to the
- * document start, and even then the total work is bounded (a doubling series), not unbounded.
+ * a dollar-quoted function body). `resolveStatementStart` mitigates this with a best-effort check
+ * instead of blind trust: it widens the backward window until two consecutive scans agree on the
+ * same boundary, or until it reaches the true start of the document (index 0), where the
+ * clean-state assumption is always correct.
+ *
+ * IMPORTANT: "two scans agree" is a heuristic, not a proof, and it has a known false-positive.
+ * When the content between the two scan-start points is lexically inert (no quote/comment/paren/
+ * dollar-quote characters -- e.g. a long run of uniform "SELECT n;" statements), both scans
+ * converge on the identical answer regardless of whether the true state entering that content is
+ * actually clean or is deep inside some unclosed construct opened much earlier. Confirmed
+ * reproduction: a ~60k-statement run of "SELECT n;" inside a PostgreSQL `$$ ... $$` function body
+ * (no quotes/parens anywhere in the run) fools the check and returns a multi-character fragment
+ * from the middle of the body instead of the true statement start. This is not fixable with a
+ * smarter local heuristic -- the two situations are byte-for-byte indistinguishable from a purely
+ * local scan; making the check stricter (e.g. requiring a lexically-significant character in the
+ * widened margin) would also reject the common, entirely legitimate case of many small statements
+ * with no punctuation, which is the primary case this windowing scheme exists to keep fast. A real
+ * fix needs either cached/incremental lexical state or a syntax-tree boundary (both discussed, and
+ * both larger changes than this module's plain-string API supports today); until then this is a
+ * deliberate, documented tradeoff, not an oversight.
  *
  * `dialectId` defaults to "mysql" (matching semantic/tokens.ts's tokenizeSqlSemantic default) and
  * only affects how `#` is treated -- see stepLexState. Callers that know the active SQL dialect
@@ -274,7 +288,7 @@ function stepLexState(sql: string, index: number, state: LexState, dialectId: st
   const next = sql[index + 1] ?? "";
 
   if (state.inLineComment) {
-    if (ch === "\n") state.inLineComment = false;
+    if (ch === "\n" || ch === "\r") state.inLineComment = false;
     return index + 1;
   }
   if (state.inBlockComment) {
@@ -293,6 +307,9 @@ function stepLexState(sql: string, index: number, state: LexState, dialectId: st
     return index + 1;
   }
   if (state.quote) {
+    // Backslash-escaping only applies to '...' and "...", matching getSqlLexicalContext's
+    // scanner in sqlCompletion.ts -- backtick/bracket identifiers don't use it.
+    if ((state.quote === "'" || state.quote === '"') && ch === "\\" && next) return index + 2;
     const closeCh = state.quote === "]" ? "]" : state.quote;
     if (ch === closeCh) {
       if (next === closeCh) return index + 2;
@@ -341,21 +358,24 @@ function stepLexState(sql: string, index: number, state: LexState, dialectId: st
 }
 
 /**
- * Scans sql[from, hardStop) from a known-clean lexical state, tracking the last top-level ';'
- * strictly before `searchEndFrom` (when `trackStart` is set) and the first top-level ';' at or
- * after `searchEndFrom`.
+ * Scans sql[from, hardStop) tracking the last top-level ';' strictly before `searchEndFrom` (when
+ * `trackStart` is set) and the first top-level ';' at or after `searchEndFrom`. Starts from a copy
+ * of `initialState` when given (for resuming a previous scan without re-walking the prefix it
+ * already covered), otherwise from a known-clean state.
  */
-function scanStatementBoundaries(sql: string, from: number, searchEndFrom: number, hardStop: number, trackStart: boolean, dialectId: string): { start: number; startFound: boolean; end: number } {
-  const state: LexState = { depth: 0, inLineComment: false, inBlockComment: false, quote: null, dollarTag: null };
+function scanStatementBoundaries(sql: string, from: number, searchEndFrom: number, hardStop: number, trackStart: boolean, dialectId: string, initialState?: LexState): { start: number; startFound: boolean; end: number; endFound: boolean; finalState: LexState } {
+  const state: LexState = initialState ? { ...initialState } : { depth: 0, inLineComment: false, inBlockComment: false, quote: null, dollarTag: null };
   let start = from;
   let startFound = false;
   let end = hardStop;
+  let endFound = false;
   let index = from;
 
   while (index < hardStop) {
     if (sql[index] === ";" && isLexStateClean(state)) {
       if (index >= searchEndFrom) {
         end = index;
+        endFound = true;
         break;
       }
       if (trackStart) {
@@ -366,10 +386,13 @@ function scanStatementBoundaries(sql: string, from: number, searchEndFrom: numbe
     index = stepLexState(sql, index, state, dialectId);
   }
 
-  return { start, startFound, end };
+  return { start, startFound, end, endFound, finalState: state };
 }
 
-/** Finds the nearest top-level statement boundary at or before `pos`, see module comment above. */
+/**
+ * Finds the nearest top-level statement boundary at or before `pos`. Best-effort, not a proof --
+ * see the "IMPORTANT" note in the module comment above for the known false-positive case.
+ */
 function resolveStatementStart(sql: string, pos: number, dialectId: string): number {
   let lookback = STATEMENT_LOOKBACK;
   let previousCandidate: number | null = null;
@@ -390,10 +413,28 @@ function computeSqlStatementWindow(sql: string, from: number, to: number, dialec
   const safeFrom = Math.max(0, Math.min(from, sql.length));
   const safeTo = Math.max(safeFrom, Math.min(to, sql.length));
   const start = resolveStatementStart(sql, safeFrom, dialectId);
-  const searchEndFrom = Math.max(safeFrom, safeTo);
-  const hardStop = Math.min(sql.length, safeTo + STATEMENT_LOOKAHEAD);
-  const end = scanStatementBoundaries(sql, start, searchEndFrom, hardStop, false, dialectId).end;
-  const trimmed = trimSpan(sql, start, Math.min(end, hardStop));
+
+  // The forward end-search has no "unproven starting state" problem like resolveStatementStart --
+  // it scans continuously from `start`, which is already verified clean, so it never needs to
+  // second-guess itself. It just needs enough room: a single statement larger than one
+  // STATEMENT_LOOKAHEAD (e.g. a huge multi-row INSERT) would otherwise be silently truncated at
+  // an arbitrary hardStop instead of found. So on a miss, keep widening the lookahead and resume
+  // scanning from where the previous pass stopped (carrying its LexState forward) rather than
+  // rescanning from `start` -- common statements still cost one bounded scan; only a statement
+  // that's actually larger than the lookahead pays for (and gets) a correct, wider one.
+  let lookahead = STATEMENT_LOOKAHEAD;
+  let hardStop = Math.min(sql.length, safeTo + lookahead);
+  let result = scanStatementBoundaries(sql, start, safeTo, hardStop, false, dialectId);
+  while (!result.endFound && hardStop < sql.length) {
+    const resumeFrom = hardStop;
+    lookahead *= 2;
+    hardStop = Math.min(sql.length, safeTo + lookahead);
+    result = scanStatementBoundaries(sql, resumeFrom, safeTo, hardStop, false, dialectId, result.finalState);
+  }
+
+  // result.end is always <= hardStop by construction (scanStatementBoundaries only reports an
+  // index it actually visited, or defaults to hardStop itself).
+  const trimmed = trimSpan(sql, start, result.end);
   return { from: trimmed.start, to: trimmed.end };
 }
 
@@ -452,9 +493,9 @@ export function parseInsertValuesClausesInRanges(sql: string, ranges: readonly T
 }
 
 /** Parse all INSERT ... VALUES clauses in `sql` (multi-statement aware). Prefer ranged parsing for editors. */
-export function parseInsertValuesClauses(sql: string): InsertValuesClause[] {
+export function parseInsertValuesClauses(sql: string, dialectId = "mysql"): InsertValuesClause[] {
   if (!sql.trim()) return [];
-  const allTokens = tokenizeSqlSemantic(sql);
+  const allTokens = tokenizeSqlSemantic(sql, dialectId);
   const clauses: InsertValuesClause[] = [];
   for (const { span, tokens } of statementTokenGroups(sql, allTokens)) {
     const clause = parseInsertClause(tokens, span);

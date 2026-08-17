@@ -140,7 +140,7 @@ import {
   tableReferenceKey,
   type SqlSemanticDiagnostic,
 } from "@/lib/sql/semantic/diagnostics";
-import { sqlReferenceAnalysisDialectFor } from "@/lib/sql/semantic/dialect";
+import { resolveSqlDialectId, sqlReferenceAnalysisDialectFor } from "@/lib/sql/semantic/dialect";
 import { buildRedisSyntaxDiagnostics, shouldRunRedisDiagnostics } from "@/lib/redis/redisSyntaxDiagnostics";
 import { buildRedisCompletionItemsFromContext, getRedisCompletionContext, getRedisCompletionResultValidFor, shouldAutoOpenRedisCompletion, takesKeyArgument, type RedisCompletionItem } from "@/lib/redis/redisCompletion";
 import type { SqlCompletionColumn, SqlCompletionContext, SqlCompletionForeignKey, SqlCompletionItem, SqlCompletionObject, SqlCompletionReferencedTable, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
@@ -4679,9 +4679,10 @@ onMounted(async () => {
         }
         buildDecorations(currentView: import("@codemirror/view").EditorView) {
           const sql = currentView.state.doc.toString();
+          const dialectId = resolveSqlDialectId({ databaseType: props.databaseType, dialect: sqlBehaviorDialect() });
           const windows: Array<{ from: number; to: number }> = [];
           for (const visibleRange of currentView.visibleRanges) {
-            const next = expandToSqlStatementWindow(sql, visibleRange.from, visibleRange.to);
+            const next = expandToSqlStatementWindow(sql, visibleRange.from, visibleRange.to, dialectId);
             const previous = windows[windows.length - 1];
             if (previous && next.from <= previous.to) previous.to = Math.max(previous.to, next.to);
             else windows.push(next);
@@ -4876,6 +4877,7 @@ onMounted(async () => {
           settingsStore.editorSettings.showInsertValueHints && props.databaseType !== "redis" && props.databaseType !== "mongodb" && props.databaseType !== "elasticsearch" && props.databaseType !== "easysearch" && props.databaseType !== "meilisearch" && props.databaseType !== "victoriametrics",
         getTableColumns: getInsertValueHintTableColumns,
         requestTableColumns: requestInsertValueHintTableColumns,
+        getDialectId: () => resolveSqlDialectId({ databaseType: props.databaseType, dialect: sqlBehaviorDialect() }),
       }),
       previewRangeComp.of(buildPreviewRangeExtension()),
       buildResultSourceRangeExtension(),
