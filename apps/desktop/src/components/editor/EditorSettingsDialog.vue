@@ -237,7 +237,6 @@ function onSettingsRootOpenChange(value: boolean) {
 }
 
 function closeSettings() {
-  if (isSettingsPage.value) return;
   requestCloseSettings(false);
 }
 

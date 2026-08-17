@@ -23,8 +23,10 @@ describe("EditorSettingsDialog unsaved-changes close guard", () => {
 
     // Escape / outside click / the dialog's own X button
     expect(dialogSource).toContain("function onSettingsRootOpenChange(value: boolean) {\n  if (isSettingsPage.value) return;\n  requestCloseSettings(value);\n}");
-    // Every tab footer's "Close" button
-    expect(dialogSource).toContain("function closeSettings() {\n  if (isSettingsPage.value) return;\n  requestCloseSettings(false);\n}");
+    // Every tab footer's "Close" button — must work in both dialog and page
+    // (variant="page") mode, since App.vue relies on closeSettings() emitting
+    // update:open(false) in page mode too (see @update:open on EditorSettingsPage).
+    expect(dialogSource).toContain("function closeSettings() {\n  requestCloseSettings(false);\n}");
 
     // Neither close entrypoint may emit update:open directly anymore - only requestCloseSettings does.
     const closeSettingsBody = dialogSource.slice(dialogSource.indexOf("function closeSettings()"), dialogSource.indexOf("function cancelUnsavedSettingsClose()"));
