@@ -6,7 +6,7 @@ import { searchClickHouseFunctions } from "@/lib/sql/clickhouse/functionRegistry
 import type { ClickHouseFunctionDefinition, ClickHouseFunctionKind } from "@/lib/sql/clickhouse/functionTypes";
 import type { SqlObjectNavigationType } from "@/lib/sql/sqlNavigation";
 import { sqlSemanticDialectFor } from "@/lib/sql/semantic/dialect";
-import { findActiveSqlStatementSpan, tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
+import { findActiveSqlStatementSpan, matchDollarQuoteTag, tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
 import { expandToSqlStatementWindow } from "@/lib/sql/insertValueHints";
 import type { SqlSemanticBuildOptions, SqlSemanticSpan } from "@/lib/sql/semantic/types";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS, resolveSqlSnippetBodyForDatabase } from "@/lib/sql/sqlSnippetTemplates";
@@ -1347,7 +1347,7 @@ export function buildSqlCompletionItems(
     autoAliasTables?: boolean;
   },
 ): SqlCompletionItem[] {
-  if (isSqlCompletionSuppressedContext(sql, cursor)) return [];
+  if (isSqlCompletionSuppressedContext(sql, cursor, input)) return [];
   const context = getSqlCompletionContext(sql, cursor, input);
   return buildSqlCompletionItemsFromContext(context, input);
 }
@@ -1502,7 +1502,7 @@ class SqlCompletionProvider {
 
 export function shouldAutoOpenSqlCompletion(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
   if (getPostgresSequenceLiteralCompletionContext(sql, cursor, options.databaseType)) return true;
-  if (isSqlCompletionSuppressedContext(sql, cursor)) return false;
+  if (isSqlCompletionSuppressedContext(sql, cursor, options)) return false;
   const previousChar = sql[cursor - 1];
   if (!previousChar) return false;
   if (/\bon\s+$/i.test(sql.slice(0, cursor))) return true;
@@ -1530,8 +1530,8 @@ function isColumnCompletionExpressionStart(beforeCursor: string): boolean {
   return /(?:\b(?:where|on|having|and|or|not|is|like|in|between|by)\b|[,(])$/i.test(cleaned);
 }
 
-export function isSqlCompletionSuppressedContext(sql: string, cursor: number): boolean {
-  const context = getSqlLexicalContext(sql, cursor);
+export function isSqlCompletionSuppressedContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
+  const context = getSqlLexicalContext(sql, cursor, resolveCompletionDialectId(options));
   return context.inLineComment || context.inBlockComment || context.inStringLiteral;
 }
 
@@ -1738,22 +1738,33 @@ function parsePostgresRegclassPrefix(raw: string): { nameStart: number; name: st
   };
 }
 
-export function isSqlStringLiteralContext(sql: string, cursor: number): boolean {
-  return getSqlLexicalContext(sql, cursor).inStringLiteral;
+/**
+ * Resolves the semantic dialect id ("mysql", "postgres", ...) used to keep statement-window
+ * scanning (expandToSqlStatementWindow, getSqlLexicalContext) in sync with tokenizeSqlSemantic's
+ * own dialect-aware tokenization -- most importantly, whether `#` starts a line comment (MySQL)
+ * or is an operator (PostgreSQL). Defaults to "mysql" when no dialect info is available, matching
+ * tokenizeSqlSemantic's own default and preserving prior behavior for callers that don't know it.
+ */
+function resolveCompletionDialectId(options: SqlSemanticBuildOptions): string {
+  return options.databaseType || options.dialect ? sqlSemanticDialectFor(options).id : "mysql";
 }
 
-export function isSqlCommentContext(sql: string, cursor: number): boolean {
-  const context = getSqlLexicalContext(sql, cursor);
+export function isSqlStringLiteralContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
+  return getSqlLexicalContext(sql, cursor, resolveCompletionDialectId(options)).inStringLiteral;
+}
+
+export function isSqlCommentContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
+  const context = getSqlLexicalContext(sql, cursor, resolveCompletionDialectId(options));
   return context.inLineComment || context.inBlockComment;
 }
 
-function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
+function getSqlLexicalContext(sql: string, cursor: number, dialectId: string): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
   const end = Math.max(0, Math.min(cursor, sql.length));
   // Bound the backward scan so huge documents do not pay O(document) on every keystroke (this
   // runs on every completion request). expandToSqlStatementWindow's `from` is verified rather
   // than assumed clean (it widens its own backward scan until the boundary is confirmed, or
   // grounds at the true document start), so scanning forward from it here is safe.
-  const start = expandToSqlStatementWindow(sql, end, end).from;
+  const start = expandToSqlStatementWindow(sql, end, end, dialectId).from;
   let inSingleQuote = false;
   let inDoubleQuote = false;
   let inBacktick = false;
@@ -1817,7 +1828,7 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
     if (ch === "-" && next === "-") {
       inLineComment = true;
       index += 1;
-    } else if (ch === "#") {
+    } else if (ch === "#" && dialectId === "mysql") {
       inLineComment = true;
     } else if (ch === "/" && next === "*") {
       inBlockComment = true;
@@ -1831,7 +1842,7 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
     } else if (ch === "[") {
       inBracket = true;
     } else if (ch === "$") {
-      const marker = /^\$[A-Za-z_0-9]*\$/.exec(sql.slice(index))?.[0];
+      const marker = matchDollarQuoteTag(sql, index);
       if (marker) {
         dollarTag = marker;
         index += marker.length - 1;
@@ -1860,12 +1871,14 @@ export function isSqlLikeCompletionStatement(sql: string, cursor: number, option
 
 function activeSqlCompletionStatementSpan(sql: string, cursor: number, options: SqlSemanticBuildOptions): SqlSemanticSpan {
   const safeCursor = Math.max(0, Math.min(cursor, sql.length));
-  const dialectId = options.databaseType || options.dialect ? sqlSemanticDialectFor(options).id : "mysql";
+  const dialectId = resolveCompletionDialectId(options);
   // Tokenizing the full document on every keystroke is O(document) and, with
   // autocompletion's activateOnTyping, runs on every keystroke. Bound tokenization
   // to the statement window around the cursor (same tradeoff as
-  // expandToSqlStatementWindow's other callers) and translate spans back.
-  const window = expandToSqlStatementWindow(sql, safeCursor, safeCursor);
+  // expandToSqlStatementWindow's other callers) and translate spans back. Pass
+  // dialectId through so the window boundary agrees with tokenizeSqlSemantic below
+  // on dialect-sensitive lexing (e.g. '#' as a MySQL comment vs a PostgreSQL operator).
+  const window = expandToSqlStatementWindow(sql, safeCursor, safeCursor, dialectId);
   const windowSql = sql.slice(window.from, window.to);
   const windowCursor = safeCursor - window.from;
   const tokens = tokenizeSqlSemantic(windowSql, dialectId);

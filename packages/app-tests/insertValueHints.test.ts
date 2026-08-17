@@ -266,6 +266,42 @@ test("expandToSqlStatementWindow stays bounded (fast path) for many small statem
   assert.notEqual(window.from, 0, "should resolve via the bounded backward scan, not fall back to a full-document scan");
 });
 
+test("expandToSqlStatementWindow treats '#' as a dialect-sensitive operator/comment, matching tokenizeSqlSemantic", () => {
+  const sql = "SELECT 5 # 3; SELECT 1;";
+  const cursor = sql.indexOf("SELECT 1") + 4;
+  // PostgreSQL: '#' is an operator (e.g. #, #>, #>>, #-), so this is two statements and the
+  // window around the cursor must not include the unrelated first one.
+  const postgresWindow = expandToSqlStatementWindow(sql, cursor, cursor, "postgres");
+  assert.equal(sql.slice(postgresWindow.from, postgresWindow.to), "SELECT 1");
+  // MySQL (and the default, unspecified dialect): '#' starts a line comment that never closes
+  // (no trailing newline), so the ';' after it is inside the comment, not a real boundary -- the
+  // whole input is one statement, matching tokenizeSqlSemantic's own MySQL tokenization.
+  const mysqlWindow = expandToSqlStatementWindow(sql, cursor, cursor, "mysql");
+  assert.equal(mysqlWindow.from, 0);
+  const defaultWindow = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.equal(defaultWindow.from, 0, "omitting dialectId must keep the prior default (mysql-like) behavior");
+});
+
+test("expandToSqlStatementWindow does not reallocate per '$' for many dollar-quote-marker lookalikes", () => {
+  const placeholders = Array.from({ length: 20_000 }, (_, index) => `$${index}`).join(", ");
+  const sql = `SELECT ${placeholders};`;
+  const cursor = sql.length - 5;
+  const startedAt = performance.now();
+  expandToSqlStatementWindow(sql, cursor, cursor);
+  const elapsedMs = performance.now() - startedAt;
+  assert.ok(elapsedMs < 50, `expandToSqlStatementWindow took ${elapsedMs.toFixed(1)}ms scanning many '$' markers`);
+});
+
+test("expandToSqlStatementWindow reuses the cached result for identical (sql, from, to, dialectId) calls", () => {
+  const sql = "SELECT 5 # 3; SELECT 1;";
+  const cursor = sql.indexOf("SELECT 1") + 4;
+  const first = expandToSqlStatementWindow(sql, cursor, cursor, "postgres");
+  const second = expandToSqlStatementWindow(sql, cursor, cursor, "postgres");
+  assert.equal(first, second, "identical args should return the memoized object, not a freshly computed one");
+  const third = expandToSqlStatementWindow(sql, cursor, cursor);
+  assert.notEqual(third, first, "a different dialectId must not reuse another dialect's cached window");
+});
+
 test("ignores statements that are not INSERT VALUES", () => {
   const sql = "SELECT 1; UPDATE users SET name = 'a' WHERE id = 1;";
   assert.deepEqual(parseInsertValueHints(sql), []);
