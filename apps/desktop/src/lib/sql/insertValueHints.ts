@@ -232,6 +232,17 @@ function shiftClause(clause: InsertValuesClause, offset: number): InsertValuesCl
  * Scans at most LOOKBACK bytes before `from` and LOOKAHEAD after `to` so large scripts do not pay
  * O(document) on every keystroke in the common case (many statements, none of them huge).
  *
+ * This is a bounded, best-effort heuristic operating on a plain string -- it has no notion of a
+ * live document or incremental parse state. It's the correct (only) choice for this module's
+ * pure-string callers (parseInsertValuesClauses* and their tests), which have no live editor to
+ * consult. Callers that *do* have a live CodeMirror `EditorState` should prefer
+ * `sqlSyntaxTreeWindow.ts`'s `resolveStatementWindowFromSyntaxTree`, which resolves the same
+ * question against CodeMirror's own incrementally-parsed SQL syntax tree instead of re-deriving
+ * lexical state locally -- see that module's doc comment for why it's provably correct for every
+ * boundary class below except one narrow, disclosed gap (dollar-quoted bodies). sqlCompletion.ts's
+ * `getSqlLexicalContext`/`activeSqlCompletionStatementSpan` already do this, falling back to the
+ * scanner below only when there's no live state to consult.
+ *
  * The backward scan starts at an arbitrary document offset, so its lexical state (in a string? in
  * a comment? inside a dollar-quoted body? how deep in nested parens?) cannot simply be assumed
  * clean -- if the cursor sits more than LOOKBACK bytes into such a construct, that assumption is
@@ -246,16 +257,16 @@ function shiftClause(clause: InsertValuesClause, offset: number): InsertValuesCl
  * dollar-quote characters -- e.g. a long run of uniform "SELECT n;" statements), both scans
  * converge on the identical answer regardless of whether the true state entering that content is
  * actually clean or is deep inside some unclosed construct opened much earlier. Confirmed
- * reproduction: a ~60k-statement run of "SELECT n;" inside a PostgreSQL `$$ ... $$` function body
- * (no quotes/parens anywhere in the run) fools the check and returns a multi-character fragment
- * from the middle of the body instead of the true statement start. This is not fixable with a
- * smarter local heuristic -- the two situations are byte-for-byte indistinguishable from a purely
- * local scan; making the check stricter (e.g. requiring a lexically-significant character in the
- * widened margin) would also reject the common, entirely legitimate case of many small statements
- * with no punctuation, which is the primary case this windowing scheme exists to keep fast. A real
- * fix needs either cached/incremental lexical state or a syntax-tree boundary (both discussed, and
- * both larger changes than this module's plain-string API supports today); until then this is a
- * deliberate, documented tradeoff, not an oversight.
+ * reproduction: an unterminated string containing many repeated ';' characters, or a large run of
+ * "SELECT n;" statements inside a PostgreSQL `$$ ... $$` function body, both fool the check. This
+ * is not fixable with a smarter local heuristic -- the two situations are byte-for-byte
+ * indistinguishable from a purely local scan; making the check stricter (e.g. requiring a
+ * lexically-significant character in the widened margin) would also reject the common, entirely
+ * legitimate case of many small statements with no punctuation, which is the primary case this
+ * windowing scheme exists to keep fast. This is a deliberate, documented tradeoff of the
+ * pure-string fallback, not an oversight -- see `packages/app-tests/insertValueHints.test.ts`'s
+ * test documenting it, and `sqlSyntaxTreeWindow.ts` for the provably-correct path used whenever a
+ * live `EditorState` is available (i.e. for every real user keystroke in the editor).
  *
  * `dialectId` defaults to "mysql" (matching semantic/tokens.ts's tokenizeSqlSemantic default) and
  * only affects how `#` is treated -- see stepLexState. Callers that know the active SQL dialect

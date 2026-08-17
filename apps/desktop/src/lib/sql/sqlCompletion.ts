@@ -7,8 +7,9 @@ import type { ClickHouseFunctionDefinition, ClickHouseFunctionKind } from "@/lib
 import type { SqlObjectNavigationType } from "@/lib/sql/sqlNavigation";
 import { resolveSqlDialectId } from "@/lib/sql/semantic/dialect";
 import { findActiveSqlStatementSpan, matchDollarQuoteTag, tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
-import { expandToSqlStatementWindow } from "@/lib/sql/insertValueHints";
+import { expandToSqlStatementWindow, type TextRange } from "@/lib/sql/insertValueHints";
 import type { SqlSemanticBuildOptions, SqlSemanticSpan } from "@/lib/sql/semantic/types";
+import { isEditorStatePlausibleFor, resolveLexicalLeafFromSyntaxTree, resolveStatementWindowFromSyntaxTree } from "@/lib/sql/sqlSyntaxTreeWindow";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS, resolveSqlSnippetBodyForDatabase } from "@/lib/sql/sqlSnippetTemplates";
 import { requiresMysqlIdentifierQuote, requiresPostgresIdentifierQuote } from "@/lib/sql/sqlIdentifier";
 import { identifierMatchScore, matchesIdentifierSearch } from "@/lib/sql/identifierSearch";
@@ -1531,8 +1532,26 @@ function isColumnCompletionExpressionStart(beforeCursor: string): boolean {
 }
 
 export function isSqlCompletionSuppressedContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
-  const context = getSqlLexicalContext(sql, cursor, resolveSqlDialectId(options));
+  const context = getSqlLexicalContext(sql, cursor, options);
   return context.inLineComment || context.inBlockComment || context.inStringLiteral;
+}
+
+/**
+ * Resolves the statement window backing a boundary-sensitive lookup, preferring CodeMirror's own
+ * incrementally-parsed syntax tree (see sqlSyntaxTreeWindow.ts) when the caller has a live,
+ * plausibly-matching `EditorState`, and falling back to the bounded heuristic scanner in
+ * insertValueHints.ts otherwise -- e.g. pure-string test/utility callers, or a live editor whose
+ * background parse hasn't caught up to `cursor` yet. The tree path never blocks and is never worse
+ * than the scanner; see sqlSyntaxTreeWindow.ts's doc comment for the one known, disclosed gap
+ * (dollar-quoted bodies, guarded rather than silently trusted).
+ */
+function resolveSqlStatementWindow(sql: string, cursor: number, options: SqlSemanticBuildOptions, dialectId: string): TextRange {
+  const editorState = options.editorState;
+  if (editorState && isEditorStatePlausibleFor(editorState, sql)) {
+    const window = resolveStatementWindowFromSyntaxTree(editorState, cursor);
+    if (window) return window;
+  }
+  return expandToSqlStatementWindow(sql, cursor, cursor, dialectId);
 }
 
 export function getPostgresSequenceLiteralCompletionContext(sql: string, cursor: number, databaseType?: DatabaseType): PostgresSequenceLiteralCompletionContext | null {
@@ -1739,16 +1758,22 @@ function parsePostgresRegclassPrefix(raw: string): { nameStart: number; name: st
 }
 
 export function isSqlStringLiteralContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
-  return getSqlLexicalContext(sql, cursor, resolveSqlDialectId(options)).inStringLiteral;
+  return getSqlLexicalContext(sql, cursor, options).inStringLiteral;
 }
 
 export function isSqlCommentContext(sql: string, cursor: number, options: SqlSemanticBuildOptions = {}): boolean {
-  const context = getSqlLexicalContext(sql, cursor, resolveSqlDialectId(options));
+  const context = getSqlLexicalContext(sql, cursor, options);
   return context.inLineComment || context.inBlockComment;
 }
 
-function getSqlLexicalContext(sql: string, cursor: number, dialectId: string): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
+function getSqlLexicalContext(sql: string, cursor: number, options: SqlSemanticBuildOptions): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
   const end = Math.max(0, Math.min(cursor, sql.length));
+  const editorState = options.editorState;
+  if (editorState && isEditorStatePlausibleFor(editorState, sql)) {
+    const treeContext = resolveLexicalLeafFromSyntaxTree(editorState, end);
+    if (treeContext) return treeContext;
+  }
+  const dialectId = resolveSqlDialectId(options);
   // Bound the backward scan so huge documents do not pay O(document) on every keystroke (this
   // runs on every completion request). expandToSqlStatementWindow's `from` is verified rather
   // than assumed clean (it widens its own backward scan until the boundary is confirmed, or
@@ -1863,11 +1888,11 @@ function activeSqlCompletionStatementSpan(sql: string, cursor: number, options: 
   const dialectId = resolveSqlDialectId(options);
   // Tokenizing the full document on every keystroke is O(document) and, with
   // autocompletion's activateOnTyping, runs on every keystroke. Bound tokenization
-  // to the statement window around the cursor (same tradeoff as
-  // expandToSqlStatementWindow's other callers) and translate spans back. Pass
-  // dialectId through so the window boundary agrees with tokenizeSqlSemantic below
-  // on dialect-sensitive lexing (e.g. '#' as a MySQL comment vs a PostgreSQL operator).
-  const window = expandToSqlStatementWindow(sql, safeCursor, safeCursor, dialectId);
+  // to the statement window around the cursor (preferring the live syntax tree, see
+  // resolveSqlStatementWindow) and translate spans back. Pass dialectId through so the
+  // window boundary agrees with tokenizeSqlSemantic below on dialect-sensitive lexing
+  // (e.g. '#' as a MySQL comment vs a PostgreSQL operator) when falling back to the scanner.
+  const window = resolveSqlStatementWindow(sql, safeCursor, options, dialectId);
   const windowSql = sql.slice(window.from, window.to);
   const windowCursor = safeCursor - window.from;
   const tokens = tokenizeSqlSemantic(windowSql, dialectId);

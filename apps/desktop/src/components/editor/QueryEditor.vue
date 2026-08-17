@@ -611,6 +611,7 @@ function sqlCompletionDialectOptions() {
   return {
     databaseType: props.databaseType,
     dialect: sqlBehaviorDialect(),
+    editorState: view.value?.state,
   };
 }
 
@@ -3369,7 +3370,7 @@ async function provideSqlCompletions(context: CompletionContext) {
 
   try {
     // 1. Suppressed context (comment / string literal) rejects everything, including explicit.
-    if (isSqlCompletionSuppressedContext(fullDoc, position, { databaseType: props.databaseType }) && !sequenceLiteralContext) return null;
+    if (isSqlCompletionSuppressedContext(fullDoc, position, { databaseType: props.databaseType, editorState: currentState }) && !sequenceLiteralContext) return null;
 
     // 2. Determine completion origin (session-level marker).
     activeCompletionOrigin = originForSqlCompletionProvider(activeCompletionOrigin, context.explicit);
@@ -3622,7 +3623,7 @@ function flushImeComposition() {
  */
 function shouldTriggerSqlCompletionForPosition(fullDoc: string, position: number): boolean {
   const sequenceLiteralContext = getPostgresSequenceLiteralCompletionContext(fullDoc, position, props.databaseType);
-  if (isSqlCompletionSuppressedContext(fullDoc, position, { databaseType: props.databaseType }) && !sequenceLiteralContext) return false;
+  if (isSqlCompletionSuppressedContext(fullDoc, position, { databaseType: props.databaseType, editorState: view.value?.state }) && !sequenceLiteralContext) return false;
   const mode = settingsStore.editorSettings.completionTriggerMode;
   if (mode === "manual") return false;
 
