@@ -1749,10 +1749,10 @@ export function isSqlCommentContext(sql: string, cursor: number): boolean {
 
 function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boolean; inBlockComment: boolean; inStringLiteral: boolean } {
   const end = Math.max(0, Math.min(cursor, sql.length));
-  // Bound the backward scan so huge documents do not pay O(document) on every
-  // keystroke (this runs on every completion request). expandToSqlStatementWindow's
-  // `from` already lands on a top-level statement boundary within its lookback,
-  // where quote/comment state is guaranteed clean, so scanning from there is safe.
+  // Bound the backward scan so huge documents do not pay O(document) on every keystroke (this
+  // runs on every completion request). expandToSqlStatementWindow's `from` is verified rather
+  // than assumed clean (it widens its own backward scan until the boundary is confirmed, or
+  // grounds at the true document start), so scanning forward from it here is safe.
   const start = expandToSqlStatementWindow(sql, end, end).from;
   let inSingleQuote = false;
   let inDoubleQuote = false;
@@ -1760,6 +1760,7 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
   let inBracket = false;
   let inLineComment = false;
   let inBlockComment = false;
+  let dollarTag: string | null = null;
 
   for (let index = start; index < end; index += 1) {
     const ch = sql[index] ?? "";
@@ -1777,6 +1778,13 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
       continue;
     }
 
+    if (dollarTag) {
+      if (sql.startsWith(dollarTag, index)) {
+        index += dollarTag.length - 1;
+        dollarTag = null;
+      }
+      continue;
+    }
     if (inSingleQuote) {
       if (ch === "\\" && next) {
         index += 1;
@@ -1822,16 +1830,22 @@ function getSqlLexicalContext(sql: string, cursor: number): { inLineComment: boo
       inBacktick = true;
     } else if (ch === "[") {
       inBracket = true;
+    } else if (ch === "$") {
+      const marker = /^\$[A-Za-z_0-9]*\$/.exec(sql.slice(index))?.[0];
+      if (marker) {
+        dollarTag = marker;
+        index += marker.length - 1;
+      }
     }
   }
 
-  // Only single-quoted text is a value literal here. Double quotes, backticks,
-  // and brackets delimit identifiers in common SQL dialects, so they must not
+  // Only single-quoted and dollar-quoted text is a value literal here. Double quotes,
+  // backticks, and brackets delimit identifiers in common SQL dialects, so they must not
   // suppress identifier completion.
   return {
     inLineComment,
     inBlockComment,
-    inStringLiteral: inSingleQuote,
+    inStringLiteral: inSingleQuote || dollarTag !== null,
   };
 }
 

@@ -228,188 +228,164 @@ function shiftClause(clause: InsertValuesClause, offset: number): InsertValuesCl
 }
 
 /**
- * Expand [from, to) to the nearest top-level statement window (quote/comment aware).
- * Scans at most LOOKBACK bytes before `from` and LOOKAHEAD after `to` so large scripts
- * do not pay O(document) on every keystroke.
+ * Expand [from, to) to the nearest top-level statement window (quote/comment/dollar-quote aware).
+ * Scans at most LOOKBACK bytes before `from` and LOOKAHEAD after `to` so large scripts do not pay
+ * O(document) on every keystroke in the common case (many statements, none of them huge).
+ *
+ * The backward scan starts at an arbitrary document offset, so its lexical state (in a string? in
+ * a comment? inside a dollar-quoted body? how deep in nested parens?) cannot simply be assumed
+ * clean -- if the cursor sits more than LOOKBACK bytes into such a construct, that assumption is
+ * wrong and the scan can find a bogus statement boundary (e.g. a ';' inside an unclosed string or
+ * a dollar-quoted function body). `resolveStatementStart` guards against this by verifying the
+ * assumption instead of trusting it: it widens the backward window until two consecutive scans
+ * agree on the same boundary, or until it reaches the true start of the document (index 0), where
+ * the clean-state assumption is always correct. Realistic documents ground out in one or two
+ * bounded scans; only a construct spanning tens of megabytes forces widening all the way to the
+ * document start, and even then the total work is bounded (a doubling series), not unbounded.
  */
 const STATEMENT_LOOKBACK = 32 * 1024;
 const STATEMENT_LOOKAHEAD = 32 * 1024;
+const MAX_STATEMENT_START_WIDENINGS = 12; // 32KB * 2^12 = 128MB before we give up widening
+
+interface LexState {
+  depth: number;
+  inLineComment: boolean;
+  inBlockComment: boolean;
+  quote: string | null;
+  dollarTag: string | null;
+}
+
+function isLexStateClean(state: LexState): boolean {
+  return state.depth === 0 && !state.inLineComment && !state.inBlockComment && !state.quote && !state.dollarTag;
+}
+
+/** Advances `state` past the token starting at `sql[index]` and returns the next index. */
+function stepLexState(sql: string, index: number, state: LexState): number {
+  const ch = sql[index] ?? "";
+  const next = sql[index + 1] ?? "";
+
+  if (state.inLineComment) {
+    if (ch === "\n") state.inLineComment = false;
+    return index + 1;
+  }
+  if (state.inBlockComment) {
+    if (ch === "*" && next === "/") {
+      state.inBlockComment = false;
+      return index + 2;
+    }
+    return index + 1;
+  }
+  if (state.dollarTag) {
+    if (sql.startsWith(state.dollarTag, index)) {
+      const tagLength = state.dollarTag.length;
+      state.dollarTag = null;
+      return index + tagLength;
+    }
+    return index + 1;
+  }
+  if (state.quote) {
+    const closeCh = state.quote === "]" ? "]" : state.quote;
+    if (ch === closeCh) {
+      if (next === closeCh) return index + 2;
+      state.quote = null;
+    }
+    return index + 1;
+  }
+
+  if (ch === "-" && next === "-") {
+    state.inLineComment = true;
+    return index + 2;
+  }
+  if (ch === "#") {
+    state.inLineComment = true;
+    return index + 1;
+  }
+  if (ch === "/" && next === "*") {
+    state.inBlockComment = true;
+    return index + 2;
+  }
+  if (ch === "'" || ch === '"' || ch === "`") {
+    state.quote = ch;
+    return index + 1;
+  }
+  if (ch === "[") {
+    state.quote = "]";
+    return index + 1;
+  }
+  if (ch === "$") {
+    const marker = /^\$[A-Za-z_0-9]*\$/.exec(sql.slice(index))?.[0];
+    if (marker) {
+      state.dollarTag = marker;
+      return index + marker.length;
+    }
+    return index + 1;
+  }
+  if (ch === "(") {
+    state.depth += 1;
+    return index + 1;
+  }
+  if (ch === ")") {
+    state.depth = Math.max(0, state.depth - 1);
+    return index + 1;
+  }
+  return index + 1;
+}
+
+/**
+ * Scans sql[from, hardStop) from a known-clean lexical state, tracking the last top-level ';'
+ * strictly before `searchEndFrom` (when `trackStart` is set) and the first top-level ';' at or
+ * after `searchEndFrom`.
+ */
+function scanStatementBoundaries(sql: string, from: number, searchEndFrom: number, hardStop: number, trackStart: boolean): { start: number; startFound: boolean; end: number } {
+  const state: LexState = { depth: 0, inLineComment: false, inBlockComment: false, quote: null, dollarTag: null };
+  let start = from;
+  let startFound = false;
+  let end = hardStop;
+  let index = from;
+
+  while (index < hardStop) {
+    if (sql[index] === ";" && isLexStateClean(state)) {
+      if (index >= searchEndFrom) {
+        end = index;
+        break;
+      }
+      if (trackStart) {
+        start = index + 1;
+        startFound = true;
+      }
+    }
+    index = stepLexState(sql, index, state);
+  }
+
+  return { start, startFound, end };
+}
+
+/** Finds the nearest top-level statement boundary at or before `pos`, see module comment above. */
+function resolveStatementStart(sql: string, pos: number): number {
+  let lookback = STATEMENT_LOOKBACK;
+  let previousCandidate: number | null = null;
+
+  for (let attempt = 0; attempt < MAX_STATEMENT_START_WIDENINGS; attempt += 1) {
+    const scanFrom = Math.max(0, pos - lookback);
+    const result = scanStatementBoundaries(sql, scanFrom, pos, pos, true);
+    if (scanFrom === 0) return result.start;
+    if (result.startFound && result.start === previousCandidate) return result.start;
+    previousCandidate = result.startFound ? result.start : null;
+    lookback *= 2;
+  }
+  // Widening did not converge; ground at the true document start, where clean state is guaranteed.
+  return scanStatementBoundaries(sql, 0, pos, pos, true).start;
+}
 
 export function expandToSqlStatementWindow(sql: string, from: number, to: number): TextRange {
   const safeFrom = Math.max(0, Math.min(from, sql.length));
   const safeTo = Math.max(safeFrom, Math.min(to, sql.length));
-  const scanFrom = Math.max(0, safeFrom - STATEMENT_LOOKBACK);
-  const scanTo = Math.min(sql.length, safeTo + STATEMENT_LOOKAHEAD);
-  const slice = scanFrom === 0 && scanTo === sql.length ? sql : sql.slice(scanFrom, scanTo);
-  const localFrom = safeFrom - scanFrom;
-  const localTo = safeTo - scanFrom;
-  const start = findStatementStart(slice, localFrom) + scanFrom;
-  const end = findStatementEnd(slice, Math.max(localFrom, localTo)) + scanFrom;
-  const trimmed = trimSpan(sql, start, Math.min(end, scanTo));
+  const start = resolveStatementStart(sql, safeFrom);
+  const searchEndFrom = Math.max(safeFrom, safeTo);
+  const hardStop = Math.min(sql.length, safeTo + STATEMENT_LOOKAHEAD);
+  const end = scanStatementBoundaries(sql, start, searchEndFrom, hardStop, false).end;
+  const trimmed = trimSpan(sql, start, Math.min(end, hardStop));
   return { from: trimmed.start, to: trimmed.end };
-}
-
-function findStatementStart(sql: string, pos: number): number {
-  let index = 0;
-  let start = 0;
-  let depth = 0;
-  let inLineComment = false;
-  let inBlockComment = false;
-  let quote: string | null = null;
-
-  while (index < pos) {
-    const ch = sql[index] ?? "";
-    const next = sql[index + 1] ?? "";
-
-    if (inLineComment) {
-      if (ch === "\n") inLineComment = false;
-      index += 1;
-      continue;
-    }
-    if (inBlockComment) {
-      if (ch === "*" && next === "/") {
-        inBlockComment = false;
-        index += 2;
-        continue;
-      }
-      index += 1;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) {
-        if (next === quote) {
-          index += 2;
-          continue;
-        }
-        quote = null;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (ch === "-" && next === "-") {
-      inLineComment = true;
-      index += 2;
-      continue;
-    }
-    if (ch === "#") {
-      inLineComment = true;
-      index += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      inBlockComment = true;
-      index += 2;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
-      index += 1;
-      continue;
-    }
-    if (ch === "[") {
-      quote = "]";
-      index += 1;
-      continue;
-    }
-    if (ch === "(") {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (ch === ")") {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (ch === ";" && depth === 0) {
-      start = index + 1;
-      index += 1;
-      continue;
-    }
-    index += 1;
-  }
-  return start;
-}
-
-function findStatementEnd(sql: string, pos: number): number {
-  let index = pos;
-  let depth = 0;
-  let inLineComment = false;
-  let inBlockComment = false;
-  let quote: string | null = null;
-
-  while (index < sql.length) {
-    const ch = sql[index] ?? "";
-    const next = sql[index + 1] ?? "";
-
-    if (inLineComment) {
-      if (ch === "\n") inLineComment = false;
-      index += 1;
-      continue;
-    }
-    if (inBlockComment) {
-      if (ch === "*" && next === "/") {
-        inBlockComment = false;
-        index += 2;
-        continue;
-      }
-      index += 1;
-      continue;
-    }
-    if (quote) {
-      if ((quote === "]" && ch === "]") || (quote !== "]" && ch === quote)) {
-        if (next === (quote === "]" ? "]" : quote)) {
-          index += 2;
-          continue;
-        }
-        quote = null;
-      }
-      index += 1;
-      continue;
-    }
-
-    if (ch === "-" && next === "-") {
-      inLineComment = true;
-      index += 2;
-      continue;
-    }
-    if (ch === "#") {
-      inLineComment = true;
-      index += 1;
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      inBlockComment = true;
-      index += 2;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") {
-      quote = ch;
-      index += 1;
-      continue;
-    }
-    if (ch === "[") {
-      quote = "]";
-      index += 1;
-      continue;
-    }
-    if (ch === "(") {
-      depth += 1;
-      index += 1;
-      continue;
-    }
-    if (ch === ")") {
-      depth = Math.max(0, depth - 1);
-      index += 1;
-      continue;
-    }
-    if (ch === ";" && depth === 0) {
-      return index;
-    }
-    index += 1;
-  }
-  return sql.length;
 }
 
 function mergeTextRanges(ranges: readonly TextRange[]): TextRange[] {
