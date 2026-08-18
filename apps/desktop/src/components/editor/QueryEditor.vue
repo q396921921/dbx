@@ -106,6 +106,7 @@ import { EDITOR_FONT_FAMILY_CSS_VAR, EDITOR_FONT_SIZE_CSS_VAR, editorDiagnosticC
 import { createStatementGutterMarkerDom, shouldShowStatementGutter } from "@/lib/editor/codemirrorStatementGutter";
 import { createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { searchKeymapWithoutModD } from "@/lib/editor/codemirrorSearchKeymap";
+import { defaultKeymapWithoutIndentBrackets } from "@/lib/editor/codemirrorDefaultKeymap";
 import { appendSqlCompletionSpace } from "@/lib/editor/sqlCompletionInsertion";
 import { compareSqlCompletions, completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
 import { clampEditorFontSize, createEditorZoomCommitScheduler, fontSizeFromGestureScale, fontSizeFromWheelDelta } from "@/lib/editor/editorZoom";
@@ -4906,7 +4907,7 @@ onMounted(async () => {
       activeLineHighlighter,
       // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
       vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
-      keymap.of([...defaultKeymap.filter((item) => item.run !== toggleBlockComment), ...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+      keymap.of([...defaultKeymapWithoutIndentBrackets(defaultKeymap).filter((item) => item.run !== toggleBlockComment), ...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
       sqlLanguageComp.of(buildSqlLanguageExtension()),
       sqlSemanticHighlightComp.of(buildSqlSemanticHighlightExtension()),
       tooltips({ parent: tooltipParent }),
