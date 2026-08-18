@@ -55,7 +55,7 @@ struct SshClient {
     /// Signaled once an interactive TOFU prompt actually starts waiting on
     /// the user, so the caller can stop charging that think-time against
     /// its short network-level connect timeout (see `connect_and_authenticate`).
-    prompt_started_tx: Option<mpsc::Sender<()>>,
+    prompt_started_tx: Option<mpsc::Sender<Instant>>,
 }
 
 impl client::Handler for SshClient {
@@ -111,7 +111,7 @@ impl SshClient {
         // network -- tell the caller so it can stop enforcing its short
         // network-level connect timeout for the remainder of the handshake.
         if let Some(tx) = &self.prompt_started_tx {
-            let _ = tx.try_send(());
+            let _ = tx.try_send(Instant::now());
         }
 
         let answer = tokio::time::timeout(TOFU_PROMPT_TIMEOUT, responder_rx).await;
@@ -180,6 +180,10 @@ fn ssh_client_config() -> Config {
     preferred.mac = Cow::Owned(mac);
 
     Config { nodelay: true, keepalive_interval: Some(Duration::from_secs(30)), preferred, ..Default::default() }
+}
+
+fn tofu_prompt_deadline(network_deadline: Instant, prompt_started_at: Instant) -> Option<Instant> {
+    (prompt_started_at < network_deadline).then_some(prompt_started_at + TOFU_PROMPT_TIMEOUT)
 }
 
 /// Returns `true` only when the server explicitly advertised `password` among
@@ -336,7 +340,7 @@ async fn connect_and_authenticate(
     // changed keys, missing prompt gateways, timeouts, and rejection fail closed.
     let host_key_verifier = Arc::new(HostKeyVerifier::new(known_hosts_path.to_path_buf()));
 
-    let (started_tx, mut started_rx) = mpsc::channel::<()>(1);
+    let (started_tx, mut started_rx) = mpsc::channel::<Instant>(1);
     let connect_fut = client::connect(
         config,
         (connect_host, connect_port),
@@ -358,7 +362,8 @@ async fn connect_and_authenticate(
     // a prompt has actually started, we hand the remaining budget off to
     // TOFU_PROMPT_TIMEOUT (the real ceiling enforced inside
     // `prompt_for_host_key` itself); the network-only path is unaffected.
-    let sleep = tokio::time::sleep(connect_timeout);
+    let network_deadline = Instant::now() + connect_timeout;
+    let sleep = tokio::time::sleep_until(network_deadline);
     tokio::pin!(sleep);
     let mut extended = false;
 
@@ -366,9 +371,11 @@ async fn connect_and_authenticate(
         tokio::select! {
             res = &mut connect_fut => break res.map_err(|e| format!("SSH connection failed: {e}"))?,
             _ = &mut sleep => return Err(format!("SSH connection timed out ({connect_timeout_secs}s)")),
-            Some(()) = started_rx.recv(), if !extended => {
+            Some(prompt_started_at) = started_rx.recv(), if !extended => {
                 extended = true;
-                sleep.as_mut().reset(Instant::now() + TOFU_PROMPT_TIMEOUT);
+                if let Some(prompt_deadline) = tofu_prompt_deadline(network_deadline, prompt_started_at) {
+                    sleep.as_mut().reset(prompt_deadline);
+                }
             }
         }
     };
@@ -1862,8 +1869,8 @@ mod tests {
         bind_tunnel_listener, connect_and_authenticate, describe_terminal_auth_failure, effective_hop_timeout,
         netcat_proxy_command, openssh_padding_len, plan_chain, read_ssh_string,
         sanitize_unencrypted_openssh_comment_bytes, server_offers_keyboard_interactive, server_offers_password,
-        ssh_client_config, HostKeyState, HostKeyVerifier, PlannedTunnel, TunnelEntry, TunnelKind, TunnelManager,
-        TunnelStatus,
+        ssh_client_config, tofu_prompt_deadline, HostKeyState, HostKeyVerifier, PlannedTunnel, TunnelEntry, TunnelKind,
+        TunnelManager, TunnelStatus, TOFU_PROMPT_TIMEOUT,
     };
     use crate::db::ssh_prompt;
     use crate::models::connection::{default_ssh_connect_timeout_secs, SshTunnelConfig};
@@ -1882,6 +1889,28 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::mpsc;
+    use tokio::time::{Duration, Instant};
+
+    #[test]
+    fn tofu_prompt_deadline_uses_the_actual_prompt_start() {
+        let now = Instant::now();
+        let network_deadline = now + Duration::from_secs(10);
+        let prompt_started_at = now + Duration::from_secs(4);
+
+        assert_eq!(
+            tofu_prompt_deadline(network_deadline, prompt_started_at),
+            Some(prompt_started_at + TOFU_PROMPT_TIMEOUT)
+        );
+    }
+
+    #[test]
+    fn tofu_prompt_deadline_does_not_revive_an_expired_network_budget() {
+        let now = Instant::now();
+        let network_deadline = now + Duration::from_secs(10);
+
+        assert_eq!(tofu_prompt_deadline(network_deadline, network_deadline), None);
+        assert_eq!(tofu_prompt_deadline(network_deadline, network_deadline + Duration::from_millis(1)), None);
+    }
 
     fn push_u32(bytes: &mut Vec<u8>, value: u32) {
         bytes.extend_from_slice(&value.to_be_bytes());
