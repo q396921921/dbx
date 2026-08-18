@@ -290,7 +290,13 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
       return request.columns.length > 0 && request.columns.every((column) => !!(column.sourceName ?? column.displayName)?.trim());
     }
     if (extractor === "where-clause" && contextPredicateTarget) {
-      return buildRequest(extractor, extractorOptions) !== null;
+      // A whole-column selection (selected via the column header) fills the
+      // matrix with every loaded row, which is a different affordance from a
+      // genuine multi-cell range selection. Right-clicking inside it must not
+      // silently OR a predicate across every loaded row — sql-select already
+      // guards this via the "columns" selectionKind check above.
+      const request = buildRequest(extractor, extractorOptions);
+      return request !== null && request.selectionKind !== "columns";
     }
     if (extractor === "raw") {
       const request = buildRequest(extractor, extractorOptions);

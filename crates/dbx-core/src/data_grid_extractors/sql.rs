@@ -147,8 +147,14 @@ fn ensure_sql_builder_budget(context: &ExtractContext<'_>) -> Result<(), DataGri
             size.saturating_add(column.display_name.len())
                 .saturating_add(column.source_name.as_deref().map_or(0, str::len))
         }));
+    // WHERE-clause output (and SELECT built from a cell selection, which reuses
+    // the same predicate builder) repeats every selected column's identifier
+    // once per row via OR'd row groups, just like SqlUpdates/row-by-row insert.
     let repeats_identifiers_per_row = context.request.extractor == super::DataGridExtractorId::SqlUpdates
-        || context.request.options.sql.insert_mode == crate::data_grid_sql::DataGridCopyInsertMode::RowByRow;
+        || context.request.options.sql.insert_mode == crate::data_grid_sql::DataGridCopyInsertMode::RowByRow
+        || context.request.extractor == super::DataGridExtractorId::WhereClause
+        || (context.request.extractor == super::DataGridExtractorId::SqlSelect
+            && context.request.selection_kind == super::DataGridSelectionKind::Cells);
     let statement_overhead = identifier_bytes
         .saturating_mul(4)
         .saturating_add(256)
@@ -362,23 +368,10 @@ pub(super) fn write_sql_select(
     if context.request.selection_kind == super::DataGridSelectionKind::Cells {
         // A cell-selection SELECT reuses the WHERE-clause predicate builder so a
         // multi-cell selection (same-row columns AND'd, multi-row selections
-        // OR'd) produces the same predicate as "Copy as WHERE clause".
-        if context.selected_columns.is_empty() {
-            return Err(DataGridExtractError::new(
-                DataGridExtractErrorCode::InvalidColumnMapping,
-                "SELECT extraction has no source columns for its predicate.",
-            ));
-        }
-        if let Some(column) = context
-            .selected_columns
-            .iter()
-            .find(|column| column.source_name.as_deref().map(str::trim).unwrap_or_default().is_empty())
-        {
-            return Err(DataGridExtractError::new(
-                DataGridExtractErrorCode::InvalidColumnMapping,
-                format!("Column '{}' has no resolved source-column mapping.", column.display_name),
-            ));
-        }
+        // OR'd) produces the same predicate as "Copy as WHERE clause" for the
+        // identical selection — including its fallback to display_name when a
+        // column has no resolved source_name. build_context() already rejects
+        // an empty column selection before this function runs.
         write_bytes(output, format!("SELECT * FROM {table} WHERE ").as_bytes())?;
         write_where_clause(context, output)?;
         return write_bytes(output, b";");

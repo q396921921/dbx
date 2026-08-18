@@ -352,6 +352,26 @@ describe("useDataGridExport prepared row statements", () => {
     );
   });
 
+  // Regression test: a whole-column selection (via the column header) fills
+  // the matrix with every loaded row, which is a different affordance from a
+  // genuine multi-cell range selection. Right-clicking inside it must not
+  // silently OR a WHERE predicate across every loaded row.
+  it("disables WHERE copy when right-clicking inside a whole-column selection", () => {
+    const rowDataList = [
+      [7, "Ada"],
+      [8, "Grace"],
+    ];
+    const matrix: CellSelectionMatrix = {
+      rowIndexes: [0, 1],
+      columnIndexes: [1],
+      columns: ["name"],
+      rows: [["Ada"], ["Grace"]],
+    };
+    const state = createExportState(editableTable, ["id", "name"], matrix, undefined, undefined, rowDataList, [], DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, true, undefined, false, 1, 1);
+
+    expect(state.canCopyWithExtractor("where-clause")).toBe(false);
+  });
+
   // Regression test for https://github.com/t8y2/dbx/issues/6519
   it("uses every selected cell for a SELECT when right-clicking inside an existing multi-cell selection", async () => {
     const matrix: CellSelectionMatrix = {

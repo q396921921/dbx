@@ -713,7 +713,11 @@ fn where_clause_applies_mysql_json_cast() {
 }
 
 #[test]
-fn select_cells_rejects_missing_source_column_mapping() {
+fn select_cells_falls_back_to_display_name_like_where_clause() {
+    // SELECT built from a cell selection reuses write_where_clause, so a
+    // missing source_name must fall back to display_name exactly like WHERE
+    // does, instead of erroring — the two must stay in lockstep for the
+    // identical selection.
     let mut request = request(DataGridExtractorId::SqlSelect);
     request.table_meta = Some(DataGridTableMeta {
         catalog: None,
@@ -727,9 +731,17 @@ fn select_cells_rejects_missing_source_column_mapping() {
         DataGridExtractColumn { display_name: "id".to_string(), source_name: None, source_index: 0 },
         column("name", 1),
     ];
+    let mut where_request = request.clone();
+    where_request.extractor = DataGridExtractorId::WhereClause;
 
-    let error = extract_data_grid_selection(request).expect_err("missing source-column mapping must fail");
-    assert_eq!(error.code, DataGridExtractErrorCode::InvalidColumnMapping);
+    let result = extract_data_grid_selection(request).expect("SELECT extraction with missing source_name");
+    assert_eq!(
+        result.text,
+        "SELECT * FROM \"users\" WHERE (\"id\" = 1 AND \"name\" = 'Ada') OR (\"id\" = 2 AND \"name\" = 'Grace, Hopper');"
+    );
+
+    let where_result = extract_data_grid_selection(where_request).expect("WHERE extraction with missing source_name");
+    assert_eq!(where_result.text, "(\"id\" = 1 AND \"name\" = 'Ada') OR (\"id\" = 2 AND \"name\" = 'Grace, Hopper')");
 }
 
 #[test]
