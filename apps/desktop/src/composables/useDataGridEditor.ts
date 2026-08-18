@@ -104,6 +104,7 @@ export interface UseDataGridEditorOptions {
   cacheKey?: ComputedRef<string | undefined>;
   /** 保存成功后结果负载被原地修改时通知宿主，使缓存的字节估算失效。 */
   onResultPayloadMutated?: () => void;
+  prepareFullReload?: () => void;
   emit: {
     (event: "reload", sql?: string, searchText?: string, whereInput?: string, orderBy?: string, limit?: number, offset?: number): void;
   };
@@ -1453,6 +1454,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
   }
 
   function reloadCurrentData() {
+    options.prepareFullReload?.();
     options.emit("reload", sql.value, searchText.value, options.currentWhereInput.value, orderByInput.value.trim() || undefined, pageSize.value, (currentPage.value - 1) * pageSize.value);
   }
 
