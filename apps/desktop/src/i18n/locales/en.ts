@@ -4361,6 +4361,7 @@ export default {
     deselectAll: "Clear",
     selectLoadedGroupKeys: "Select {count} loaded keys in this folder",
     loadedMatchingKeys: "{count} loaded matching keys",
+    loadedGroupKeysPartial: "{count} keys loaded so far — this folder may contain more",
     fuzzyTreeLimit: "{count} fuzzy matches are shown as a flat list to keep the browser responsive. Refine the search to view the hierarchy.",
     deleteGroup: "Delete group",
     deleteGroupDetails: "{target}\n{count} keys",

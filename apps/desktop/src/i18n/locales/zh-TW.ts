@@ -3534,6 +3534,7 @@ export default withEnglishFallback({
     deselectAll: "清除",
     selectLoadedGroupKeys: "選取已載入的 {count} 個相符 key",
     loadedMatchingKeys: "已載入的 {count} 個相符 key",
+    loadedGroupKeysPartial: "目前已載入 {count} 個 key —— 此資料夾下可能還有更多",
     fuzzyTreeLimit: "已載入 {count} 個模糊相符 key。為保持瀏覽器回應，目前以扁平清單顯示；請縮小搜尋範圍以查看層級。",
     deleteGroup: "刪除群組",
     deleteGroupDetails: "{target}\n{count} 個 key",

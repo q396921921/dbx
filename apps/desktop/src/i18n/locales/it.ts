@@ -4205,6 +4205,7 @@ export default withEnglishFallback({
     deselectAll: "Cancella",
     selectLoadedGroupKeys: "Seleziona {count} chiavi corrispondenti caricate",
     loadedMatchingKeys: "{count} chiavi corrispondenti caricate",
+    loadedGroupKeysPartial: "{count} chiavi caricate finora — questa cartella potrebbe contenerne altre",
     fuzzyTreeLimit: "{count} corrispondenze fuzzy sono mostrate come elenco piatto per mantenere il browser reattivo. Restringi la ricerca per vedere la gerarchia.",
     deleteGroup: "Elimina gruppo",
     deleteGroupDetails: "{target}\n{count} chiavi",

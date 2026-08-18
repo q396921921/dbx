@@ -4235,6 +4235,7 @@ export default withEnglishFallback({
     deselectAll: "クリア",
     selectLoadedGroupKeys: "読み込み済みの一致キー {count} 件を選択",
     loadedMatchingKeys: "読み込み済みの一致キー {count} 件",
+    loadedGroupKeysPartial: "これまでに読み込まれたキー {count} 件 — このフォルダーにはさらにキーが存在する可能性があります",
     fuzzyTreeLimit: "ブラウザーの応答性を保つため、あいまい一致 {count} 件をフラットな一覧で表示しています。階層を表示するには検索条件を絞り込んでください。",
     deleteGroup: "グループを削除",
     deleteGroupDetails: "{target}\n{count}個のキー",

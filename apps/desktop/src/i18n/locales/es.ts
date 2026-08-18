@@ -4207,6 +4207,7 @@ export default withEnglishFallback({
     deselectAll: "Borrar",
     selectLoadedGroupKeys: "Seleccionar {count} claves coincidentes cargadas",
     loadedMatchingKeys: "{count} claves coincidentes cargadas",
+    loadedGroupKeysPartial: "{count} claves cargadas hasta ahora — esta carpeta puede contener más",
     fuzzyTreeLimit: "Se muestran {count} coincidencias difusas como lista plana para mantener el navegador responsivo. Refina la búsqueda para ver la jerarquía.",
     deleteGroup: "Eliminar grupo",
     deleteGroupDetails: "{target}\n{count} claves",
