@@ -4974,10 +4974,6 @@ const contextColumn = computed(() => {
   if (!contextCell.value || contextCell.value.col < 0) return null;
   return props.result.columns[contextCell.value.col] ?? null;
 });
-const contextCellValue = computed<CellValue | null>(() => {
-  if (!contextCell.value || contextCell.value.col < 0) return null;
-  return contextRowItem.value?.data[contextCell.value.col] ?? null;
-});
 const contextCellDetail = computed(() => {
   const cell = contextCell.value;
   if (!cell || cell.col < 0) return null;
@@ -5560,18 +5556,29 @@ function applyContextSort(direction: "asc" | "desc" | null, mode: DataGridSortMo
 }
 
 async function contextFilterCondition(mode: FilterMode): Promise<string | null> {
-  if (!contextColumn.value) return null;
-  if (mode !== "is-null" && mode !== "is-not-null" && contextCell.value) {
-    if (!(await hydrateLargeValueCell(contextCell.value.rowId, contextCell.value.col))) return null;
+  // Snapshot the context-menu target before any `await` below: closing the
+  // context menu clears `contextCell`/`contextColumn` via a queued microtask,
+  // which otherwise races this function and wipes the column out from under
+  // it once we resume (see onGridContextMenuClose/invalidateSyntheticContextSelection).
+  const columnName = contextColumn.value;
+  if (!columnName) return null;
+  const cell = contextCell.value;
+  const columnInfo = props.tableMeta?.columns.find((column) => column.name === columnName);
+  if (mode !== "is-null" && mode !== "is-not-null" && cell) {
+    if (!(await hydrateLargeValueCell(cell.rowId, cell.col))) return null;
   }
+  // Read the cell value fresh via the snapshot above (not a computed off
+  // `contextCell`), since hydration may have just updated the underlying row
+  // data and `contextCell` may already be cleared by the time we get here.
+  const cellValue = cell && cell.col >= 0 ? (getRowItem(cell.rowId)?.data[cell.col] ?? null) : null;
   return (
     (await buildDataGridContextFilterCondition({
       databaseType: resolvedDatabaseType.value,
       identifierQuote: connectionStore.connectionIdentifierQuote?.(props.connectionId),
-      columnName: contextColumn.value,
-      columnInfo: props.tableMeta?.columns.find((column) => column.name === contextColumn.value),
+      columnName,
+      columnInfo,
       mode,
-      value: contextCellValue.value,
+      value: cellValue,
     })) ?? null
   );
 }
