@@ -100,9 +100,15 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
     // harness and non-right-click paths leave it at -1.
     const hasRightClickContext = !!contextCell && options.contextSelectionIsSynthetic.value;
     // SQL predicates generated from the context menu must describe the cell the
-    // user right-clicked, even when an existing row or range selection remains
-    // active underneath that menu.
-    const contextPredicateCell = hasContextPredicateTarget(extractor) ? contextCell : null;
+    // user right-clicked, even when an existing row selection remains active
+    // underneath that menu. But when the right-click lands inside an existing
+    // *multi-cell* selection (matrix has more than one row/column and the
+    // selection wasn't just synthesized by this right-click), the predicate
+    // must cover the whole selection, not collapse to the single cell the
+    // mouse happened to land on — otherwise copying a 2+ cell selection as
+    // SQL SELECT/WHERE silently drops every cell but the last one clicked.
+    const contextCellIsInsideMultiCellSelection = isMultiCellSelection && !options.contextSelectionIsSynthetic.value;
+    const contextPredicateCell = hasContextPredicateTarget(extractor) && !contextCellIsInsideMultiCellSelection ? contextCell : null;
     // When the user already has a single-cell selection and right-clicks the same
     // cell, contextSelectionIsSynthetic is false but we still have a valid context
     // cell. For INSERT/UPDATE extractors, we include all visible non-PK columns

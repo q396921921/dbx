@@ -325,6 +325,44 @@ describe("useDataGridExport prepared row statements", () => {
     );
   });
 
+  // Regression test for https://github.com/t8y2/dbx/issues/6519
+  it("uses every selected cell for a WHERE clause when right-clicking inside an existing multi-cell selection", async () => {
+    const matrix: CellSelectionMatrix = {
+      rowIndexes: [0],
+      columnIndexes: [0, 1],
+      columns: ["id", "name"],
+      rows: [[7, "Ada"]],
+    };
+    // isSyntheticContext=false mirrors onCellContext(): right-clicking a cell that is
+    // already part of the current multi-cell selection leaves the selection intact.
+    const state = createExportState(editableTable, ["id", "name"], matrix, [7, "Ada"], undefined, undefined, [], DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, false, undefined, false, 1, 1);
+    vi.mocked(extractDataGridSelection).mockResolvedValueOnce({ text: "id = 7 AND name = 'Ada'", mimeType: "application/sql", fileExtension: "sql", rowCount: 1, columnCount: 2 });
+
+    expect(state.canCopyWithExtractor("where-clause")).toBe(true);
+    await state.copyWithExtractor("where-clause");
+
+    expect(extractDataGridSelection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extractor: "where-clause",
+        columns: [expect.objectContaining({ sourceName: "id" }), expect.objectContaining({ sourceName: "name" })],
+        selectedColumnIndexes: [0, 1],
+        rows: [[7, "Ada"]],
+        selectionKind: "cells",
+      }),
+    );
+  });
+
+  it("disables SELECT copy when right-clicking inside an existing multi-cell selection", () => {
+    const matrix: CellSelectionMatrix = {
+      rowIndexes: [0],
+      columnIndexes: [0, 1],
+      columns: ["id", "name"],
+      rows: [[7, "Ada"]],
+    };
+    const state = createExportState(editableTable, ["id", "name"], matrix, [7, "Ada"], undefined, undefined, [], DEFAULT_DATA_GRID_EXTRACTOR_OPTIONS, false, undefined, false, 1, 1);
+    expect(state.canCopyWithExtractor("sql-select")).toBe(false);
+  });
+
   it("includes hidden identity support columns in a selected-row SELECT request", async () => {
     const item = row([7, "Ada"]);
     const options: UseDataGridExportOptions = {
