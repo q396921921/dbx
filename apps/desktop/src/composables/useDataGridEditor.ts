@@ -1490,6 +1490,10 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     isSaving.value = true;
     snapshot.newRowRefs.forEach((row) => savingNewRows.add(row));
     const shouldReloadAfterSave = snapshot.newRows.length > 0 || snapshot.deletedRows.size > 0;
+    // SQL saves may update columns the client can't predict (e.g. an ON UPDATE CURRENT_TIMESTAMP
+    // column or a trigger), so reload after a pure row update too. Custom (non-SQL) data sources
+    // keep the original behavior below, unchanged.
+    const shouldReloadAfterSqlSave = shouldReloadAfterSave || snapshot.dirtyRows.size > 0;
 
     if (customHandler) {
       try {
@@ -1609,7 +1613,7 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     clearSavedPendingChanges(snapshot);
     if (!hasPendingChanges.value) exitTransaction();
     clearPendingChangeHistory();
-    if (shouldReloadAfterSave) {
+    if (shouldReloadAfterSqlSave) {
       reloadCurrentData();
     }
     await finishSaveChanges(snapshot);

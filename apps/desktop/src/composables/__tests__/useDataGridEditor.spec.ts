@@ -5,9 +5,14 @@ import type { CellValue } from "@/lib/dataGrid/cellValue";
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
+  prepareDataGridSave: vi.fn(),
+  executeBatch: vi.fn(),
 }));
 
-vi.mock("@/lib/backend/api", () => ({}));
+vi.mock("@/lib/backend/api", () => ({
+  prepareDataGridSave: mocks.prepareDataGridSave,
+  executeBatch: mocks.executeBatch,
+}));
 vi.mock("@/stores/connectionStore", () => ({
   useConnectionStore: () => ({ getConfig: mocks.getConfig }),
 }));
@@ -292,5 +297,73 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
     editor.cloneRow(-1, new Map([[1, "full payload"]]));
 
     expect(editor.newRows.value[1]).toEqual(["Ada", "full payload", "Lovelace"]);
+  });
+});
+
+describe("useDataGridEditor saveChanges reload", () => {
+  beforeEach(() => {
+    mocks.prepareDataGridSave.mockReset();
+    mocks.executeBatch.mockReset();
+    mocks.getConfig.mockReset();
+  });
+
+  function createSaveTestEditor() {
+    const emit = vi.fn();
+    const result = ref<{ columns: string[]; rows: CellValue[][] }>({
+      columns: ["id", "status"],
+      rows: [[1, "pending"]],
+    });
+    const editor = useDataGridEditor({
+      result: computed(() => result.value),
+      editable: computed(() => true),
+      databaseType: computed(() => "mysql"),
+      connectionId: computed(() => "connection-1"),
+      database: computed(() => "app"),
+      tableMeta: computed(() => ({
+        tableName: "orders_test",
+        columns: [
+          { name: "id", data_type: "int" },
+          { name: "status", data_type: "varchar" },
+        ],
+        primaryKeys: ["id"],
+      })),
+      sourceColumns: computed(() => undefined),
+      onExecuteSql: computed(() => undefined),
+      sql: computed(() => undefined),
+      searchText: ref(""),
+      whereFilterInput: ref(""),
+      currentWhereInput: computed(() => undefined),
+      orderByInput: ref(""),
+      rowStatusFilter: ref("all"),
+      confirmDangerousRowDeletion: computed(() => true),
+      pageSize: ref(100),
+      currentPage: ref(1),
+      cacheKey: computed(() => undefined),
+      getRowItem: () => undefined,
+      emit,
+    });
+    return { editor, emit };
+  }
+
+  it("reloads after a pure row update, so database-computed columns (e.g. ON UPDATE CURRENT_TIMESTAMP) refresh without a manual page reload", async () => {
+    mocks.prepareDataGridSave.mockResolvedValue({ statements: ["UPDATE orders_test SET status='shipped' WHERE id=1"], rollbackStatements: [] });
+    mocks.executeBatch.mockResolvedValue({ affected_rows: 1 });
+
+    const { editor, emit } = createSaveTestEditor();
+    editor.dirtyRows.value.set(0, new Map([[1, "shipped"]]));
+
+    await editor.saveChanges();
+
+    expect(mocks.executeBatch).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith("reload", undefined, "", undefined, undefined, 100, 0);
+  });
+
+  it("does not reload when there are no pending changes to save", async () => {
+    const { editor, emit } = createSaveTestEditor();
+
+    await editor.saveChanges();
+
+    expect(mocks.prepareDataGridSave).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalledWith("reload", expect.anything());
   });
 });
