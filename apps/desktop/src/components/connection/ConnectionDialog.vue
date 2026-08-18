@@ -75,6 +75,7 @@ import {
   ArrowLeft,
   ArrowDown,
   ArrowUp,
+  Check,
   CheckSquare,
   ChevronRight,
   CircleHelp,
@@ -121,13 +122,16 @@ import {
 import {
   GAUSSDB_M_JDBC_DRIVER_CLASS,
   gaussdbConnectionMode,
+  gaussdbCountQueryDop,
   gaussdbIdentifierQuoteStyle,
   gaussdbTargetServerType,
   setGaussdbConnectionMode,
+  setGaussdbCountQueryDop,
   setGaussdbIdentifierQuoteStyle,
   setGaussdbTargetServerType,
   supportsGaussdbIdentifierQuoteStyle,
   type GaussdbConnectionMode,
+  type GaussdbCountQueryDop,
   type GaussdbIdentifierQuoteStyle,
   type GaussdbTargetServerType,
 } from "@/lib/database/jdbcDialect";
@@ -258,6 +262,8 @@ const agentInstallError = ref("");
 const showConnectionErrorDialog = ref(false);
 const connectionErrorRawDetail = ref("");
 const connectionErrorDetail = ref("");
+const testResultCopied = ref(false);
+const connectionErrorCopied = ref(false);
 const editingId = ref<string | null>(null);
 const draftTestConnectionId = ref(uuid());
 const showVisibleDatabasesDialog = ref(false);
@@ -547,6 +553,14 @@ const gaussdbTargetServerTypeComputed = computed<GaussdbTargetServerType>({
   get: () => gaussdbTargetServerType(form.value),
   set: (value) => {
     setGaussdbTargetServerType(form.value, value);
+    resetTestState();
+  },
+});
+
+const gaussdbCountQueryDopComputed = computed<GaussdbCountQueryDop>({
+  get: () => gaussdbCountQueryDop(form.value),
+  set: (value) => {
+    setGaussdbCountQueryDop(form.value, value);
     resetTestState();
   },
 });
@@ -1904,6 +1918,7 @@ function failAgentDriverInstall(error: unknown) {
 function showConnectionError(message: string) {
   connectionErrorRawDetail.value = message;
   connectionErrorDetail.value = translateBackendError(t, message);
+  connectionErrorCopied.value = false;
   showConnectionErrorDialog.value = true;
 }
 
@@ -3583,6 +3598,7 @@ async function testConnection() {
   const runId = ++testRunId;
   isTesting.value = true;
   testResult.value = null;
+  testResultCopied.value = false;
   let config: ConnectionConfig | null = null;
   const submittedSourceName = form.value.name;
   try {
@@ -4410,6 +4426,8 @@ function resetTestState() {
   showConnectionErrorDialog.value = false;
   connectionErrorRawDetail.value = "";
   connectionErrorDetail.value = "";
+  testResultCopied.value = false;
+  connectionErrorCopied.value = false;
 }
 
 function resetVisibleDatabaseDraftState() {
@@ -4782,6 +4800,7 @@ async function copyTestResult() {
   if (!testResultMessage.value) return;
   try {
     await copyToClipboard(testResultMessage.value);
+    testResultCopied.value = true;
     toast(t("grid.copied"));
   } catch (e: any) {
     toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
@@ -4813,6 +4832,7 @@ async function copyConnectionErrorDetail() {
   if (!connectionErrorDetail.value) return;
   try {
     await copyToClipboard(connectionErrorDetail.value);
+    connectionErrorCopied.value = true;
     toast(t("grid.copied"));
   } catch (e: any) {
     toast(t("grid.copyFailed", { message: e?.message || String(e) }), 5000);
@@ -7106,7 +7126,7 @@ function openExternalUrl(url: string) {
                         <div v-for="(entry, idx) in gaussdbHostEntries" :key="idx" class="flex items-start gap-2">
                           <Input v-model="entry.host" class="flex-1 min-w-0 break-all" placeholder="127.0.0.1" />
                           <Input v-model.number="entry.port" type="number" class="w-24 shrink-0" />
-                          <Button type="button" variant="outline" size="icon" class="h-9 w-9 shrink-0 mt-0.5" :disabled="gaussdbHostEntries.length <= 1" @click="removeGaussdbHostEntry(idx)">
+                          <Button type="button" variant="outline" size="icon" class="h-8 w-8 shrink-0" :disabled="gaussdbHostEntries.length <= 1" @click="removeGaussdbHostEntry(idx)">
                             <Trash2 class="h-4 w-4" />
                           </Button>
                         </div>
@@ -8010,6 +8030,26 @@ function openExternalUrl(url: string) {
                     </p>
                   </div>
                 </div>
+                <div v-if="showGaussdbConnectionMode" class="grid grid-cols-4 items-start gap-4">
+                  <Label :class="connectionLabelSmallPaddedClass">{{ t("connection.gaussdbCountQueryDop") }}</Label>
+                  <div class="col-span-3 grid gap-1">
+                    <Select v-model="gaussdbCountQueryDopComputed">
+                      <SelectTrigger class="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem :value="1">1 ({{ t("common.disabled") }})</SelectItem>
+                        <SelectItem :value="2">2</SelectItem>
+                        <SelectItem :value="4">4</SelectItem>
+                        <SelectItem :value="8">8</SelectItem>
+                        <SelectItem :value="16">16</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p class="text-xs leading-5 text-muted-foreground">
+                      {{ t("connection.gaussdbCountQueryDopHint") }}
+                    </p>
+                  </div>
+                </div>
                 <div class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelSmallClass">{{ t("connection.connectTimeout") }}</Label>
                   <div class="col-span-3 grid grid-cols-2 gap-2">
@@ -8433,8 +8473,9 @@ function openExternalUrl(url: string) {
               <span class="block min-w-0 flex-1 basis-0 truncate text-xs" :class="testResult.ok ? 'text-green-600' : 'text-red-600'" :title="testResultMessage" role="status" aria-live="polite">
                 {{ testResultMessage }}
               </span>
-              <Button v-if="!testResult.ok" variant="ghost" size="icon-xs" class="h-5 w-5 shrink-0" :title="t('connection.copyTestResult')" :aria-label="t('connection.copyTestResult')" @click="copyTestResult">
-                <Copy class="h-3 w-3" />
+              <Button v-if="!testResult.ok" variant="ghost" size="icon-xs" class="h-5 w-5 shrink-0" :title="testResultCopied ? t('grid.copied') : t('connection.copyTestResult')" :aria-label="testResultCopied ? t('grid.copied') : t('connection.copyTestResult')" @click="copyTestResult">
+                <Check v-if="testResultCopied" class="h-3 w-3" />
+                <Copy v-else class="h-3 w-3" />
               </Button>
             </template>
           </div>
@@ -8519,8 +8560,9 @@ function openExternalUrl(url: string) {
           {{ t("toolbar.driverManager") }}
         </Button>
         <Button variant="outline" @click="copyConnectionErrorDetail">
-          <Copy class="mr-1.5 h-3.5 w-3.5" />
-          {{ t("connection.copyError") }}
+          <Check v-if="connectionErrorCopied" class="mr-1.5 h-3.5 w-3.5" />
+          <Copy v-else class="mr-1.5 h-3.5 w-3.5" />
+          {{ connectionErrorCopied ? t("grid.copied") : t("connection.copyError") }}
         </Button>
         <Button @click="showConnectionErrorDialog = false">{{ t("common.close") }}</Button>
       </DialogFooter>
