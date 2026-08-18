@@ -13,6 +13,7 @@ const connectionStore = {
   sidebarSearchQuery: "",
   canUseLoadedTreeNodeToggle: vi.fn(() => true),
   releaseCollapsedTreeNodeChildren: vi.fn(),
+  reconcileLoadedObjectGroupNode: vi.fn().mockResolvedValue(undefined),
   getConfig: vi.fn(() => ({ db_type: "mysql", name: "connection" })),
   ensureConnected: vi.fn(async () => undefined),
   loadPackageMembers: vi.fn(async (node: TreeNode) => {
@@ -92,6 +93,48 @@ describe("SidebarTreeRuntimeHost expansion", () => {
 
     expect(toggled).toHaveBeenCalledWith(renderedGroup, false);
     expect(liveGroup.isExpanded).toBe(false);
+  });
+
+  it("reconciles a loaded object-group node once it is re-expanded, but not on collapse", async () => {
+    const liveGroup: TreeNode = {
+      id: "connection:database:__tables",
+      label: "tree.tables",
+      type: "group-tables",
+      connectionId: "connection",
+      database: "database",
+      isExpanded: false,
+      children: [],
+    };
+    const renderedGroup: TreeNode = { ...liveGroup };
+    connectionStore.treeNodes = [liveGroup];
+
+    const host = ref<InstanceType<typeof SidebarTreeRuntimeHost> | null>(null);
+    const toggled = vi.fn((node: TreeNode, expanded: boolean) => {
+      syncSidebarTreeNodeExpansion(connectionStore.treeNodes, node, expanded);
+    });
+    const app = createApp(
+      defineComponent({
+        setup: () => () => h(SidebarTreeRuntimeHost, { ref: host, node: renderedGroup, depth: 0, onNodeToggled: toggled }),
+      }),
+    );
+    mountedApps.push(app);
+    const container = document.createElement("div");
+    document.body.append(container);
+    app.use(i18n);
+    app.mount(container);
+
+    // Re-expanding a loaded node must reconcile, not force a fresh load.
+    host.value?.toggleNode(renderedGroup);
+    await nextTick();
+
+    expect(connectionStore.reconcileLoadedObjectGroupNode).toHaveBeenCalledTimes(1);
+    expect(connectionStore.reconcileLoadedObjectGroupNode).toHaveBeenCalledWith(renderedGroup);
+
+    // Collapsing it back must not trigger any reconciliation.
+    host.value?.toggleNode(renderedGroup);
+    await nextTick();
+
+    expect(connectionStore.reconcileLoadedObjectGroupNode).toHaveBeenCalledTimes(1);
   });
 
   it("loads Oracle package members through the shared expansion path", async () => {

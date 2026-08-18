@@ -632,12 +632,14 @@ async function openDirectNavigationNode(node: TreeNode, requestId: number) {
 }
 
 // Re-expanding an already-loaded object-group node (Tables, Views, ...) replays the
-// in-memory list instantly with no server round-trip at all, so external DDL (a table
-// created or renamed outside DBX) never surfaces until an explicit Refresh or a
-// disconnect/reconnect. Reconcile it silently in the background instead.
+// in-memory list instantly with no server round-trip, so external DDL (a table created
+// or renamed outside DBX) can go unnoticed until an explicit Refresh or a
+// disconnect/reconnect. reconcileLoadedObjectGroupNode only escalates to a real backend
+// refresh once the persisted schema-tree cache is actually past its freshness window,
+// and reuses that path's existing in-flight dedup - so normal re-expands stay request-free.
 function revalidateReopenedGroupNode(node: TreeNode, wasExpanded: boolean) {
   if (wasExpanded || !node.isExpanded) return;
-  void connectionStore.refreshTreeNode(node).catch(() => undefined);
+  void connectionStore.reconcileLoadedObjectGroupNode(node).catch(() => undefined);
 }
 
 async function toggle(requestId = beginNavigationRequest()) {
