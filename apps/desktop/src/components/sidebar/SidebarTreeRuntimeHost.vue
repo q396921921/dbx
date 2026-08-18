@@ -631,6 +631,15 @@ async function openDirectNavigationNode(node: TreeNode, requestId: number) {
   }
 }
 
+// Re-expanding an already-loaded object-group node (Tables, Views, ...) replays the
+// in-memory list instantly with no server round-trip at all, so external DDL (a table
+// created or renamed outside DBX) never surfaces until an explicit Refresh or a
+// disconnect/reconnect. Reconcile it silently in the background instead.
+function revalidateReopenedGroupNode(node: TreeNode, wasExpanded: boolean) {
+  if (wasExpanded || !node.isExpanded) return;
+  void connectionStore.refreshTreeNode(node).catch(() => undefined);
+}
+
 async function toggle(requestId = beginNavigationRequest()) {
   const node = activeNode.value;
   const treeLoadSearchOptions = sidebarTreeContext?.getTreeLoadSearchOptions?.(node);
@@ -690,6 +699,7 @@ async function toggle(requestId = beginNavigationRequest()) {
   if (databaseObjectGroup && connectionStore.canUseLoadedTreeNodeToggle(node)) {
     node.isExpanded = !node.isExpanded;
     if (wasExpanded && shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+    else revalidateReopenedGroupNode(node, wasExpanded);
     emitNodeToggled(node, wasExpanded);
     return;
   }
@@ -709,6 +719,7 @@ async function toggle(requestId = beginNavigationRequest()) {
   if (node.type === "group-extensions" && connectionStore.canUseLoadedTreeNodeToggle(node)) {
     node.isExpanded = !node.isExpanded;
     if (wasExpanded && shouldReleaseCollapsedTreeNodeChildren()) connectionStore.releaseCollapsedTreeNodeChildren(node.id);
+    else revalidateReopenedGroupNode(node, wasExpanded);
     emitNodeToggled(node, wasExpanded);
     return;
   }
