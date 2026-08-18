@@ -64,6 +64,14 @@ describe("resolveStatementWindowFromSyntaxTree", () => {
 
     expect(window).toBeNull();
   });
+
+  it("requires the exact tagged delimiter before trusting a statement boundary", () => {
+    const sql = `CREATE FUNCTION f() RETURNS void AS $outer$ SELECT '$inner$'; SELECT 2; $outer$ LANGUAGE sql;`;
+    const cursor = sql.indexOf("SELECT 2") + 3;
+    const state = stateFor(sql);
+
+    expect(resolveStatementWindowFromSyntaxTree(state, cursor)).toBeNull();
+  });
 });
 
 describe("resolveLexicalLeafFromSyntaxTree", () => {

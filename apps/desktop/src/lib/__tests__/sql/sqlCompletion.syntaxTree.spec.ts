@@ -4,6 +4,7 @@ import { EditorState } from "@codemirror/state";
 import { describe, expect, it } from "vitest";
 import { createDbxCodeMirrorSqlDialect } from "@/lib/editor/codemirrorSqlDialect";
 import { isSqlCompletionSuppressedContext, isSqlLikeCompletionStatement } from "@/lib/sql/sqlCompletion";
+import { buildSqlSemanticModel } from "@/lib/sql/semantic/model";
 
 // Forces CM6's background parse to completion so tests are deterministic. Production code never
 // does this -- see sqlSyntaxTreeWindow.ts's doc comment.
@@ -55,5 +56,20 @@ describe("isSqlLikeCompletionStatement with a live EditorState", () => {
     const state = stateFor(sql);
 
     expect(isSqlLikeCompletionStatement(sql, cursor, { databaseType: "postgres", editorState: state })).toBe(true);
+  });
+
+  it("builds the completion semantic model from only the active statement", () => {
+    const filler = Array.from({ length: 4_000 }, (_, index) => `SELECT ${index};\n`).join("");
+    const activeStatement = "SELECT u. FROM users u";
+    const sql = filler + activeStatement;
+    const cursor = sql.indexOf("u. FROM", filler.length) + 2;
+    const state = stateFor(sql);
+
+    const model = buildSqlSemanticModel(sql, cursor, { databaseType: "postgres", editorState: state });
+
+    expect(model.statement.text).toBe(activeStatement);
+    expect(model.rowSources).toEqual([expect.objectContaining({ name: "users", alias: "u" })]);
+    expect(model.tokens.length).toBeLessThan(10);
+    expect(model.tokens.every((token) => token.span.start >= filler.length)).toBe(true);
   });
 });

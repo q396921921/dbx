@@ -1,7 +1,7 @@
 import { syntaxTree, syntaxTreeAvailable } from "@codemirror/language";
 import type { EditorState, Text } from "@codemirror/state";
 import { matchDollarQuoteTag } from "@/lib/sql/semantic/tokens";
-import type { TextRange } from "@/lib/sql/insertValueHints";
+import { expandToSqlStatementWindow, type TextRange } from "@/lib/sql/insertValueHints";
 
 // `@lezer/common` (the package that declares `SyntaxNode`) is a transitive dependency, not a
 // direct one, so pnpm's strict linking doesn't expose it for a direct type-only import here.
@@ -48,22 +48,31 @@ export function isEditorStatePlausibleFor(state: EditorState, sql: string): bool
 function hasUnresolvedDollarQuoteBefore(doc: Text, from: number, lookback: number): boolean {
   const scanStart = Math.max(0, from - lookback);
   const slice = doc.sliceString(scanStart, from);
-  let openTags = 0;
+  let openTag: string | null = null;
   for (let index = 0; index < slice.length; ) {
     if (slice[index] === "$") {
       const marker = matchDollarQuoteTag(slice, index);
       if (marker) {
-        openTags += 1;
+        if (openTag === null) openTag = marker;
+        else if (marker === openTag) openTag = null;
         index += marker.length;
         continue;
       }
     }
     index += 1;
   }
-  // An odd count means an opening dollar-quote tag within the lookback window (or possibly
-  // further back than we scanned) has no matching close before `from` -- can't rule out that
-  // `from` actually sits inside a dollar-quoted body the tree didn't recognize as one.
-  return openTags % 2 !== 0;
+  // PostgreSQL closes a dollar-quoted body only with the exact opening delimiter. A different
+  // tagged marker inside the body is ordinary text and must not accidentally balance the guard.
+  return openTag !== null;
+}
+
+export function resolveSqlStatementWindow(sql: string, cursor: number, editorState: EditorState | undefined, dialectId: string): TextRange {
+  const safeCursor = Math.max(0, Math.min(cursor, sql.length));
+  if (editorState && isEditorStatePlausibleFor(editorState, sql)) {
+    const window = resolveStatementWindowFromSyntaxTree(editorState, safeCursor);
+    if (window) return window;
+  }
+  return expandToSqlStatementWindow(sql, safeCursor, safeCursor, dialectId);
 }
 
 /** Finds the nearest enclosing `Statement` node for `cursor`, resolving the trailing-whitespace
@@ -96,10 +105,16 @@ export function resolveStatementWindowFromSyntaxTree(state: EditorState, cursor:
   if (!statementNode) return null;
 
   const from = statementNode.from;
-  let to = statementNode.to;
+  const statementEnd = statementNode.to;
+  if (cursor < from || (cursor > statementEnd && state.doc.sliceString(statementEnd, cursor).trim().length > 0)) return null;
+
+  let to = statementEnd;
   const last = statementNode.lastChild;
   if (last && last.name === ";") to = last.from;
 
+  // Error recovery can produce a partial Statement node that ends before the
+  // completion cursor (for example `SELECT alias.`). Such a window is not an
+  // enclosing statement and must fall back to the scanner.
   if (hasUnresolvedDollarQuoteBefore(state.doc, from, DOLLAR_QUOTE_DISTRUST_LOOKBACK)) return null;
 
   return { from, to };

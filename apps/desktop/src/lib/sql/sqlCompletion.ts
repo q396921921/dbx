@@ -7,9 +7,9 @@ import type { ClickHouseFunctionDefinition, ClickHouseFunctionKind } from "@/lib
 import type { SqlObjectNavigationType } from "@/lib/sql/sqlNavigation";
 import { resolveSqlDialectId } from "@/lib/sql/semantic/dialect";
 import { findActiveSqlStatementSpan, matchDollarQuoteTag, tokenizeSqlSemantic } from "@/lib/sql/semantic/tokens";
-import { expandToSqlStatementWindow, type TextRange } from "@/lib/sql/insertValueHints";
+import { expandToSqlStatementWindow } from "@/lib/sql/insertValueHints";
 import type { SqlSemanticBuildOptions, SqlSemanticSpan } from "@/lib/sql/semantic/types";
-import { isEditorStatePlausibleFor, resolveLexicalLeafFromSyntaxTree, resolveStatementWindowFromSyntaxTree } from "@/lib/sql/sqlSyntaxTreeWindow";
+import { isEditorStatePlausibleFor, resolveLexicalLeafFromSyntaxTree, resolveSqlStatementWindow } from "@/lib/sql/sqlSyntaxTreeWindow";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS, resolveSqlSnippetBodyForDatabase } from "@/lib/sql/sqlSnippetTemplates";
 import { requiresMysqlIdentifierQuote, requiresPostgresIdentifierQuote } from "@/lib/sql/sqlIdentifier";
 import { identifierMatchScore, matchesIdentifierSearch } from "@/lib/sql/identifierSearch";
@@ -1545,15 +1545,6 @@ export function isSqlCompletionSuppressedContext(sql: string, cursor: number, op
  * than the scanner; see sqlSyntaxTreeWindow.ts's doc comment for the one known, disclosed gap
  * (dollar-quoted bodies, guarded rather than silently trusted).
  */
-function resolveSqlStatementWindow(sql: string, cursor: number, options: SqlSemanticBuildOptions, dialectId: string): TextRange {
-  const editorState = options.editorState;
-  if (editorState && isEditorStatePlausibleFor(editorState, sql)) {
-    const window = resolveStatementWindowFromSyntaxTree(editorState, cursor);
-    if (window) return window;
-  }
-  return expandToSqlStatementWindow(sql, cursor, cursor, dialectId);
-}
-
 export function getPostgresSequenceLiteralCompletionContext(sql: string, cursor: number, databaseType?: DatabaseType): PostgresSequenceLiteralCompletionContext | null {
   if (databaseType !== "postgres") return null;
   const position = Math.max(0, Math.min(cursor, sql.length));
@@ -1892,7 +1883,7 @@ function activeSqlCompletionStatementSpan(sql: string, cursor: number, options: 
   // resolveSqlStatementWindow) and translate spans back. Pass dialectId through so the
   // window boundary agrees with tokenizeSqlSemantic below on dialect-sensitive lexing
   // (e.g. '#' as a MySQL comment vs a PostgreSQL operator) when falling back to the scanner.
-  const window = resolveSqlStatementWindow(sql, safeCursor, options, dialectId);
+  const window = resolveSqlStatementWindow(sql, safeCursor, options.editorState, dialectId);
   const windowSql = sql.slice(window.from, window.to);
   const windowCursor = safeCursor - window.from;
   const tokens = tokenizeSqlSemantic(windowSql, dialectId);
