@@ -3149,6 +3149,11 @@ async function openExternalUrl(url: string) {
 }
 .ai-markdown :deep(ol) {
   list-style-type: decimal;
+  /* Multi-digit markers (100., 101., ...) don't fit the fixed padding-left
+     with the default outside marker position, so they hang past the bubble
+     edge. Keeping the marker inside the content box scales with any digit
+     count. */
+  list-style-position: inside;
 }
 .ai-markdown :deep(li) {
   margin: 0.15em 0;
