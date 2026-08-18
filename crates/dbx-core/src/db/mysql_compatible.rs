@@ -197,6 +197,7 @@ pub async fn get_columns_show_from(
             Some(ColumnInfo {
                 name,
                 data_type: get_str_by_name(row, "Type"),
+                resolved_schema: None,
                 is_nullable: get_str_by_name(row, "Null").eq_ignore_ascii_case("YES"),
                 column_default: get_opt_str(row, "Default"),
                 is_primary_key: key.eq_ignore_ascii_case("PRI"),
@@ -323,6 +324,7 @@ fn table_key_index(name: &str, line: &str, is_unique: bool, is_primary: bool, in
         index_type: Some(index_type.to_string()),
         included_columns: None,
         comment: None,
+        key_is_expression: Vec::new(),
     })
 }
 
@@ -342,6 +344,7 @@ fn secondary_index(line: &str) -> Option<IndexInfo> {
         index_type: mysql_keyword_argument(after_name, "USING").or_else(|| Some("INDEX".to_string())),
         included_columns: None,
         comment: mysql_quoted_string_argument(after_name, "COMMENT"),
+        key_is_expression: Vec::new(),
     })
 }
 

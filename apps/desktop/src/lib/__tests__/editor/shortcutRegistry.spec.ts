@@ -5,6 +5,7 @@ describe("shortcutRegistry editor actions", () => {
   const formatterEditorActionIds: ShortcutActionId[] = [
     "formatSql",
     "toggleLineComment",
+    "toggleBlockComment",
     "indentMore",
     "indentLess",
     "joinLines",
@@ -126,6 +127,7 @@ describe("shortcutRegistry editor actions", () => {
     expect(shortcuts.executeSql).toBe("Mod+Shift+Enter");
     expect(shortcuts.formatSql).toBe("Shift+Mod+F");
     expect(shortcuts.toggleLineComment).toBe("Mod+/");
+    expect(shortcuts.toggleBlockComment).toBe("Shift+Alt+A");
     expect(shortcuts.indentMore).toBe("");
     expect(shortcuts.indentLess).toBe("Shift+Tab");
     expect(shortcuts.joinLines).toBe("Mod+J");
@@ -150,6 +152,17 @@ describe("shortcutRegistry editor actions", () => {
 
     expect(definition).toMatchObject({ scope: "editor", defaultShortcut: "Alt+W" });
     expect(DEFAULT_SHORTCUT_SETTINGS.extendSelection).toBe("Alt+W");
+  });
+
+  it("registers an IDEA/DataGrip-style Alt+/ shortcut for manually triggering completion", () => {
+    const definition = SHORTCUT_DEFINITIONS.find((item) => item.id === "triggerCompletion");
+
+    expect(definition).toMatchObject({ scope: "editor", defaultShortcut: "Alt+/" });
+    expect(DEFAULT_SHORTCUT_SETTINGS.triggerCompletion).toBe("Alt+/");
+    expect(formatShortcut(DEFAULT_SHORTCUT_SETTINGS.triggerCompletion, "Win32")).toBe("Alt+/");
+    expect(formatShortcut(DEFAULT_SHORTCUT_SETTINGS.triggerCompletion, "MacIntel")).toBe("Alt+/");
+    expect(shortcutToCodeMirrorKey(DEFAULT_SHORTCUT_SETTINGS.triggerCompletion)).toBe("Alt-/");
+    expect(findShortcutConflict("triggerCompletion", DEFAULT_SHORTCUT_SETTINGS.triggerCompletion, DEFAULT_SHORTCUT_SETTINGS)).toBeNull();
   });
 
   it("detects conflicts between formatter editor shortcuts and other editor shortcuts", () => {

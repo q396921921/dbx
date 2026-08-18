@@ -48,11 +48,13 @@ import {
   findConnectionLocation,
   createGroup as createGroupOp,
   renameGroup as renameGroupOp,
-  deleteGroup as deleteGroupOp,
+  deleteGroups as deleteGroupsOp,
+  connectionIdsInGroups as connectionIdsInGroupsOp,
   toggleGroupCollapsed as toggleGroupCollapsedOp,
   collapseAllGroups as collapseAllGroupsOp,
   moveConnectionToGroup as moveConnectionToGroupOp,
   remapSidebarLayoutConnectionIds,
+  mergeSidebarLayout,
   reorderEntry as reorderEntryOp,
   buildConnectionGroupPathMap,
   connectionSidebarSearchAliases,
@@ -198,6 +200,19 @@ function sidebarObjectGroupPageSize(): number {
   return typeof size === "number" && size > 0 ? size : 500;
 }
 
+/**
+ * Upper bound for a single remote fuzzy table-search result set.
+ *
+ * Every fuzzy match travels database → IPC → store → tree rendering, so an
+ * unbounded result set (e.g. a single-letter query against a large schema)
+ * would push thousands of rows through the whole pipeline. The budget is 4×
+ * the default page size (500) and comfortably covers the reported #6190
+ * schema (801 fuzzy matches) while keeping a single IPC payload bounded.
+ * Queries whose fuzzy match set exceeds the budget are truncated; narrowing
+ * the query reaches later tables.
+ */
+export const SIDEBAR_TABLE_SEARCH_RESULT_BUDGET = 2000;
+
 function isFlatMqConnection(config: ConnectionConfig | undefined): boolean {
   if (!config || config.db_type !== "mq") return false;
   if (config.driver_profile === "kafka" || config.driver_profile === "rocketmq" || config.driver_profile === "rabbitmq") return true;
@@ -340,6 +355,9 @@ export const useConnectionStore = defineStore("connection", () => {
   // computed during scrolling and selection changes.
   const selectedTreeNodeIdsSet = computed(() => new Set(selectedTreeNodeIds.value));
   const treeSelectionAnchorId = ref<string | null>(null);
+  // Legacy name: this flag now covers homogeneous checkbox selections for both
+  // connections and connection groups. Connection-only toolbars still filter
+  // selected ids against the saved connection list.
   const connectionMultiSelectActive = ref(false);
   const treeClipboard = ref<TreeClipboard | null>(null);
 
@@ -747,6 +765,15 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const connectionId of connectionIds) {
       queryStore.closeConnectionTabs(connectionId);
     }
+  }
+
+  async function cleanupRemovedOneTimeConnections(connectionIds: string[]) {
+    try {
+      await closeOneTimeConnectionTabs(connectionIds);
+    } catch (error) {
+      console.warn("[DBX][connection:delete:one-time-tab-cleanup-failed]", { connectionIds, error });
+    }
+    releaseOneTimeRuntimeConnections(connectionIds);
   }
 
   function cancelDisconnectKey(connectionId: string, attempt: number): string {
@@ -1718,7 +1745,7 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function invalidateMetadataCachesForNode(node: TreeNode) {
     if (!node.connectionId) return;
-    const tableName = node.tableName || (node.type === "table" || node.type === "view" || node.type === "materialized_view" || node.type === "mongo-collection" ? node.label : undefined);
+    const tableName = node.tableName || (node.type === "table" || node.type === "view" || node.type === "materialized_view" || node.type === "mongo-collection" || node.type === "dynamodb-table" ? node.label : undefined);
     const match = {
       connectionId: node.connectionId,
       database: node.database || undefined,
@@ -1855,7 +1882,14 @@ export const useConnectionStore = defineStore("connection", () => {
       catalog: options.node.catalog,
     });
     const tableNameFilter = effectiveTableNameFilterForNode(options.node, userTableNameFilter);
-    const fetchLimit = searchFilter ? options.pageSize : options.pageSize + 1;
+    // A search must never truncate the fuzzy result set to the first page: the
+    // target table can sort beyond it (e.g. "T_Erp_Nc_SuPlan_List" for
+    // "erpncs" in a large ERP schema), which silently drops it from the first
+    // search even though later, narrower queries succeed. Results are bounded
+    // by SIDEBAR_TABLE_SEARCH_RESULT_BUDGET so a wide fuzzy query cannot push
+    // an unbounded result set through database → IPC → store → tree rendering.
+    // Unfiltered loads keep the page+1 probe used for load-more detection.
+    const fetchLimit = searchFilter ? SIDEBAR_TABLE_SEARCH_RESULT_BUDGET : options.pageSize + 1;
     const fetchOffset = searchFilter ? undefined : options.offset;
     const tables = await loadCachedMetadataListPage<TableInfo[]>(
       metadataListCacheScope({
@@ -1964,7 +1998,11 @@ export const useConnectionStore = defineStore("connection", () => {
       schema: options.effectiveSchema ?? options.querySchema,
       nodeKind: "simple-tables",
     });
-    const fetchLimit = searchFilter ? options.pageSize : options.pageSize + 1;
+    // A search must never truncate the fuzzy result set to the first page (see
+    // loadPagedTableGroupChildren); results are bounded by
+    // SIDEBAR_TABLE_SEARCH_RESULT_BUDGET, and unfiltered loads keep the
+    // page+1 probe.
+    const fetchLimit = searchFilter ? SIDEBAR_TABLE_SEARCH_RESULT_BUDGET : options.pageSize + 1;
     const fetchOffset = searchFilter ? undefined : options.offset;
     const tables = await loadCachedMetadataListPage<TableInfo[]>(
       metadataListCacheScope({
@@ -2753,13 +2791,14 @@ export const useConnectionStore = defineStore("connection", () => {
     const removedIds = new Set(connectionIds);
     const oneTimeIds = connectionIds.filter((id) => getConfig(id)?.one_time === true);
     const nextConnections = connections.value.filter((c) => !removedIds.has(c.id));
-    await persistConnections(nextConnections);
-    await closeOneTimeConnectionTabs(oneTimeIds);
-    releaseOneTimeRuntimeConnections(oneTimeIds);
-    await persistTimeoutInheritanceIds(
-      settingsStore.editorSettings.connectTimeoutInheritConnectionIds.filter((id) => !removedIds.has(id)),
-      settingsStore.editorSettings.queryTimeoutInheritConnectionIds.filter((id) => !removedIds.has(id)),
-    );
+    let nextLayout = sidebarLayout.value;
+    for (const id of removedIds) nextLayout = removeConnectionFromSidebarLayout(nextLayout, id);
+    await persistConnectionDeletion(nextConnections, nextLayout);
+    applyConnectionRemoval(removedIds, nextConnections, nextLayout);
+    await cleanupRemovedOneTimeConnections(oneTimeIds);
+  }
+
+  function applyConnectionRemoval(removedIds: ReadonlySet<string>, nextConnections: ConnectionConfig[], nextLayout: SidebarLayout) {
     connections.value = nextConnections;
     syncTimeoutInheritanceBackup();
     let nextPinnedOrder = pinnedTreeNodeOrder.value;
@@ -2777,10 +2816,9 @@ export const useConnectionStore = defineStore("connection", () => {
       clearPrimaryVisibleObjectNames(id);
       clearConnectionIdentifierQuote(id);
       clearConnectionHealthCheck(id);
-      sidebarLayout.value = removeConnectionFromSidebarLayout(sidebarLayout.value, id);
     }
+    sidebarLayout.value = nextLayout;
     rebuildTreeNodes();
-    persistSidebarLayoutDebounced();
     if (activeConnectionId.value && removedIds.has(activeConnectionId.value)) {
       activeConnectionId.value = null;
     }
@@ -3110,6 +3148,8 @@ export const useConnectionStore = defineStore("connection", () => {
       await loadConsulRoot(connectionId);
     } else if (config.db_type === "mongodb") {
       await loadMongoDatabases(connectionId);
+    } else if (config.db_type === "dynamodb") {
+      await loadDynamoDbTables(connectionId);
     } else if (config.db_type === "elasticsearch" || config.db_type === "easysearch" || config.db_type === "meilisearch") {
       // Reload: list indices.
       await loadElasticsearchIndices(connectionId);
@@ -3370,8 +3410,12 @@ export const useConnectionStore = defineStore("connection", () => {
     invalidateObjectBrowserRowsCache({ connectionId, database });
   }
 
-  async function ensureConnected(connectionId: string, options: { activate?: boolean } = {}) {
+  async function ensureConnected(connectionId: string, options: { activate?: boolean; verifyHealth?: boolean } = {}) {
     if (connectedIds.value.has(connectionId)) {
+      // Pure navigation can safely trust the existing connected state. Its
+      // destination will perform the real API request, while blocking here on
+      // a health probe makes an otherwise local tab switch take up to 5s.
+      if (options.verifyHealth === false) return;
       if (hasRecentConnectionHealthCheck(connectionId)) return;
       // Optimistic: verify backend pool is actually healthy
       try {
@@ -3766,7 +3810,7 @@ export const useConnectionStore = defineStore("connection", () => {
   async function loadConnectedConnectionRootForSidebarSearch(connectionId: string) {
     if (!connectedIds.value.has(connectionId)) return;
     const config = getConfig(connectionId);
-    if (!config || ["redis", "etcd", "zookeeper", "consul", "mongodb", "elasticsearch", "easysearch", "meilisearch", "milvus", "qdrant", "weaviate", "chromadb", "mq", "nacos"].includes(config.db_type)) return;
+    if (!config || ["redis", "etcd", "zookeeper", "consul", "mongodb", "dynamodb", "elasticsearch", "easysearch", "meilisearch", "milvus", "qdrant", "weaviate", "chromadb", "mq", "nacos"].includes(config.db_type)) return;
     const node = findConnectionNode(connectionId);
     if (!node || node.type !== "connection" || hasConnectionMetadataChildren(node.children)) return;
     const scope = { kind: "connection-databases" as const, connectionId, driverProfile: metadataDriverProfile(config) };
@@ -4067,7 +4111,8 @@ export const useConnectionStore = defineStore("connection", () => {
       load = reclaimTreeNodeLoad(load, node);
       if (useCachedChildren(node, options, load)) return;
 
-      const namespaces = normalizeNacosNamespacesForDisplay(await api.nacosListNamespaces(connectionId));
+      const sidebarSnapshot = await api.nacosSidebarSnapshot(connectionId);
+      const namespaces = normalizeNacosNamespacesForDisplay(sidebarSnapshot.namespaces);
       const visibleNamespaces = filterNacosNamespacesForSidebar(namespaces, getConfig(connectionId)?.visible_databases);
       const sorted = [...visibleNamespaces].sort((left, right) => {
         const leftLabel = left.namespaceShowName || left.namespace || "public";
@@ -4080,9 +4125,8 @@ export const useConnectionStore = defineStore("connection", () => {
         connectionId,
         namespaces.map((namespace) => namespace.namespace),
       );
-      setChildren(
-        targetNode,
-        sorted.map((namespace) => {
+      const children: TreeNode[] = [
+        ...sorted.map((namespace) => {
           const value = namespace.namespace || "";
           const label = namespace.namespaceShowName || value || "public";
           return {
@@ -4096,7 +4140,19 @@ export const useConnectionStore = defineStore("connection", () => {
             objectCount: namespace.configCount,
           };
         }),
-      );
+      ];
+      if (sidebarSnapshot.accessControl.listUsers.supported === true || sidebarSnapshot.accessControl.listRoleBindings.supported === true) {
+        children.push({
+          id: `${connectionId}:nacos-access-control`,
+          label: "nacos.accessControlSidebarLabel",
+          type: "nacos-access-control" as const,
+          connectionId,
+          database: "",
+          isExpanded: false,
+          children: [],
+        });
+      }
+      setChildren(targetNode, children);
       targetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
@@ -4164,6 +4220,42 @@ export const useConnectionStore = defineStore("connection", () => {
           })),
           targetNode,
         ),
+      );
+      targetNode.isExpanded = true;
+    } catch (e) {
+      recordMetadataLoadError(connectionId, e, load);
+      throw e;
+    } finally {
+      finishTreeNodeLoad(load);
+    }
+  }
+
+  async function loadDynamoDbTables(connectionId: string) {
+    const node = findConnectionNode(connectionId);
+    if (!node) return;
+
+    let load = beginTreeNodeLoad(node);
+    try {
+      await ensureConnected(connectionId);
+      load = reclaimTreeNodeLoad(load, node);
+      const config = getConfig(connectionId);
+      const region = config?.database?.trim() || "us-east-1";
+      const tables = await withMetadataLoadTimeout(connectionId, api.documentListCollections(connectionId, region), "DynamoDB tables");
+      const targetNode = treeNodeLoadTarget(load);
+      if (!targetNode) return;
+      setChildren(
+        targetNode,
+        [...tables]
+          .sort((left, right) => compareSidebarNames(left.name, right.name))
+          .map((table) => ({
+            id: `${connectionId}:__dynamodb_table:${table.id}`,
+            label: table.name,
+            type: "dynamodb-table" as const,
+            connectionId,
+            database: region,
+            tableName: table.name,
+            isExpanded: false,
+          })),
       );
       targetNode.isExpanded = true;
     } catch (e) {
@@ -4658,6 +4750,8 @@ export const useConnectionStore = defineStore("connection", () => {
     const configForScope = getConfig(connectionId);
     const simpleObjectDisplayForScope = useSettingsStore().editorSettings.sidebarObjectDisplay === "simple";
     const objectTypesForScope = simpleObjectDisplayForScope ? supportedSidebarObjectTypes(configForScope) : undefined;
+    const searchFilterForScope = activeTreeLoadSearchFilter(options);
+    const pageSizeForScope = sidebarObjectGroupPageSize();
     return runTreeMetadataLoad(
       {
         kind: "schema-tables",
@@ -4666,8 +4760,8 @@ export const useConnectionStore = defineStore("connection", () => {
         schema: undefined,
         nodeKind: "database",
         objectTypes: objectTypesForScope,
-        searchFilter: activeTreeLoadSearchFilter(options),
-        limit: simpleObjectDisplayForScope ? sidebarObjectGroupPageSize() + 1 : undefined,
+        searchFilter: searchFilterForScope,
+        limit: simpleObjectDisplayForScope ? (searchFilterForScope ? SIDEBAR_TABLE_SEARCH_RESULT_BUDGET : pageSizeForScope + 1) : undefined,
         offset: 0,
         sidebarDisplayMode: simpleObjectDisplayForScope ? "simple" : "grouped",
         driverProfile: metadataDriverProfile(configForScope),
@@ -4694,8 +4788,8 @@ export const useConnectionStore = defineStore("connection", () => {
               return;
             }
           }
-          const pageSize = sidebarObjectGroupPageSize();
-          const fetchLimit = searchFilter ? pageSize : pageSize + 1;
+          const pageSize = pageSizeForScope;
+          const fetchLimit = searchFilter ? SIDEBAR_TABLE_SEARCH_RESULT_BUDGET : pageSize + 1;
           const fetchOffset = searchFilter ? undefined : 0;
           const tables = await withMetadataLoadTimeout(connectionId, listTablesWithOptionalTableNameFilter(connectionId, database, "", searchFilter, fetchLimit, fetchOffset, objectTypesForScope, catalog, tableNameFilter), "tables");
           const hasMore = searchFilter ? false : tables.length > pageSize;
@@ -5845,6 +5939,8 @@ export const useConnectionStore = defineStore("connection", () => {
         await loadConsulRoot(node.connectionId);
       } else if (config?.db_type === "mongodb") {
         await loadMongoDatabases(node.connectionId);
+      } else if (config?.db_type === "dynamodb") {
+        await loadDynamoDbTables(node.connectionId);
       } else if (config?.db_type === "elasticsearch" || config?.db_type === "easysearch" || config?.db_type === "meilisearch") {
         await loadElasticsearchIndices(node.connectionId);
       } else if (config?.db_type === "milvus") {
@@ -7225,11 +7321,10 @@ export const useConnectionStore = defineStore("connection", () => {
 
   async function persistTimeoutInheritanceIds(connectIds: string[], queryIds: string[]) {
     if (sameIds(connectIds, settingsStore.editorSettings.connectTimeoutInheritConnectionIds) && sameIds(queryIds, settingsStore.editorSettings.queryTimeoutInheritConnectionIds)) return;
-    settingsStore.updateEditorSettings({
+    await settingsStore.updateEditorSettingsAndPersist({
       connectTimeoutInheritConnectionIds: connectIds,
       queryTimeoutInheritConnectionIds: queryIds,
     });
-    await settingsStore.persistEditorSettings();
   }
 
   async function persistTimeoutInheritance(connectionId: string, connectInherit: boolean, queryInherit: boolean) {
@@ -7256,6 +7351,66 @@ export const useConnectionStore = defineStore("connection", () => {
       connectSnapshots,
       querySnapshots,
     });
+  }
+
+  async function persistConnectionDeletion(nextConnections: ConnectionConfig[], nextLayout: SidebarLayout) {
+    const previousConnections = connections.value;
+    const previousLayout = sidebarLayout.value;
+    const previousConnectTimeoutIds = [...settingsStore.editorSettings.connectTimeoutInheritConnectionIds];
+    const previousQueryTimeoutIds = [...settingsStore.editorSettings.queryTimeoutInheritConnectionIds];
+    const nextConnectTimeoutIds = previousConnectTimeoutIds.filter((id) => nextConnections.some((connection) => connection.id === id));
+    const nextQueryTimeoutIds = previousQueryTimeoutIds.filter((id) => nextConnections.some((connection) => connection.id === id));
+    const connectionsChanged = nextConnections.length !== previousConnections.length || nextConnections.some((connection, index) => connection !== previousConnections[index]);
+    const timeoutSettingsChanged = !sameIds(nextConnectTimeoutIds, previousConnectTimeoutIds) || !sameIds(nextQueryTimeoutIds, previousQueryTimeoutIds);
+    const layoutChanged = nextLayout !== previousLayout;
+    let connectionsPersisted = false;
+    let timeoutSettingsPersisted = false;
+    let layoutSaveStarted = false;
+
+    try {
+      if (connectionsChanged) {
+        await persistConnections(nextConnections);
+        connectionsPersisted = true;
+      }
+      if (timeoutSettingsChanged) {
+        await persistTimeoutInheritanceIds(nextConnectTimeoutIds, nextQueryTimeoutIds);
+        timeoutSettingsPersisted = true;
+      }
+      if (layoutChanged) {
+        layoutSaveStarted = true;
+        await api.saveSidebarLayout(nextLayout);
+      }
+    } catch (error) {
+      const rollbackErrors: unknown[] = [];
+      if (layoutSaveStarted) {
+        try {
+          await api.saveSidebarLayout(previousLayout);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (timeoutSettingsPersisted) {
+        try {
+          await persistTimeoutInheritanceIds(previousConnectTimeoutIds, previousQueryTimeoutIds);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (connectionsPersisted) {
+        try {
+          await persistConnections(previousConnections);
+        } catch (rollbackError) {
+          rollbackErrors.push(rollbackError);
+        }
+      }
+      if (rollbackErrors.length) {
+        const details = rollbackErrors.map((rollbackError) => (rollbackError instanceof Error ? rollbackError.message : String(rollbackError))).join("; ");
+        const recoveryError = new Error(`Connection deletion failed and recovery was incomplete: ${details}`);
+        (recoveryError as Error & { cause?: unknown }).cause = error;
+        throw recoveryError;
+      }
+      throw error;
+    }
   }
 
   async function applyGlobalTimeouts({ connectTimeoutSecs, queryTimeoutSecs }: { connectTimeoutSecs?: number; queryTimeoutSecs?: number }) {
@@ -7362,6 +7517,43 @@ export const useConnectionStore = defineStore("connection", () => {
     sidebarLayout.value = nextLayout;
     rebuildTreeNodes();
     persistSidebarLayoutDebounced();
+  }
+
+  async function removeConnectionGroups(groupIds: Iterable<string>, deleteConnections = false): Promise<string[]> {
+    const uniqueGroupIds = [...new Set(groupIds)];
+    const previousLayout = sidebarLayout.value;
+    const connectionIds = deleteConnections ? connectionIdsInGroupsOp(sidebarLayout.value, uniqueGroupIds).filter((id) => connections.value.some((connection) => connection.id === id)) : [];
+    const oneTimeIds = connectionIds.filter((id) => getConfig(id)?.one_time === true);
+    const removedConnectionIds = new Set(connectionIds);
+    const nextConnections = removedConnectionIds.size ? connections.value.filter((connection) => !removedConnectionIds.has(connection.id)) : connections.value;
+    let layoutAfterConnectionRemoval = previousLayout;
+    for (const id of removedConnectionIds) layoutAfterConnectionRemoval = removeConnectionFromSidebarLayout(layoutAfterConnectionRemoval, id);
+    const nextLayout = deleteGroupsOp(layoutAfterConnectionRemoval, uniqueGroupIds);
+    if (nextLayout === previousLayout && nextConnections === connections.value) return [];
+
+    await persistConnectionDeletion(nextConnections, nextLayout);
+    if (removedConnectionIds.size) {
+      applyConnectionRemoval(removedConnectionIds, nextConnections, nextLayout);
+    } else {
+      sidebarLayout.value = nextLayout;
+      rebuildTreeNodes();
+    }
+    await cleanupRemovedOneTimeConnections(oneTimeIds);
+
+    const remainingGroupIds = new Set(nextLayout.groups.map((group) => group.id));
+    const removedGroupIds = new Set(previousLayout.groups.filter((group) => !remainingGroupIds.has(group.id)).map((group) => group.id));
+    if (removedGroupIds.size) {
+      const nextPinnedOrder = pinnedTreeNodeOrder.value.filter((pinId) => !removedGroupIds.has(pinId));
+      if (nextPinnedOrder.length !== pinnedTreeNodeOrder.value.length) {
+        setPinnedTreeNodeOrder(nextPinnedOrder);
+        persistPinnedTreeNodeIds();
+      }
+      selectedTreeNodeIds.value = selectedTreeNodeIds.value.filter((id) => !removedGroupIds.has(id));
+      if (selectedTreeNodeId.value && removedGroupIds.has(selectedTreeNodeId.value)) selectedTreeNodeId.value = null;
+      if (treeSelectionAnchorId.value && removedGroupIds.has(treeSelectionAnchorId.value)) treeSelectionAnchorId.value = null;
+      if (!selectedTreeNodeIds.value.length) connectionMultiSelectActive.value = false;
+    }
+    return connectionIds;
   }
 
   function collapseAllTreeNodes() {
@@ -7815,7 +8007,7 @@ export const useConnectionStore = defineStore("connection", () => {
   function applySidebarLayout(layout: SidebarLayout) {
     const reconciledLayout = reconcileLayout(
       connections.value.map((c) => c.id),
-      layout,
+      mergeSidebarLayout(sidebarLayout.value, layout),
     );
     updateLayoutAndRebuild(reconciledLayout);
   }
@@ -7963,6 +8155,7 @@ export const useConnectionStore = defineStore("connection", () => {
     loadNacosNamespaces,
     updateRedisDbKeyStats,
     loadMongoDatabases,
+    loadDynamoDbTables,
     loadMilvusDatabases,
     openElasticsearchConnectionTree,
     loadElasticsearchIndices,
@@ -8055,8 +8248,14 @@ export const useConnectionStore = defineStore("connection", () => {
     renameConnectionGroup(groupId: string, name: string) {
       updateLayoutAndRebuild(renameGroupOp(sidebarLayout.value, groupId, name));
     },
-    deleteConnectionGroup(groupId: string) {
-      updateLayoutAndRebuild(deleteGroupOp(sidebarLayout.value, groupId));
+    async deleteConnectionGroup(groupId: string) {
+      await removeConnectionGroups([groupId]);
+    },
+    async deleteConnectionGroups(groupIds: Iterable<string>, deleteConnections = false) {
+      return await removeConnectionGroups(groupIds, deleteConnections);
+    },
+    connectionIdsInGroups(groupIds: Iterable<string>) {
+      return connectionIdsInGroupsOp(sidebarLayout.value, groupIds);
     },
     toggleConnectionGroupCollapsed(groupId: string) {
       updateLayoutAndRebuild(toggleGroupCollapsedOp(sidebarLayout.value, groupId));

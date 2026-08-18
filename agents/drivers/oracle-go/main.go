@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,12 +43,16 @@ FROM PRODUCT_COMPONENT_VERSION
 WHERE PRODUCT LIKE 'Oracle Database%'
   AND ROWNUM = 1`
 
+const oracleDisableSegmentAttributesSQL = `BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', FALSE); END;`
+const oracleEnableSegmentAttributesSQL = `BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', TRUE); END;`
+
 var (
 	oraclePlSQLBlockStartRegexp          = regexp.MustCompile(`(?is)^\s*(?:DECLARE|BEGIN|CREATE\s+(?:OR\s+REPLACE\s+)?(?:(?:EDITIONABLE|NONEDITIONABLE)\s+)?(?:FUNCTION|PROCEDURE|TRIGGER|PACKAGE(?:\s+BODY)?|TYPE(?:\s+BODY)?))\b`)
 	oraclePlSQLBlockEndRegexp            = regexp.MustCompile(`(?is)\bEND\s*;\s*$`)
 	oracleNamedPlSQLBlockEndRegexp       = regexp.MustCompile(`(?is)\bEND\s+([A-Z0-9_$#]+)\s*;\s*$`)
 	oracleUnsupportedServerCharsetRegexp = regexp.MustCompile(`server use charset with id: ([0-9]+).*not supported by the driver`)
 	oracleVersionNumberRegexp            = regexp.MustCompile(`(?:^|[^0-9])([0-9]+)\.[0-9]+`)
+	oracleNotNullConstraintRegexp        = regexp.MustCompile(`(?i)^\s*\(*\s*(?:"((?:[^"]|"")*)"|([A-Z0-9_$#]+))\s+IS\s+NOT\s+NULL\s*\)*\s*$`)
 	oracleDatabaseVersionQueries         = []string{
 		oracleDatabaseVersionSQL,
 		`SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%' AND ROWNUM = 1`,
@@ -452,6 +457,38 @@ type triggerInfo struct {
 	Statement *string `json:"statement,omitempty"`
 }
 
+// constraintInfo represents primary key, unique, and check constraints for a
+// table. Foreign keys are served separately by listForeignKeys, so this only
+// covers constraint types 'P', 'U', and 'C'.
+type constraintInfo struct {
+	Name              string   `json:"name"`
+	ConstraintType    string   `json:"constraint_type"`
+	Definition        string   `json:"definition"`
+	Columns           []string `json:"columns"`
+	RefSchema         *string  `json:"ref_schema,omitempty"`
+	RefTable          *string  `json:"ref_table,omitempty"`
+	RefColumns        []string `json:"ref_columns"`
+	MatchType         *string  `json:"match_type,omitempty"`
+	OnUpdate          *string  `json:"on_update,omitempty"`
+	OnDelete          *string  `json:"on_delete,omitempty"`
+	Deferrable        bool     `json:"deferrable"`
+	InitiallyDeferred bool     `json:"initially_deferred"`
+	Enabled           bool     `json:"enabled"`
+	Valid             bool     `json:"valid"`
+}
+
+func (c constraintInfo) MarshalJSON() ([]byte, error) {
+	type alias constraintInfo
+	value := alias(c)
+	if value.Columns == nil {
+		value.Columns = []string{}
+	}
+	if value.RefColumns == nil {
+		value.RefColumns = []string{}
+	}
+	return json.Marshal(value)
+}
+
 type server struct {
 	db                     *sql.DB
 	params                 connectParams
@@ -810,7 +847,7 @@ func (s *server) dispatch(method string, params map[string]json.RawMessage) (any
 		schema := stringParam(params, "schema")
 		table := stringParam(params, "table")
 		objectType := stringParam(params, "object_type")
-		ddl, err := s.getTableDDL(schema, table, objectType)
+		ddl, err := s.getTableDDLWithOptions(schema, table, objectType, boolParam(params, "portable"))
 		return ddl, false, err
 	case "execute_query":
 		var opts queryOptions
@@ -852,6 +889,11 @@ func (s *server) dispatch(method string, params map[string]json.RawMessage) (any
 		schema := stringParam(params, "schema")
 		table := stringParam(params, "table")
 		result, err := s.listForeignKeys(schema, table)
+		return result, false, err
+	case "list_constraints":
+		schema := stringParam(params, "schema")
+		table := stringParam(params, "table")
+		result, err := s.listConstraints(schema, table)
 		return result, false, err
 	case "list_triggers":
 		schema := stringParam(params, "schema")
@@ -2548,6 +2590,123 @@ ORDER BY ac.CONSTRAINT_NAME, acc.POSITION`, []any{schema, table})
 	return emptyIfNil(result), rows.Err()
 }
 
+func oracleConstraintTypeName(kind string) string {
+	switch kind {
+	case "P":
+		return "PRIMARY KEY"
+	case "U":
+		return "UNIQUE"
+	case "C":
+		return "CHECK"
+	default:
+		return kind
+	}
+}
+
+func oracleSystemNotNullConstraint(kind string, generated sql.NullString, definition string, column, nullable sql.NullString) bool {
+	if kind != "C" || !generated.Valid || generated.String != "GENERATED NAME" || !column.Valid || !nullable.Valid || nullable.String != "N" {
+		return false
+	}
+	matches := oracleNotNullConstraintRegexp.FindStringSubmatch(definition)
+	if matches == nil {
+		return false
+	}
+	if matches[1] != "" {
+		return strings.ReplaceAll(matches[1], `""`, `"`) == column.String
+	}
+	return strings.EqualFold(matches[2], column.String)
+}
+
+// listConstraints returns primary key, unique, and check constraints for a
+// table. Oracle represents every NOT NULL column as a system-generated CHECK
+// constraint (e.g. "COL" IS NOT NULL); those are excluded here so the result
+// only contains constraints a user would recognize as such, matching how
+// tools like DBeaver/Navicat present Oracle constraints.
+func (s *server) listConstraints(schema, table string) ([]constraintInfo, error) {
+	schema, err := s.normalizeSchemaForIdentity(schema)
+	if err != nil {
+		return nil, err
+	}
+	table = strings.TrimSpace(table)
+	// SEARCH_CONDITION is a LONG column: Oracle rejects LONG values in WHERE
+	// clauses, functions, or ORDER BY (ORA-00932), so it can only appear in
+	// the SELECT list here. The NOT-NULL-check exclusion below is therefore
+	// applied in Go after scanning, not in SQL.
+	rows, err := s.queryRows(`
+SELECT ac.CONSTRAINT_NAME,
+       ac.CONSTRAINT_TYPE,
+       ac.SEARCH_CONDITION,
+       ac.GENERATED,
+       ac.STATUS,
+       ac.DEFERRABLE,
+       ac.DEFERRED,
+       ac.VALIDATED,
+       acc.COLUMN_NAME,
+       acc.POSITION,
+       atc.NULLABLE
+FROM ALL_CONSTRAINTS ac
+LEFT JOIN ALL_CONS_COLUMNS acc ON acc.OWNER = ac.OWNER AND acc.CONSTRAINT_NAME = ac.CONSTRAINT_NAME
+LEFT JOIN ALL_TAB_COLUMNS atc ON atc.OWNER = ac.OWNER AND atc.TABLE_NAME = ac.TABLE_NAME AND atc.COLUMN_NAME = acc.COLUMN_NAME
+WHERE ac.OWNER = :1
+  AND ac.TABLE_NAME = :2
+  AND ac.CONSTRAINT_TYPE IN ('P', 'U', 'C')
+ORDER BY ac.CONSTRAINT_NAME, acc.POSITION`, []any{schema, table})
+	if err != nil {
+		return nil, err
+	}
+	defer s.closeRows(rows)
+
+	byName := map[string]*constraintInfo{}
+	skipped := map[string]bool{}
+	order := []string{}
+	for rows.Next() {
+		var name, kind string
+		var condition, generated, status, deferrable, deferred, validated, column, nullable sql.NullString
+		var position sql.NullInt64
+		if err := rows.Scan(&name, &kind, &condition, &generated, &status, &deferrable, &deferred, &validated, &column, &position, &nullable); err != nil {
+			return nil, err
+		}
+		if skipped[name] {
+			continue
+		}
+		item := byName[name]
+		if item == nil {
+			definition := ""
+			if condition.Valid {
+				definition = strings.TrimSpace(condition.String)
+			}
+			if oracleSystemNotNullConstraint(kind, generated, definition, column, nullable) {
+				skipped[name] = true
+				continue
+			}
+			item = &constraintInfo{
+				Name:              name,
+				ConstraintType:    oracleConstraintTypeName(kind),
+				Definition:        definition,
+				Columns:           []string{},
+				RefColumns:        []string{},
+				Deferrable:        deferrable.Valid && deferrable.String == "DEFERRABLE",
+				InitiallyDeferred: deferred.Valid && deferred.String == "DEFERRED",
+				Enabled:           status.Valid && status.String == "ENABLED",
+				Valid:             validated.Valid && validated.String == "VALIDATED",
+			}
+			byName[name] = item
+			order = append(order, name)
+		}
+		if column.Valid && column.String != "" {
+			item.Columns = append(item.Columns, column.String)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]constraintInfo, 0, len(order))
+	for _, name := range order {
+		result = append(result, *byName[name])
+	}
+	return emptyIfNil(result), nil
+}
+
 func (s *server) listTriggers(schema, table string) ([]triggerInfo, error) {
 	schema, err := s.normalizeSchema(schema)
 	if err != nil {
@@ -2726,6 +2885,10 @@ func (s *server) normalizeSchemaForIdentity(schema string) (string, error) {
 }
 
 func (s *server) getTableDDL(schema, table, objectType string) (string, error) {
+	return s.getTableDDLWithOptions(schema, table, objectType, false)
+}
+
+func (s *server) getTableDDLWithOptions(schema, table, objectType string, portable bool) (string, error) {
 	var err error
 	schema, err = s.normalizeSchema(schema)
 	if err != nil {
@@ -2743,9 +2906,32 @@ func (s *server) getTableDDL(schema, table, objectType string) (string, error) {
 		return s.buildViewDDL(schema, table)
 	}
 	var ddl string
-	err = db.QueryRow("SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM DUAL", objectType, table, schema).Scan(&ddl)
+	var indexDDLs []string
+	if portable && objectType == "TABLE" {
+		var metadataErr error
+		err = withOraclePortableMetadataSession(db, func(conn *sql.Conn) error {
+			metadataErr = conn.QueryRowContext(
+				context.Background(),
+				"SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM DUAL",
+				objectType,
+				table,
+				schema,
+			).Scan(&ddl)
+			indexDDLs, _ = loadTableIndexDDLsFromConn(conn, schema, table)
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+		err = metadataErr
+	} else {
+		err = db.QueryRow("SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM DUAL", objectType, table, schema).Scan(&ddl)
+	}
 	if err == nil && strings.TrimSpace(ddl) != "" {
 		if objectType == "TABLE" {
+			if portable {
+				return s.appendTableDependentDDLWithIndexes(schema, table, ddl, indexDDLs), nil
+			}
 			return s.appendTableDependentDDL(schema, table, ddl), nil
 		}
 		return ddl, nil
@@ -2755,12 +2941,41 @@ func (s *server) getTableDDL(schema, table, objectType string) (string, error) {
 		if fallbackErr != nil {
 			return "", fallbackErr
 		}
+		if portable {
+			return s.appendTableDependentDDLWithIndexes(schema, table, fallback, indexDDLs), nil
+		}
 		return s.appendTableDependentDDL(schema, table, fallback), nil
 	}
 	return "", err
 }
 
+func withOraclePortableMetadataSession(db *sql.DB, operation func(*sql.Conn) error) (err error) {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(context.Background(), oracleDisableSegmentAttributesSQL); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("failed to disable Oracle segment attributes: %w", err)
+	}
+	defer func() {
+		if _, resetErr := conn.ExecContext(context.Background(), oracleEnableSegmentAttributesSQL); resetErr != nil {
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+			if err == nil {
+				err = fmt.Errorf("failed to restore Oracle segment attributes: %w", resetErr)
+			}
+		}
+		_ = conn.Close()
+	}()
+	return operation(conn)
+}
+
 func (s *server) appendTableDependentDDL(schema, table, tableDDL string) string {
+	indexDDLs, _ := s.loadTableIndexDDLs(schema, table)
+	return s.appendTableDependentDDLWithIndexes(schema, table, tableDDL, indexDDLs)
+}
+
+func (s *server) appendTableDependentDDLWithIndexes(schema, table, tableDDL string, indexDDLs []string) string {
 	var builder strings.Builder
 	baseDDL := strings.TrimSpace(tableDDL)
 	builder.WriteString(baseDDL)
@@ -2776,10 +2991,8 @@ func (s *server) appendTableDependentDDL(schema, table, tableDDL string) string 
 		dependentAppended = true
 	}
 
-	if indexDDLs, err := s.loadTableIndexDDLs(schema, table); err == nil {
-		for _, ddl := range indexDDLs {
-			appendDependent(ddl)
-		}
+	for _, ddl := range indexDDLs {
+		appendDependent(ddl)
 	}
 	if triggerDDLs, err := s.loadTableTriggerDDLs(schema, table); err == nil {
 		for _, ddl := range triggerDDLs {
@@ -2794,8 +3007,7 @@ func (s *server) appendTableDependentDDL(schema, table, tableDDL string) string 
 	return builder.String()
 }
 
-func (s *server) loadTableIndexDDLs(schema, table string) ([]string, error) {
-	rows, err := s.queryRows(`
+const oracleTableIndexDDLsSQL = `
 SELECT DBMS_METADATA.GET_DDL('INDEX', i.INDEX_NAME, i.OWNER)
 FROM ALL_INDEXES i
 WHERE i.TABLE_OWNER = :1
@@ -2809,11 +3021,27 @@ WHERE i.TABLE_OWNER = :1
       AND c.CONSTRAINT_TYPE IN ('P', 'U')
       AND c.INDEX_NAME IS NOT NULL
   )
-ORDER BY i.INDEX_NAME`, []any{schema, table, schema, table})
+ORDER BY i.INDEX_NAME`
+
+func (s *server) loadTableIndexDDLs(schema, table string) ([]string, error) {
+	rows, err := s.queryRows(oracleTableIndexDDLsSQL, []any{schema, table, schema, table})
 	if err != nil {
 		return nil, err
 	}
 	defer s.closeRows(rows)
+	return scanOracleDDLs(rows)
+}
+
+func loadTableIndexDDLsFromConn(conn *sql.Conn, schema, table string) ([]string, error) {
+	rows, err := conn.QueryContext(context.Background(), oracleTableIndexDDLsSQL, schema, table, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOracleDDLs(rows)
+}
+
+func scanOracleDDLs(rows *sql.Rows) ([]string, error) {
 	var result []string
 	for rows.Next() {
 		var ddl sql.NullString
@@ -4586,6 +4814,15 @@ func intParam(params map[string]json.RawMessage, key string) int {
 		return 0
 	}
 	var value int
+	_ = json.Unmarshal(params[key], &value)
+	return value
+}
+
+func boolParam(params map[string]json.RawMessage, key string) bool {
+	if params == nil || len(params[key]) == 0 {
+		return false
+	}
+	var value bool
 	_ = json.Unmarshal(params[key], &value)
 	return value
 }

@@ -88,11 +88,13 @@ function createHarness(options: {
     "codeMirrorAcceptCompletion",
     "codeMirrorCloseCompletion",
     "codeMirrorInsertNewlineKeepIndent",
+    "insertQueryEditorNewline",
     "codeMirrorNextSnippetField",
     "codeMirrorIndentMore",
     "settingsStore",
     "normalizeShortcutSettings",
     "shortcutToCodeMirrorKey",
+    "props",
     `${javascript}\nreturn { handleTab, insertNewlineWithoutCompletion, acceptCompletionOrNextSnippetField, clearPendingCompletionTab, consumeSqlCompletionAutoStartSuppression };`,
   );
   return factory(
@@ -100,6 +102,7 @@ function createHarness(options: {
     options.acceptCompletion ?? (() => false),
     options.closeCompletion ?? (() => false),
     options.insertNewlineKeepIndent ?? (() => false),
+    (view: MockView, fallback: ((view: MockView) => boolean) | null | undefined) => fallback?.(view) ?? false,
     options.nextSnippetField ?? (() => false),
     options.indentMore ?? (() => false),
     {
@@ -110,6 +113,7 @@ function createHarness(options: {
     },
     normalizeShortcutSettings,
     shortcutToCodeMirrorKey,
+    { databaseType: "mysql" },
   ) as TabHarness;
 }
 
@@ -289,5 +293,26 @@ describe("QueryEditor completion Tab keymap", () => {
 
     expect(view.state.replaceSelection).toHaveBeenCalledWith("  ");
     expect(view.dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("triggers completion on Alt+/ through the manual shortcut and skips while composing", () => {
+    const source = [extractDeclaration(/const COMPLETION_DEBOUNCE_DELAY_MS = \d+;/, "completion debounce delay"), "let imeCompositionActive = false;", extractFunction("isEditorComposing"), extractFunction("triggerSqlCompletion")].join("\n");
+    const javascript = ts.transpileModule(source, {
+      compilerOptions: { module: ts.ModuleKind.None, target: ts.ScriptTarget.ES2022 },
+    }).outputText;
+    const factory = new Function("codeMirrorStartCompletion", `${javascript}\nreturn { triggerSqlCompletion, isEditorComposing };`);
+    const startCompletion = vi.fn(() => true);
+    const { triggerSqlCompletion } = factory(startCompletion) as {
+      triggerSqlCompletion: (view: MockView) => boolean;
+    };
+    const view = createView();
+
+    expect(triggerSqlCompletion(view)).toBe(true);
+    expect(startCompletion).toHaveBeenCalledWith(view);
+
+    startCompletion.mockClear();
+    (view as MockView & { composing: boolean }).composing = true;
+    expect(triggerSqlCompletion(view)).toBe(false);
+    expect(startCompletion).not.toHaveBeenCalled();
   });
 });

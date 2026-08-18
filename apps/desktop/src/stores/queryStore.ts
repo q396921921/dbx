@@ -2,12 +2,12 @@ import { defineStore } from "pinia";
 import { uuid } from "@/lib/common/utils";
 import { computed, markRaw, nextTick, onScopeDispose, reactive, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import type { BatchSqlExecution, ConnectionConfig, DatabaseType, IndexInfo, ObjectBrowserViewport, QueryResult, QueryTab, TableInfoTab, TableStructureEditorTarget } from "@/types/database";
+import type { BatchSqlExecution, ConnectionConfig, DatabaseType, IndexInfo, ObjectBrowserViewport, QueryResult, QueryResultSourceColumnRef, QueryTab, TableInfoTab, TableStructureEditorTarget } from "@/types/database";
 import { orderPinnedFirst } from "@/lib/app/pinnedItems";
 import { canCancelQueryExecution } from "@/lib/sql/queryExecutionState";
 import { buildExplainSql, parseExplainResult, parseDamengExplainText, parseOracleExplainText, sqlServerExplainResult, type BuildExplainSqlResult } from "@/lib/diagram/explainPlan";
 import { mysqlExplainCompatibilityHint } from "@/lib/diagram/mysqlExplainCompatibility";
-import { allEditableColumnsWriteable, allPrimaryKeysPresent, analyzeEditableQueryEditability, resolveMetadataColumnName, sourceColumnsForResult, type EditableQueryInfo, type EditableQuerySource } from "@/lib/sql/sqlAnalysis";
+import { allEditableColumnsWriteable, allPrimaryKeysPresent, analyzeEditableQueryEditability, resolveMetadataColumnName, resolveSourceColumnsByOrdinal, sourceColumnsForResult, type EditableQueryInfo, type EditableQuerySource } from "@/lib/sql/sqlAnalysis";
 import { buildQueryWithHiddenPrimaryKeys, hiddenResultColumnIndexes, type HiddenPrimaryKeyProjection } from "@/lib/sql/editableQueryHiddenKeys";
 import { ACTIVE_TAB_STORAGE_KEY, OPEN_TABS_STORAGE_KEY, restoreOpenTabsPayload, restoreOpenTabsState, serializeOpenTabs } from "@/lib/app/openTabsPersistence";
 import {
@@ -43,7 +43,7 @@ import { dataTabExecutionDatabase } from "@/lib/table/dataTabExecutionDatabase";
 import { tableOpenPageLimit } from "@/lib/table/tableOpenPageLimit";
 import { getCachedTableMetadata, loadTableIndexes, loadTableMetadata, type TableMetadataRequest } from "@/lib/metadata/tableMetadataCache";
 import { buildTableSelectSql, quoteTableDataIdentifier } from "@/lib/table/tableSelectSql";
-import { connectionObjectTreeNodeSchema, connectionQueryExecutionSchema, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
+import { connectionObjectTreeNodeSchema, connectionQueryExecutionSchema, connectionUsesDatabaseObjectTreeMode, effectiveDatabaseTypeForConnection, gaussdbCountQueryDopHint, metadataSchemaForConnection } from "@/lib/database/jdbcDialect";
 import { frontendQueryTimeoutDelayMs, frontendQueryTimeoutSecsForSql, queryTimeoutSecsForConnection } from "@/lib/sql/queryTimeout";
 import { queryResultNameFromPreamble, queryResultSourceLabel } from "@/lib/sql/queryResultSource";
 import { beginDataGridNativeSelectionBlock, finishDataGridNativeSelectionBlock } from "@/lib/dataGrid/dataGridNativeSelection";
@@ -965,6 +965,8 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultEstimatedBytes = undefined;
     tab.queryAnalysis = undefined;
     tab.querySourceColumns = undefined;
+    tab.resultColumnComments = undefined;
+    tab.queryDisplaySourceColumns = undefined;
     tab.queryEditabilityReason = undefined;
     tab.mongoEditTarget = undefined;
     if (tab.mode === "query") tab.tableMeta = undefined;
@@ -1016,6 +1018,8 @@ export const useQueryStore = defineStore("query", () => {
     run.resultEstimatedBytes = undefined;
     run.queryAnalysis = undefined;
     run.querySourceColumns = undefined;
+    run.resultColumnComments = undefined;
+    run.queryDisplaySourceColumns = undefined;
     run.queryEditabilityReason = undefined;
     run.mongoEditTarget = undefined;
     run.tableMeta = undefined;
@@ -1058,6 +1062,8 @@ export const useQueryStore = defineStore("query", () => {
     tab.resultEvicted = run.resultEvicted;
     tab.queryAnalysis = run.queryAnalysis;
     tab.querySourceColumns = run.querySourceColumns;
+    tab.resultColumnComments = run.resultColumnComments;
+    tab.queryDisplaySourceColumns = run.queryDisplaySourceColumns;
     tab.queryEditabilityReason = run.queryEditabilityReason;
     tab.mongoEditTarget = run.mongoEditTarget;
     tab.tableMeta = run.tableMeta;
@@ -1217,6 +1223,8 @@ export const useQueryStore = defineStore("query", () => {
         activeResultRunId: run.id,
         queryAnalysis: run.queryAnalysis,
         querySourceColumns: run.querySourceColumns,
+        resultColumnComments: run.resultColumnComments,
+        queryDisplaySourceColumns: run.queryDisplaySourceColumns,
         queryEditabilityReason: run.queryEditabilityReason,
         tableMeta: run.tableMeta,
         resultPageSql: run.resultPageSql,
@@ -1296,6 +1304,8 @@ export const useQueryStore = defineStore("query", () => {
       resultEvicted: tab.resultEvicted,
       queryAnalysis: tab.queryAnalysis,
       querySourceColumns: tab.querySourceColumns,
+      resultColumnComments: tab.resultColumnComments,
+      queryDisplaySourceColumns: tab.queryDisplaySourceColumns,
       queryEditabilityReason: tab.queryEditabilityReason,
       mongoEditTarget: tab.mongoEditTarget,
       tableMeta: tab.tableMeta,
@@ -1394,6 +1404,8 @@ export const useQueryStore = defineStore("query", () => {
       resultEvicted: tab.resultEvicted,
       queryAnalysis: tab.queryAnalysis,
       querySourceColumns: tab.querySourceColumns,
+      resultColumnComments: tab.resultColumnComments,
+      queryDisplaySourceColumns: tab.queryDisplaySourceColumns,
       queryEditabilityReason: tab.queryEditabilityReason,
       mongoEditTarget: tab.mongoEditTarget,
       tableMeta: tab.tableMeta,
@@ -1633,7 +1645,7 @@ export const useQueryStore = defineStore("query", () => {
     const tab: QueryTab = {
       id,
       title: title || `query_${tabs.value.length + 1}`,
-      customTitle: mode === "query" && !!title ? true : undefined,
+      customTitle: mode === "query" && title ? true : undefined,
       forceWordWrap: options.forceWordWrap,
       connectionId,
       database,
@@ -2685,6 +2697,8 @@ export const useQueryStore = defineStore("query", () => {
       tableMeta: original.tableMeta ? { ...original.tableMeta, columns: [...original.tableMeta.columns], primaryKeys: [...original.tableMeta.primaryKeys] } : undefined,
       queryAnalysis: original.queryAnalysis ? { ...original.queryAnalysis, sources: original.queryAnalysis.sources?.map((source) => ({ ...source })), columns: original.queryAnalysis.columns.map((c) => ({ ...c })) } : undefined,
       querySourceColumns: original.querySourceColumns ? [...original.querySourceColumns] : undefined,
+      resultColumnComments: original.resultColumnComments ? [...original.resultColumnComments] : undefined,
+      queryDisplaySourceColumns: original.queryDisplaySourceColumns ? [...original.queryDisplaySourceColumns] : undefined,
       queryEditabilityReason: original.queryEditabilityReason,
       resultEvicted: undefined,
       whereInput: original.whereInput,
@@ -3355,7 +3369,7 @@ export const useQueryStore = defineStore("query", () => {
     await executeCurrentSql(tab.sql);
   }
 
-  async function executeCurrentSql(sql: string, options?: { skipRedisSafetyCheck?: boolean; sourceOffset?: number; openInNewResultTab?: boolean }) {
+  async function executeCurrentSql(sql: string, options?: { skipRedisSafetyCheck?: boolean; sourceOffset?: number; openInNewResultTab?: boolean; onExecutionStarted?: () => void }) {
     const executionTabId = activeTabId.value;
     if (!executionTabId) return;
     const tab = tabs.value.find((item) => item.id === executionTabId);
@@ -3380,7 +3394,7 @@ export const useQueryStore = defineStore("query", () => {
     return producedResult;
   }
 
-  type QueryMetadataPatch = Pick<QueryTab, "queryAnalysis" | "querySourceColumns" | "queryEditabilityReason" | "tableMeta">;
+  type QueryMetadataPatch = Pick<QueryTab, "queryAnalysis" | "querySourceColumns" | "queryEditabilityReason" | "tableMeta" | "resultColumnComments" | "queryDisplaySourceColumns">;
 
   type LoadedEditableSource = {
     source: EditableQuerySource;
@@ -3394,6 +3408,38 @@ export const useQueryStore = defineStore("query", () => {
     request: TableMetadataRequest;
     writeSchema?: string;
   };
+
+  /**
+   * Resolve multi-source result columns (by projection ordinal) back to exactly
+   * one base column per source, then surface the resolved column comments and a
+   * display-only result->source mapping. Reuses the same database-aware binder
+   * as the editability analysis, so `name AS username` (uniquely resolvable
+   * unqualified alias) maps back to its physical column and quoted mixed-case
+   * identifiers keep exact casing. Ambiguous or unresolved columns yield
+   * `undefined` (no comment) instead of first-source-wins on a shared name.
+   */
+  function resolveMultiSourceColumnInfo(dbType: string, analysis: EditableQueryInfo, resultColumns: string[], loadedSources: LoadedEditableSource[]): { comments: Array<string | undefined>; mapping: Array<QueryResultSourceColumnRef | undefined> } {
+    const refs = resolveSourceColumnsByOrdinal(
+      dbType,
+      analysis,
+      loadedSources.map((loaded) => ({ source: loaded.source, columns: loaded.tableMeta.columns })),
+      resultColumns.length,
+    );
+    const comments: Array<string | undefined> = [];
+    const mapping: Array<QueryResultSourceColumnRef | undefined> = [];
+    for (const ref of refs) {
+      if (!ref) {
+        comments.push(undefined);
+        mapping.push(undefined);
+        continue;
+      }
+      const loaded = loadedSources.find((entry) => entry.source.key === ref.sourceKey);
+      const comment = loaded?.tableMeta.columns.find((column) => column.name === ref.sourceColumn)?.comment?.trim();
+      comments.push(comment || undefined);
+      mapping.push(ref);
+    }
+    return { comments, mapping };
+  }
 
   function canInsertIntoEditableQuerySource(tab: QueryTab, databaseType: DatabaseType | undefined, loaded: LoadedEditableSource, sourceColumns: readonly (string | undefined)[] | undefined): boolean {
     if (!canInsertTableRows(databaseType) || !sourceColumns?.length || !sourceColumns.every(Boolean)) return false;
@@ -3418,6 +3464,8 @@ export const useQueryStore = defineStore("query", () => {
     tab.queryEditabilityReason = patch.queryEditabilityReason;
     tab.mongoEditTarget = undefined;
     tab.tableMeta = patch.tableMeta;
+    tab.resultColumnComments = patch.resultColumnComments;
+    tab.queryDisplaySourceColumns = patch.queryDisplaySourceColumns;
   }
 
   function resolveEditableSourceMetadataTarget(tab: QueryTab, analysis: EditableQueryInfo, source: EditableQuerySource, conn: ConnectionConfig | undefined, dbType: string, executionDatabase: string): EditableSourceMetadataTarget {
@@ -3439,7 +3487,11 @@ export const useQueryStore = defineStore("query", () => {
     // Oracle-family connection databases are service names, not schemas. When
     // the query does not qualify a schema, let the driver resolve the current
     // login user's schema instead of looking up metadata under the service name.
-    const resolvedSchema = (dbType === "sqlserver" && !source.schema) || (ORACLE_LIKE_METADATA_TYPES.has(dbType) && !schema) ? "" : metadataSchemaForConnection(conn, metadataDatabase, schema || undefined);
+    // An unqualified Vastbase query runs in the connection's current
+    // search_path. Do not reinterpret the selected database as a schema; the
+    // agent resolves the visible relation's actual namespace with the columns.
+    const useCurrentVastbaseSchema = dbType === "vastbase" && !source.schema && !tab.schema;
+    const resolvedSchema = (dbType === "sqlserver" && !source.schema) || (ORACLE_LIKE_METADATA_TYPES.has(dbType) && !schema) || useCurrentVastbaseSchema ? "" : metadataSchemaForConnection(conn, metadataDatabase, schema || undefined);
     const metadataSchema = normalizeUppercaseFoldedMetadataIdentifier(dbType, resolvedSchema || undefined, source.schema ? source.schemaQuoted : false) || "";
     const metadataTableName = normalizeUppercaseFoldedMetadataIdentifier(dbType, source.tableName, source.tableNameQuoted)!;
     const metadataCatalog = normalizeUppercaseFoldedMetadataIdentifier(dbType, source.catalog, source.catalogQuoted);
@@ -3471,13 +3523,14 @@ export const useQueryStore = defineStore("query", () => {
   }
 
   function loadedEditableSourceFromMetadata(target: EditableSourceMetadataTarget, metadata: Awaited<ReturnType<typeof loadTableMetadata>>["metadata"]): LoadedEditableSource {
+    const writeSchema = target.request.databaseType === "vastbase" && !target.writeSchema ? metadata.schema : target.writeSchema;
     return {
       source: target.source,
       analysis: target.analysis,
       tableMeta: {
         catalog: target.request.catalog,
         database: target.request.database,
-        schema: target.writeSchema,
+        schema: writeSchema,
         tableName: target.request.tableName,
         tableType: metadata.tableType,
         columns: metadata.columns,
@@ -3733,12 +3786,20 @@ export const useQueryStore = defineStore("query", () => {
         };
       }
 
+      // Multi-source results cannot carry a single tableMeta, but every source
+      // table's metadata is already loaded. Surface per-ordinal column comments
+      // and a display-only result->source mapping so the data grid can still
+      // show comments for joined results (fixes #2129 / #6352).
+      const multiSourceInfo = loadedSources.length > 1 ? resolveMultiSourceColumnInfo(dbType, analysis, tab.result.columns, loadedSources) : undefined;
+
       if (candidates.length === 0) {
         return {
           queryAnalysis: undefined,
           querySourceColumns: undefined,
           queryEditabilityReason: loadedSources.some((loaded) => loaded.tableMeta.primaryKeys.length > 0) ? "primary-key-not-returned" : "no-primary-key",
           tableMeta: undefined,
+          resultColumnComments: multiSourceInfo?.comments,
+          queryDisplaySourceColumns: multiSourceInfo?.mapping,
         };
       }
 
@@ -3748,6 +3809,8 @@ export const useQueryStore = defineStore("query", () => {
           querySourceColumns: undefined,
           queryEditabilityReason: "complex-source",
           tableMeta: undefined,
+          resultColumnComments: multiSourceInfo?.comments,
+          queryDisplaySourceColumns: multiSourceInfo?.mapping,
         };
       }
 
@@ -3763,6 +3826,8 @@ export const useQueryStore = defineStore("query", () => {
         querySourceColumns: target.sourceColumns,
         queryEditabilityReason: undefined,
         tableMeta: target.tableMeta,
+        resultColumnComments: multiSourceInfo?.comments,
+        queryDisplaySourceColumns: multiSourceInfo?.mapping,
       };
     } catch (err) {
       console.error("[DBX] ERROR fetching columns for query metadata:", err);
@@ -3911,6 +3976,7 @@ export const useQueryStore = defineStore("query", () => {
       openInNewResultTab?: boolean;
       targetContext?: SqlExecutionTargetContext;
       executionTarget?: MultiDbExecutionTarget;
+      onExecutionStarted?: () => void;
     },
   ) {
     const tab = findExecutionTab(id);
@@ -3928,6 +3994,7 @@ export const useQueryStore = defineStore("query", () => {
     const startedAt = performance.now();
     const elapsed = () => `${Math.round(performance.now() - startedAt)}ms`;
     tab.isExecuting = true;
+    options?.onExecutionStarted?.();
     tab.isCancelling = false;
     if (!tab.queryExecutionStartedAt) {
       tab.queryExecutionStartedAt = Date.now();
@@ -3976,6 +4043,7 @@ export const useQueryStore = defineStore("query", () => {
     let hiddenPrimaryKeys: HiddenPrimaryKeyProjection[] = [];
     let useOracleLobPreview = false;
     let pageSql: string | undefined;
+    let requestedPageLimit: number | undefined;
     let pageLimit: number | undefined;
     let pageOffset: number | undefined;
     let countSql: string | undefined;
@@ -4079,6 +4147,8 @@ export const useQueryStore = defineStore("query", () => {
           touchResult(current);
           current.queryAnalysis = undefined;
           current.querySourceColumns = undefined;
+          current.resultColumnComments = undefined;
+          current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = undefined;
           current.tableMeta = undefined;
@@ -4461,6 +4531,8 @@ export const useQueryStore = defineStore("query", () => {
           touchResult(current);
           current.queryAnalysis = undefined;
           current.querySourceColumns = undefined;
+          current.resultColumnComments = undefined;
+          current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = mongoCommands.length === 1 ? mongoEditTarget : undefined;
           current.tableMeta = undefined;
@@ -4526,6 +4598,8 @@ export const useQueryStore = defineStore("query", () => {
           touchResult(current);
           current.queryAnalysis = undefined;
           current.querySourceColumns = undefined;
+          current.resultColumnComments = undefined;
+          current.queryDisplaySourceColumns = undefined;
           current.queryEditabilityReason = undefined;
           current.mongoEditTarget = undefined;
           current.tableMeta = undefined;
@@ -4560,7 +4634,9 @@ export const useQueryStore = defineStore("query", () => {
           sqlToExecute = sorted.sql;
           resultSortedSql = sorted.sql;
         }
-        const pagination = limitQueryPagination(options?.pagination ?? { limit: settingsStore.editorSettings.pageSize, offset: 0 }, queryResultMaxRows);
+        const requestedPagination = options?.pagination ?? { limit: settingsStore.editorSettings.pageSize, offset: 0 };
+        requestedPageLimit = requestedPagination.limit;
+        const pagination = limitQueryPagination(requestedPagination, queryResultMaxRows);
         const plan = await api.prepareQueryPaginationExecutionPlan({
           sql: sqlToExecute,
           queryBaseSql,
@@ -4592,13 +4668,12 @@ export const useQueryStore = defineStore("query", () => {
           return false;
         }
       } else if (tab.mode === "data") {
-        const pagination = limitQueryPagination(
-          {
-            limit: options?.pagination?.limit ?? tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize),
-            offset: options?.pagination?.offset ?? 0,
-          },
-          queryResultMaxRows,
-        );
+        const requestedPagination = {
+          limit: options?.pagination?.limit ?? tableOpenPageLimit(settingsStore.editorSettings.tableOpenPageSize),
+          offset: options?.pagination?.offset ?? 0,
+        };
+        requestedPageLimit = requestedPagination.limit;
+        const pagination = limitQueryPagination(requestedPagination, queryResultMaxRows);
         pageLimit = pagination.limit;
         pageOffset = pagination.offset;
       }
@@ -4762,7 +4837,8 @@ export const useQueryStore = defineStore("query", () => {
         // Keep the base page state so later table refresh/cache recovery does
         // not re-execute only the most recently fetched tail segment.
         current.resultPageSql = shouldAppendResult ? (current.resultPageSql ?? pageSql) : pageSql;
-        current.resultPageLimit = pageLimit;
+        const displayPageLimit = typeof pageLimit === "number" ? (requestedPageLimit ?? pageLimit) : undefined;
+        current.resultPageLimit = shouldAppendResult ? (current.resultPageLimit ?? displayPageLimit) : displayPageLimit;
         current.resultPageOffset = shouldAppendResult ? (current.resultPageOffset ?? 0) : pageOffset;
         current.resultCountSql = countSql;
         current.resultSessionId = current.result?.session_id ?? undefined;
@@ -4800,6 +4876,7 @@ export const useQueryStore = defineStore("query", () => {
                   schema: tableMeta.schema,
                   tableName: tableMeta.tableName,
                   whereInput: current.whereInput?.trim() || undefined,
+                  countHint: effectiveDbType === "gaussdb" ? gaussdbCountQueryDopHint(useConnectionStore().getConfig(current.connectionId)) : undefined,
                 };
               })()
             : undefined;
@@ -4908,13 +4985,15 @@ export const useQueryStore = defineStore("query", () => {
         }
         current.queryAnalysis = undefined;
         current.querySourceColumns = undefined;
+        current.resultColumnComments = undefined;
+        current.queryDisplaySourceColumns = undefined;
         current.queryEditabilityReason = undefined;
         current.mongoEditTarget = undefined;
         if (current.mode !== "data") current.tableMeta = undefined;
         current.resultBaseSql = shouldReplaceActiveResultInGroup ? (current.resultBaseSql ?? queryBaseSql) : queryBaseSql;
         current.resultSortedSql = resultSortedSql;
         current.resultPageSql = pageSql;
-        current.resultPageLimit = pageLimit;
+        current.resultPageLimit = typeof pageLimit === "number" ? (requestedPageLimit ?? pageLimit) : undefined;
         current.resultPageOffset = pageOffset;
         current.resultCountSql = countSql;
         current.resultSessionId = undefined;
@@ -5388,6 +5467,8 @@ export const useQueryStore = defineStore("query", () => {
     touchResult(tab, Date.now(), { reuseEstimatedBytes: true });
     tab.queryAnalysis = undefined;
     tab.querySourceColumns = undefined;
+    tab.resultColumnComments = undefined;
+    tab.queryDisplaySourceColumns = undefined;
     tab.queryEditabilityReason = undefined;
     tab.mongoEditTarget = undefined;
     syncActiveResultRunFromDisplayed(tab);
@@ -5511,6 +5592,8 @@ export const useQueryStore = defineStore("query", () => {
 
     tab.queryAnalysis = snapshot.queryAnalysis;
     tab.querySourceColumns = snapshot.querySourceColumns;
+    tab.resultColumnComments = snapshot.resultColumnComments;
+    tab.queryDisplaySourceColumns = snapshot.queryDisplaySourceColumns;
     tab.queryEditabilityReason = snapshot.queryEditabilityReason;
     tab.mongoEditTarget = snapshot.mongoEditTarget;
     // Data tab 的结果快照可能早于最近一次结构变更。已持有真实元数据时，

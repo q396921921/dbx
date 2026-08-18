@@ -171,6 +171,8 @@ export const listForeignKeys = forward("listForeignKeys");
 export const listTriggers = forward("listTriggers");
 export const listConstraints = forward("listConstraints");
 export const listPartitions = forward("listPartitions");
+export const getTablePartitionStatus = forward("getTablePartitionStatus");
+export const listInvalidIndexes = forward("listInvalidIndexes");
 export const listSubpartitions = forward("listSubpartitions");
 export const getTableDdl = forward("getTableDdl");
 export const getTableDisplayDdl = forward("getTableDisplayDdl");
@@ -357,6 +359,7 @@ export const listSqlFilesInFolder = forward("listSqlFilesInFolder");
 // Nacos
 export const nacosTestConnection = forward("nacosTestConnection");
 export const nacosListNamespaces = forward("nacosListNamespaces");
+export const nacosSidebarSnapshot = forward("nacosSidebarSnapshot");
 export const nacosCreateNamespace = forward("nacosCreateNamespace");
 export const nacosUpdateNamespace = forward("nacosUpdateNamespace");
 export const nacosListConfigs = forward("nacosListConfigs");
@@ -375,6 +378,18 @@ export const nacosGetConfigHistory = forward("nacosGetConfigHistory");
 export const nacosRollbackConfig = forward("nacosRollbackConfig");
 export const nacosGetRNacosConsoleCaptcha = forward("nacosGetRNacosConsoleCaptcha");
 export const nacosLoginRNacosConsole = forward("nacosLoginRNacosConsole");
+export const nacosListUsers = forward("nacosListUsers");
+export const nacosCreateUser = forward("nacosCreateUser");
+export const nacosUpdateUser = forward("nacosUpdateUser");
+export const nacosDeleteUser = forward("nacosDeleteUser");
+export const nacosListRoleBindings = forward("nacosListRoleBindings");
+export const nacosAssignRole = forward("nacosAssignRole");
+export const nacosRemoveRole = forward("nacosRemoveRole");
+export const nacosAccessSnapshot = forward("nacosAccessSnapshot");
+export const nacosStartAccessOperation = forward("nacosStartAccessOperation");
+export const nacosGetAccessOperation = forward("nacosGetAccessOperation");
+export const nacosRetryAccessOperation = forward("nacosRetryAccessOperation");
+export const nacosUndoAccessOperation = forward("nacosUndoAccessOperation");
 export const nacosListServices = forward("nacosListServices");
 export const nacosGetService = forward("nacosGetService");
 export const nacosCreateService = forward("nacosCreateService");
@@ -403,6 +418,7 @@ export const releaseTableImportSource = forward("releaseTableImportSource");
 export const beginDatabaseBackupSnapshot = forward("beginDatabaseBackupSnapshot");
 export const exportDatabaseSql = forward("exportDatabaseSql");
 export const cancelDatabaseExport = forward("cancelDatabaseExport");
+export const recordDatabaseExportDestination = forward("recordDatabaseExportDestination");
 export const exportQueryResultCsv = forward("exportQueryResultCsv");
 export const exportTableDataCsv = forward("exportTableDataCsv");
 export const exportQueryResultXlsx = forward("exportQueryResultXlsx");
@@ -685,6 +701,8 @@ export const mongoDropCollection = forward("mongoDropCollection");
 export const mongoRenameCollection = forward("mongoRenameCollection");
 export const mongoCloneCollection = forward("mongoCloneCollection");
 export const documentFindDocuments = forward("documentFindDocuments");
+export const documentCountDocuments = forward("documentCountDocuments");
+export const dynamodbDescribeTable = forward("dynamodbDescribeTable");
 export const elasticsearchCountDocuments = forward("elasticsearchCountDocuments");
 export const mongoFindDocuments = forward("mongoFindDocuments");
 export const mongoParseShellCommand = forward("mongoParseShellCommand");
@@ -843,6 +861,9 @@ export type {
   EtcdPreflightResponse,
   EtcdDangerousApproval,
   DocumentQueryResult,
+  DynamoDbKeyInfo,
+  DynamoDbIndexInfo,
+  DynamoDbTableDescription,
   MongoDocumentResult,
   HistoryEntry,
   HistoryConnectionFilter,
