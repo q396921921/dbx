@@ -116,6 +116,12 @@ const DYNAMODB_DEFAULT_EXPORT_ROW_LIMIT = 10_000;
 
 const documents = ref<JsonRecord[]>([]);
 const copyDocuments = ref<JsonRecord[]>([]);
+// Set only when the most recent load() appended a continuation segment onto
+// the existing documents (infinite scroll); undefined for a full replace.
+// Mirrors QueryResult.appended_from_row_count so DataGrid's infinite-scroll
+// bookkeeping (see appendQueryResultSegment in queryStore.ts) can tell a
+// genuine append apart from a stale/failed one.
+const appendedFromRowCount = ref<number | undefined>(undefined);
 const mongoCopyDocumentsAvailable = ref(false);
 const lastGridColumns = ref<string[]>([]);
 const lastGridColumnTypes = ref<string[]>([]);
@@ -388,7 +394,17 @@ const gridResult = computed<QueryResult>(() => {
     }),
   );
 
-  return { columns, column_types: columnTypes, rows, mongo_documents: docs, mongo_copy_documents: copyDocuments.value, affected_rows: 0, execution_time_ms: 0, truncated: false };
+  return {
+    columns,
+    column_types: columnTypes,
+    rows,
+    mongo_documents: docs,
+    mongo_copy_documents: copyDocuments.value,
+    affected_rows: 0,
+    execution_time_ms: 0,
+    truncated: false,
+    appended_from_row_count: appendedFromRowCount.value,
+  };
 });
 
 async function exportAllDocumentStoreDocuments(onProgress?: (info: { rowsExported: number; totalRows: number | null }) => void): Promise<QueryResult | undefined> {
@@ -1275,7 +1291,7 @@ function applyElasticsearchSearchTotal(searchTotal: number, isExact: boolean, fi
   startElasticsearchExactCount(filter);
 }
 
-async function load(options: { page?: number } = {}) {
+async function load(options: { page?: number; append?: boolean } = {}) {
   if (documentLoadExecutionId.value) void api.cancelQuery(documentLoadExecutionId.value);
   const requestGeneration = ++documentRequestGeneration;
   const executionId = uuid();
@@ -1327,9 +1343,21 @@ async function load(options: { page?: number } = {}) {
     const nextCopyDocuments = hasTypePreservingCopyDocuments ? result.extended_documents!.map(asRecord) : nextDocuments;
     // Commit page + rows together so stale rows never briefly show last-page indexes.
     if (options.page !== undefined) page.value = options.page;
-    documents.value = nextDocuments;
-    copyDocuments.value = nextCopyDocuments;
-    mongoCopyDocumentsAvailable.value = hasTypePreservingCopyDocuments;
+    if (options.append) {
+      // Infinite-scroll continuation: grow the existing list instead of
+      // replacing it, and record where the new segment was grafted on so
+      // DataGrid's own append bookkeeping (appended_from_row_count) can
+      // confirm this was a real append rather than a stale/failed one.
+      appendedFromRowCount.value = documents.value.length;
+      documents.value = [...documents.value, ...nextDocuments];
+      copyDocuments.value = [...copyDocuments.value, ...nextCopyDocuments];
+      mongoCopyDocumentsAvailable.value = mongoCopyDocumentsAvailable.value && hasTypePreservingCopyDocuments;
+    } else {
+      appendedFromRowCount.value = undefined;
+      documents.value = nextDocuments;
+      copyDocuments.value = nextCopyDocuments;
+      mongoCopyDocumentsAvailable.value = hasTypePreservingCopyDocuments;
+    }
     loadedDocumentQueryTotalCountRequest = countRequest;
     if (storeKind === "dynamodb") {
       const nextCursors = dynamodbPageCursors.value.slice(0, requestPage + 1);
@@ -1337,16 +1365,16 @@ async function load(options: { page?: number } = {}) {
       dynamodbPageCursors.value = nextCursors;
       dynamodbHasNextCursor.value = !!result.next_cursor;
     }
-    if (nextDocuments.length > 0) {
+    if (documents.value.length > 0) {
       const keySet = new Set<string>();
       keySet.add("_id");
-      for (const doc of nextDocuments) {
+      for (const doc of documents.value) {
         for (const key of Object.keys(doc)) {
           if (key !== "_id") keySet.add(key);
         }
       }
       lastGridColumns.value = [...keySet];
-      lastGridColumnTypes.value = storeKind === "mongodb" ? mongoDocumentGridColumnTypes(nextDocuments, lastGridColumns.value) : [];
+      lastGridColumnTypes.value = storeKind === "mongodb" ? mongoDocumentGridColumnTypes(documents.value, lastGridColumns.value) : [];
     }
     if (storeKind === "elasticsearch") {
       applyElasticsearchSearchTotal(result.total, result.total_is_exact !== false, filter);
@@ -1455,7 +1483,12 @@ async function paginate(offset: number, limit: number) {
   const requestedPage = Math.floor(Math.max(0, offset) / normalizedLimit);
   const nextPage = clampDocumentPage(requestedPage, normalizedLimit, paginationTotal.value);
   if (documentStoreProvider.value.kind !== "dynamodb") {
-    await load({ page: nextPage });
+    // Infinite scroll always requests the next contiguous segment starting
+    // exactly at the currently loaded row count. Detect that and append the
+    // segment instead of replacing the whole list (see load()) — otherwise
+    // scrolling past the first batch silently discards the rows already shown.
+    const isInfiniteScrollContinuation = settingsStore.editorSettings.infiniteScroll && !pageSizeChanged && offset > 0 && offset === documents.value.length && nextPage * normalizedLimit === offset;
+    await load({ page: nextPage, append: isInfiniteScrollContinuation });
     return;
   }
   for (let cursorPage = 0; cursorPage <= nextPage; cursorPage += 1) {
