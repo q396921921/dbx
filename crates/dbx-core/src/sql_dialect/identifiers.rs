@@ -299,17 +299,20 @@ fn is_postgres_reserved_identifier(name: &str) -> bool {
 /// [`is_simple_lower_identifier`] and isn't a Postgres keyword, but GaussDB
 /// reserves it and rejects it unquoted in DDL.
 ///
-/// Sourced from Huawei's official GaussDB(DWS) keyword reference
-/// (<https://support.huaweicloud.com/intl/en-us/sqlreference-dws/dws_06_0007.html>),
-/// filtered to entries marked reserved (in any category) that are absent
-/// from [`is_postgres_reserved_identifier`]. That page documents the
-/// GaussDB(DWS) MPP variant; the core GaussDB/openGauss keyword pages are
-/// client-side rendered and couldn't be diffed against directly, so a few
-/// entries here (`tstag`, `tstime`, `tsfield`, `hdfsdirectory`) are flagged
-/// by Huawei's own docs as used only by the hybrid data warehouse feature
-/// and may never appear as column names on non-DWS targets. Keeping them
-/// quoted regardless is harmless — quoting a name that didn't strictly need
-/// it is a no-op superset of quoting one that did.
+/// An initial cut of this list was diffed from Huawei's GaussDB(DWS)
+/// keyword reference, but DWS is the MPP/columnar variant and isn't a
+/// reliable proxy for the core engine's catalog. It was cross-checked
+/// against a writable openGauss 5.0.0 instance's own `pg_get_keywords()`,
+/// which is the authoritative source per openGauss's docs. That check
+/// found 9 of the original words are not actually reserved on core
+/// GaussDB/openGauss — `hot`, `nlssort`, and `warmup` aren't keywords at
+/// all, and `fenced`, `internal`, `plan`, `tsfield`, `tstag`, and `tstime`
+/// are `unreserved` — so quoting them would have reintroduced the
+/// case-locking bug this PR fixes. They've been dropped. The remaining 15
+/// words below are confirmed `reserved` or `reserved (can be function or
+/// type name)` on that instance; `compact` was additionally confirmed by
+/// running `CREATE TABLE ... (compact int)` unquoted, which fails with
+/// `ERROR: syntax error at or near "compact"`.
 fn is_gaussdb_only_reserved_identifier(name: &str) -> bool {
     matches!(
         name,
@@ -317,26 +320,17 @@ fn is_gaussdb_only_reserved_identifier(name: &str) -> bool {
             | "buckets"
             | "compact"
             | "deltamerge"
-            | "fenced"
             | "hdfsdirectory"
-            | "hot"
-            | "internal"
             | "less"
             | "maxvalue"
             | "minus"
             | "modify"
-            | "nlssort"
             | "performance"
-            | "plan"
             | "procedure"
             | "recyclebin"
             | "reject"
             | "sysdate"
             | "timecapsule"
-            | "tstag"
-            | "tstime"
-            | "tsfield"
-            | "warmup"
     )
 }
 

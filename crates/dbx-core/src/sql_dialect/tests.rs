@@ -64,10 +64,30 @@ fn quotes_gaussdb_jdbc_identifiers_selectively() {
 #[test]
 fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
     // t8y2/dbx#6283: `compact` and friends are reserved in GaussDB/openGauss
-    // (per Huawei's GaussDB(DWS) keyword reference) but are not PostgreSQL
-    // keywords, so a check that only consults the Postgres reserved-word set
-    // misses them and would emit invalid unquoted DDL on the real target.
-    for name in ["compact", "buckets", "sysdate", "minus", "modify", "plan", "procedure"] {
+    // but are not PostgreSQL keywords, so a check that only consults the
+    // Postgres reserved-word set misses them and would emit invalid unquoted
+    // DDL on the real target. This word list is cross-checked against a
+    // writable openGauss 5.0.0 instance's own `pg_get_keywords()` (not just
+    // Huawei's GaussDB(DWS) doc) — see the comment on
+    // `is_gaussdb_only_reserved_identifier` for how the DWS-derived list was
+    // trimmed down to these instance-confirmed words.
+    for name in [
+        "authid",
+        "buckets",
+        "compact",
+        "deltamerge",
+        "hdfsdirectory",
+        "less",
+        "maxvalue",
+        "minus",
+        "modify",
+        "performance",
+        "procedure",
+        "recyclebin",
+        "reject",
+        "sysdate",
+        "timecapsule",
+    ] {
         assert_eq!(
             quote_table_data_identifier(Some(DatabaseType::Gaussdb), name, Some("\"")),
             format!("\"{name}\""),
@@ -87,6 +107,17 @@ fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
             quote_table_data_identifier(Some(DatabaseType::Postgres), name, Some("\"")),
             name,
             "plain Postgres must not quote `{name}` — it is not a Postgres keyword"
+        );
+    }
+
+    // Words that were in the original DWS-derived list but turned out not to
+    // be reserved on a real GaussDB/openGauss instance must not be quoted —
+    // over-quoting them would reintroduce the case-locking bug this PR fixes.
+    for name in ["fenced", "hot", "internal", "nlssort", "plan", "tsfield", "tstag", "tstime", "warmup"] {
+        assert_eq!(
+            quote_table_data_identifier(Some(DatabaseType::Gaussdb), name, Some("\"")),
+            name,
+            "GaussDB must not quote `{name}` — confirmed not reserved on a real instance"
         );
     }
 }
