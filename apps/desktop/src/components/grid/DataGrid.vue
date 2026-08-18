@@ -9978,6 +9978,7 @@ defineExpose({
   onToolbarRefresh,
   onToolbarCommit,
   onToolbarRollback,
+  resetInfiniteScrollState,
   showDdl: showTableInfo,
   toggleDdl: toggleTableInfo,
   showTableInfo,
