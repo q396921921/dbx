@@ -582,6 +582,14 @@ export async function upgradeAllAgents(_source?: UpdateDownloadSource, operation
   return post("/api/agents/upgrade-all", { operationId });
 }
 
+export async function cancelAgentInstall(dbType: string, operationId?: string): Promise<void> {
+  await post("/api/agents/cancel-install", { dbType, operationId });
+}
+
+export async function cancelAgentUpgradeAll(operationId?: string): Promise<void> {
+  await post("/api/agents/cancel-upgrade-all", { operationId });
+}
+
 export async function checkAgentUpdateBlockers(dbTypes: string[]): Promise<AgentUpdateBlocker[]> {
   return post("/api/agents/update-blockers", { dbTypes });
 }

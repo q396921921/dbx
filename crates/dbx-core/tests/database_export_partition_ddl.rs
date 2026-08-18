@@ -20,11 +20,14 @@ use dbx_core::storage::Storage;
 struct DockerPostgres {
     name: String,
     port: u16,
+    remove_on_drop: bool,
 }
 
 impl Drop for DockerPostgres {
     fn drop(&mut self) {
-        let _ = Command::new("docker").args(["rm", "-f", &self.name]).status();
+        if self.remove_on_drop {
+            let _ = Command::new("docker").args(["rm", "-f", &self.name]).status();
+        }
     }
 }
 
@@ -37,13 +40,21 @@ fn docker_ready() -> bool {
 }
 
 fn start_docker_postgres(name_prefix: &str) -> Option<DockerPostgres> {
+    if let Ok(name) = std::env::var("DBX_TEST_POSTGRES_CONTAINER") {
+        let port = std::env::var("DBX_TEST_POSTGRES_PORT")
+            .expect("DBX_TEST_POSTGRES_PORT must accompany DBX_TEST_POSTGRES_CONTAINER")
+            .parse()
+            .expect("DBX_TEST_POSTGRES_PORT must be a valid port");
+        return Some(DockerPostgres { name, port, remove_on_drop: false });
+    }
     if !docker_ready() {
         eprintln!("skipping docker-backed partition ddl test because Docker is unavailable");
         return None;
     }
 
     let port = portpicker::pick_unused_port().expect("pick unused postgres port");
-    let container = DockerPostgres { name: format!("{name_prefix}-{}", uuid::Uuid::new_v4()), port };
+    let container =
+        DockerPostgres { name: format!("{name_prefix}-{}", uuid::Uuid::new_v4()), port, remove_on_drop: true };
 
     let status = Command::new("docker")
         .args([
@@ -163,15 +174,35 @@ fn postgres_test_config(id: &str, port: u16) -> ConnectionConfig {
 /// a partition-local dropped default, and the exported SQL must replay
 /// cleanly into a fresh schema (the actual "restore" check the review
 /// comment asked for).
-#[tokio::test]
-async fn database_export_of_partition_tree_has_no_duplicates_and_replays() {
+#[test]
+fn database_export_of_partition_tree_has_no_duplicates_and_replays() {
+    let handle = std::thread::Builder::new()
+        .name("database-export-partition-ddl".to_string())
+        .stack_size(8 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build partition ddl test runtime")
+                .block_on(run_database_export_of_partition_tree_has_no_duplicates_and_replays());
+        })
+        .expect("spawn partition ddl test thread");
+    if let Err(panic) = handle.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+async fn run_database_export_of_partition_tree_has_no_duplicates_and_replays() {
     let Some(container) = start_docker_postgres("dbx-export-partition-ddl") else {
         return;
     };
 
     psql(
         &container,
-        "CREATE EXTENSION IF NOT EXISTS postgres_fdw;\
+        "DROP TABLE IF EXISTS events CASCADE;\
+         DROP TABLE IF EXISTS foreign_child_data CASCADE;\
+         DROP SERVER IF EXISTS dbx_export_loopback CASCADE;\
+         CREATE EXTENSION IF NOT EXISTS postgres_fdw;\
          CREATE SERVER dbx_export_loopback FOREIGN DATA WRAPPER postgres_fdw \
            OPTIONS (host 'localhost', dbname 'postgres', port '5432');\
          CREATE USER MAPPING FOR CURRENT_USER SERVER dbx_export_loopback \
@@ -196,6 +227,45 @@ async fn database_export_of_partition_tree_has_no_duplicates_and_replays() {
 
     let connection_id = "export-partition-ddl-conn";
     state.configs.write().await.insert(connection_id.to_string(), postgres_test_config(connection_id, container.port));
+
+    let selected_table_ddl =
+        dbx_core::schema::get_table_export_ddl_core(&state, connection_id, "postgres", "public", "events", None)
+            .await
+            .expect("selected table structure export should succeed");
+    for table in ["events", "events_2026", "events_2027", "events_2027_h1", "events_2027_h2", "events_foreign"] {
+        let needle = format!("TABLE \"public\".\"{table}\"");
+        let count = selected_table_ddl.matches(&needle).count();
+        assert_eq!(count, 1, "selected structure export should include {table} exactly once: {selected_table_ddl}");
+    }
+    assert!(
+        selected_table_ddl.contains("CREATE FOREIGN TABLE \"public\".\"events_foreign\""),
+        "selected structure export should retain foreign partition syntax: {selected_table_ddl}"
+    );
+
+    let ordinary_table_ddl = dbx_core::schema::get_table_export_ddl_core(
+        &state,
+        connection_id,
+        "postgres",
+        "public",
+        "foreign_child_data",
+        None,
+    )
+    .await
+    .expect("ordinary selected table structure export should succeed");
+    assert_eq!(ordinary_table_ddl.matches("CREATE TABLE \"public\".\"foreign_child_data\"").count(), 1);
+    assert!(!ordinary_table_ddl.contains("PARTITION OF"));
+
+    let missing_table_error = dbx_core::schema::get_table_export_ddl_core(
+        &state,
+        connection_id,
+        "postgres",
+        "public",
+        "missing_issue_6505_table",
+        None,
+    )
+    .await
+    .expect_err("missing selected table should remain an error");
+    assert!(missing_table_error.contains("was not found"), "unexpected missing-table error: {missing_table_error}");
 
     let file_path = dir.join("export.sql");
     let request = DatabaseExportRequest {
@@ -246,7 +316,7 @@ async fn database_export_of_partition_tree_has_no_duplicates_and_replays() {
 
     // The actual "restore" check: replay the exported SQL into a fresh
     // schema and confirm no `relation already exists` (or any other) error.
-    psql(&container, "CREATE SCHEMA replay");
+    psql(&container, "DROP SCHEMA IF EXISTS replay CASCADE; CREATE SCHEMA replay");
     let replayable = exported.replace("\"public\".", "\"replay\".").replace("SCHEMA \"public\"", "SCHEMA \"replay\"");
     let replay_file = dir.join("replay.sql");
     std::fs::write(&replay_file, &replayable).unwrap();
