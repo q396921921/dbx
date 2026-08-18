@@ -340,37 +340,69 @@ pub(super) fn write_sql_select(
                 "SELECT extraction requires one resolved table target.",
             )
         })?;
-    if context.request.rows.len() != 1
+    if context.request.rows.is_empty()
         || matches!(context.request.selection_kind, super::DataGridSelectionKind::Columns)
-        || (context.request.selection_kind == super::DataGridSelectionKind::Cells
-            && context.selected_columns.len() != 1)
+        || (context.request.selection_kind == super::DataGridSelectionKind::Rows && context.request.rows.len() != 1)
     {
         return Err(DataGridExtractError::new(
             DataGridExtractErrorCode::InvalidSelectSelection,
-            "SELECT extraction supports exactly one selected cell or row.",
+            "SELECT extraction supports cell selections or exactly one selected row.",
         ));
     }
 
-    let row = &context.request.rows[0];
-    let predicate_columns = if context.request.selection_kind == super::DataGridSelectionKind::Rows {
-        let identity = table_meta
-            .primary_keys
+    let table = data_grid_qualified_table_name(
+        context.request.database_type,
+        table_meta.catalog.as_deref(),
+        table_meta.schema.as_deref(),
+        table_meta.database.as_deref(),
+        &table_meta.table_name,
+        context.request.identifier_quote.as_deref(),
+    );
+
+    if context.request.selection_kind == super::DataGridSelectionKind::Cells {
+        // A cell-selection SELECT reuses the WHERE-clause predicate builder so a
+        // multi-cell selection (same-row columns AND'd, multi-row selections
+        // OR'd) produces the same predicate as "Copy as WHERE clause".
+        if context.selected_columns.is_empty() {
+            return Err(DataGridExtractError::new(
+                DataGridExtractErrorCode::InvalidColumnMapping,
+                "SELECT extraction has no source columns for its predicate.",
+            ));
+        }
+        if let Some(column) = context
+            .selected_columns
             .iter()
-            .map(|primary_key| {
-                context
-                    .request
-                    .columns
-                    .iter()
-                    .find(|column| {
-                        normalized_name_eq(column.source_name.as_deref().unwrap_or(&column.display_name), primary_key)
-                    })
-                    .filter(|column| row.get(column.source_index).is_some_and(|value| !value.is_null()))
-            })
-            .collect::<Option<Vec<_>>>();
-        identity.filter(|columns| !columns.is_empty()).unwrap_or_else(|| context.request.columns.iter().collect())
-    } else {
-        context.selected_columns.clone()
-    };
+            .find(|column| column.source_name.as_deref().map(str::trim).unwrap_or_default().is_empty())
+        {
+            return Err(DataGridExtractError::new(
+                DataGridExtractErrorCode::InvalidColumnMapping,
+                format!("Column '{}' has no resolved source-column mapping.", column.display_name),
+            ));
+        }
+        write_bytes(output, format!("SELECT * FROM {table} WHERE ").as_bytes())?;
+        write_where_clause(context, output)?;
+        return write_bytes(output, b";");
+    }
+
+    // Only the single-row identity path (row-checkbox selection) reaches here;
+    // cell selections returned above via the write_where_clause path.
+    let row = &context.request.rows[0];
+    let identity = table_meta
+        .primary_keys
+        .iter()
+        .map(|primary_key| {
+            context
+                .request
+                .columns
+                .iter()
+                .find(|column| {
+                    normalized_name_eq(column.source_name.as_deref().unwrap_or(&column.display_name), primary_key)
+                })
+                .filter(|column| row.get(column.source_index).is_some_and(|value| !value.is_null()))
+        })
+        .collect::<Option<Vec<_>>>();
+    let predicate_columns =
+        identity.filter(|columns| !columns.is_empty()).unwrap_or_else(|| context.request.columns.iter().collect());
     if predicate_columns.is_empty() {
         return Err(DataGridExtractError::new(
             DataGridExtractErrorCode::InvalidColumnMapping,
@@ -407,14 +439,6 @@ pub(super) fn write_sql_select(
             context.request.identifier_quote.as_deref(),
         ));
     }
-    let table = data_grid_qualified_table_name(
-        context.request.database_type,
-        table_meta.catalog.as_deref(),
-        table_meta.schema.as_deref(),
-        table_meta.database.as_deref(),
-        &table_meta.table_name,
-        context.request.identifier_quote.as_deref(),
-    );
     write_bytes(output, format!("SELECT * FROM {table} WHERE {};", predicates.join(" AND ")).as_bytes())
 }
 

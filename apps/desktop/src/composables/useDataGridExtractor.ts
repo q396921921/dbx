@@ -275,15 +275,18 @@ export function useDataGridExtractor(options: UseDataGridExtractorOptions) {
         // The context-menu target is validated by buildRequest below.
       } else if (options.hasRowSelection.value) {
         if (options.selectedRowIds.value.size !== 1) return false;
-      } else if (matrix) {
-        if (matrix.rowIndexes.length !== 1 || matrix.columnIndexes.length !== 1) return false;
-      } else if (!options.contextCell.value || !options.contextSelectionIsSynthetic.value) {
+      } else if (!matrix && (!options.contextCell.value || !options.contextSelectionIsSynthetic.value)) {
         return false;
       }
       const request = buildRequest(extractor, extractorOptions);
-      if (!request?.tableMeta?.tableName.trim() || request.rows.length !== 1) return false;
+      // A genuine multi-cell selection is allowed to span multiple rows/columns
+      // (same-row columns AND together, same-column rows OR together — see
+      // write_sql_select), but row-checkbox selection still targets exactly one
+      // row: there's no well-defined single predicate for multiple whole rows.
+      if (!request?.tableMeta?.tableName.trim() || request.rows.length === 0) return false;
       if (request.selectionKind === "columns") return false;
-      if (request.selectionKind === "cells" && request.selectedColumnIndexes.length !== 1) return false;
+      if (request.selectionKind === "rows" && request.rows.length !== 1) return false;
+      if (request.selectionKind === "cells" && request.selectedColumnIndexes.length === 0) return false;
       return request.columns.length > 0 && request.columns.every((column) => !!(column.sourceName ?? column.displayName)?.trim());
     }
     if (extractor === "where-clause" && contextPredicateTarget) {
