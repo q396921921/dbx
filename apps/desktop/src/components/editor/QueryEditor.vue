@@ -106,7 +106,7 @@ import { EDITOR_FONT_FAMILY_CSS_VAR, EDITOR_FONT_SIZE_CSS_VAR, editorDiagnosticC
 import { createStatementGutterMarkerDom, shouldShowStatementGutter } from "@/lib/editor/codemirrorStatementGutter";
 import { createQueryEditorSearchKeymap } from "@/lib/editor/queryEditorSearchKeymap";
 import { searchKeymapWithoutModD } from "@/lib/editor/codemirrorSearchKeymap";
-import { defaultKeymapWithoutIndentBrackets } from "@/lib/editor/codemirrorDefaultKeymap";
+import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { appendSqlCompletionSpace } from "@/lib/editor/sqlCompletionInsertion";
 import { compareSqlCompletions, completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
 import { clampEditorFontSize, createEditorZoomCommitScheduler, fontSizeFromGestureScale, fontSizeFromWheelDelta } from "@/lib/editor/editorZoom";
@@ -522,6 +522,7 @@ let codeMirrorCloseBracketsKeymap: readonly import("@codemirror/view").KeyBindin
 let readOnlyComp: import("@codemirror/state").Compartment | null = null;
 let runGutterComp: import("@codemirror/state").Compartment | null = null;
 let runKeymapComp: import("@codemirror/state").Compartment | null = null;
+let defaultKeymapComp: import("@codemirror/state").Compartment | null = null;
 let completionComp: import("@codemirror/state").Compartment | null = null;
 let diagnosticComp: import("@codemirror/state").Compartment | null = null;
 let codeMirrorVim: typeof import("@replit/codemirror-vim").vim | null = null;
@@ -554,6 +555,7 @@ let codeMirrorSelectAll: typeof import("@codemirror/commands").selectAll | null 
 let codeMirrorInsertNewlineKeepIndent: typeof import("@codemirror/commands").insertNewlineKeepIndent | null = null;
 let codeMirrorToggleLineComment: typeof import("@codemirror/commands").toggleLineComment | null = null;
 let codeMirrorToggleBlockComment: typeof import("@codemirror/commands").toggleBlockComment | null = null;
+let codeMirrorDefaultKeymap: readonly import("@codemirror/view").KeyBinding[] | null = null;
 let codeMirrorToggleFold: typeof import("@codemirror/language").toggleFold | null = null;
 let pendingCompletionTabTimer: ReturnType<typeof setTimeout> | null = null;
 let setSqlDiagnosticsEffect: import("@codemirror/state").StateEffectType<SqlSemanticDiagnostic[]> | null = null;
@@ -4420,6 +4422,11 @@ function refreshCompletionCache() {
   cachedForeignKeysByTable.clear();
 }
 
+function defaultKeymapExtension() {
+  if (!editorViewModule || !codeMirrorDefaultKeymap || !codeMirrorToggleBlockComment) return [];
+  return editorViewModule.keymap.of(defaultKeymapForGlobalShortcuts(codeMirrorDefaultKeymap, settingsStore.editorSettings.shortcuts).filter((item) => item.run !== codeMirrorToggleBlockComment));
+}
+
 onMounted(async () => {
   if (!editorRef.value) return;
 
@@ -4488,6 +4495,7 @@ onMounted(async () => {
   readOnlyComp = new Compartment();
   runGutterComp = new Compartment();
   runKeymapComp = new Compartment();
+  defaultKeymapComp = new Compartment();
   completionComp = new Compartment();
   diagnosticComp = new Compartment();
   previewRangeComp = new Compartment();
@@ -4512,6 +4520,7 @@ onMounted(async () => {
   codeMirrorInsertNewlineKeepIndent = insertNewlineKeepIndent;
   codeMirrorToggleLineComment = toggleLineComment;
   codeMirrorToggleBlockComment = toggleBlockComment;
+  codeMirrorDefaultKeymap = defaultKeymap;
   codeMirrorToggleFold = toggleFold;
   codeMirrorIndentUnit = indentUnit;
   window.addEventListener("keyup", clearTableNavigationHoverOnModifierRelease);
@@ -4907,7 +4916,8 @@ onMounted(async () => {
       activeLineHighlighter,
       // Vim must be mounted before DBX/default keymaps so normal-mode keys are handled first.
       vimModeComp.of(vimModeExtension(initialSettings.vimModeEnabled)),
-      keymap.of([...defaultKeymapWithoutIndentBrackets(defaultKeymap).filter((item) => item.run !== toggleBlockComment), ...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
+      defaultKeymapComp.of(defaultKeymapExtension()),
+      keymap.of([...searchKeymapWithoutModD(searchKeymap), ...historyKeymap, ...foldKeymap, ...completionKeymap]),
       sqlLanguageComp.of(buildSqlLanguageExtension()),
       sqlSemanticHighlightComp.of(buildSqlSemanticHighlightExtension()),
       tooltips({ parent: tooltipParent }),
@@ -5533,6 +5543,15 @@ watch(
         runKeymapComp.reconfigure(runKeymapExtension(editorViewModule.keymap)),
       ],
     });
+  },
+  { deep: true },
+);
+
+watch(
+  () => settingsStore.editorSettings.shortcuts,
+  () => {
+    if (!view.value || !defaultKeymapComp) return;
+    view.value.dispatch({ effects: defaultKeymapComp.reconfigure(defaultKeymapExtension()) });
   },
   { deep: true },
 );
