@@ -2771,16 +2771,16 @@ mod tests {
         dameng_object_statistics_rows_only_sql, dameng_object_statistics_user_segments_sql, deduplicate_column_infos,
         ephemeral_agent_metadata_session_id, external_driver_uses_mysql_ddl, filter_mongodb_agent_collections,
         filter_mysql_system_databases_for_config, filter_object_infos, filter_table_infos, filter_visible_schema_names,
-        gaussdb_m_view_object_source_sql, gbase8a_object_statistics_sql, is_agent_postgres_metadata_fallback_config,
-        is_mysql_external_driver_config, is_retryable_metadata_error, metadata_error_action,
-        metadata_name_or_comment_matches, mysql_database_list_timeout, mysql_external_driver_ddl_from_query_result,
-        mysql_external_driver_ddl_sql, mysql_object_source_ddl_column_index, mysql_object_source_sql,
-        mysql_table_list_source_for_config, mysql_table_metadata_catalog, normalize_information_schema_table_type,
-        oracle_columns_from_query_result, oracle_columns_sql, oracle_object_statistics_dba_segments_sql,
-        oracle_object_statistics_from_query_result, oracle_object_statistics_rows_only_sql,
-        oracle_object_statistics_sql, oracle_object_statistics_user_segments_sql,
-        oracle_table_comment_from_query_result, oracle_table_comment_sql, oracle_table_comments_sql,
-        presto_like_columns_from_query_result, presto_like_information_schema_columns_sql,
+        finalize_object_source, gaussdb_m_view_object_source_sql, gbase8a_object_statistics_sql,
+        is_agent_postgres_metadata_fallback_config, is_mysql_external_driver_config, is_retryable_metadata_error,
+        metadata_error_action, metadata_name_or_comment_matches, mysql_database_list_timeout,
+        mysql_external_driver_ddl_from_query_result, mysql_external_driver_ddl_sql,
+        mysql_object_source_ddl_column_index, mysql_object_source_sql, mysql_table_list_source_for_config,
+        mysql_table_metadata_catalog, normalize_information_schema_table_type, oracle_columns_from_query_result,
+        oracle_columns_sql, oracle_object_statistics_dba_segments_sql, oracle_object_statistics_from_query_result,
+        oracle_object_statistics_rows_only_sql, oracle_object_statistics_sql,
+        oracle_object_statistics_user_segments_sql, oracle_table_comment_from_query_result, oracle_table_comment_sql,
+        oracle_table_comments_sql, presto_like_columns_from_query_result, presto_like_information_schema_columns_sql,
         presto_like_information_schema_tables_sql, presto_like_tables_from_query_result, replace_metadata_runtime,
         should_query_oracle_columns_via_sql_first, table_comments_from_query_result, table_name_filter_matches,
         tdengine_table_comment_like_pattern, tdengine_table_comment_sql, tdengine_table_comments_sql,
@@ -3351,6 +3351,19 @@ mod tests {
             mysql_object_source_sql("tenant_db", "event_daily_sync", &db::ObjectSourceKind::Event),
             "SHOW CREATE EVENT `tenant_db`.`event_daily_sync`"
         );
+    }
+
+    #[test]
+    fn mysql_event_object_source_is_read_only() {
+        let source = finalize_object_source(db::ObjectSource {
+            name: "event_daily_sync".to_string(),
+            object_type: db::ObjectSourceKind::Event,
+            schema: None,
+            source: "CREATE EVENT event_daily_sync ON SCHEDULE EVERY 1 DAY DO SELECT 1".to_string(),
+            editable: None,
+        });
+
+        assert_eq!(source.editable, Some(false));
     }
 
     #[test]
@@ -7824,7 +7837,7 @@ pub async fn get_object_source_core(
     signature: Option<&str>,
     relation_name: Option<&str>,
 ) -> Result<db::ObjectSource, String> {
-    let mut source = retry_metadata_connection(state, connection_id, Some(database), || {
+    let source = retry_metadata_connection(state, connection_id, Some(database), || {
         get_object_source_once(
             state,
             connection_id,
@@ -7837,10 +7850,17 @@ pub async fn get_object_source_core(
         )
     })
     .await?;
+    Ok(finalize_object_source(source))
+}
+
+fn finalize_object_source(mut source: db::ObjectSource) -> db::ObjectSource {
     if matches!(source.object_type, db::ObjectSourceKind::Procedure | db::ObjectSourceKind::Function) {
         source.source = normalize_routine_object_source(source.source);
     }
-    Ok(source)
+    if matches!(source.object_type, db::ObjectSourceKind::Event) {
+        source.editable = Some(false);
+    }
+    source
 }
 
 async fn get_object_source_once(
