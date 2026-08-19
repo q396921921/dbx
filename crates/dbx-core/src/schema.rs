@@ -3791,6 +3791,22 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn doris_show_metadata_resolves_effective_database_like_plain_mysql() {
+        // A qualified `db.table` reference in a MySQL-family dialect puts the
+        // database in the `schema` parameter (two-part names), so the
+        // Doris/StarRocks show-metadata column branch must resolve its
+        // effective database with `mysql_table_metadata_catalog` — schema
+        // first, database fallback — exactly like the plain MySQL branch.
+        // Otherwise an empty (or different) tab/execution database sends the
+        // column lookup to the wrong namespace and column comments are lost
+        // (fixes #6590).
+        assert_eq!(super::mysql_table_metadata_catalog("", "analytics"), "analytics");
+        assert_eq!(super::mysql_table_metadata_catalog("default_db", "analytics"), "analytics");
+        assert_eq!(super::mysql_table_metadata_catalog("analytics", ""), "analytics");
+        assert_eq!(super::mysql_table_metadata_catalog("", ""), "");
+    }
+
+    #[test]
     fn doris_database_list_keeps_system_databases() {
         let databases = vec![test_database_info("information_schema"), test_database_info("analytics")];
         let config = test_connection_config(DatabaseType::Doris);
@@ -6076,7 +6092,12 @@ async fn get_columns_core_for_session_inner(
                 db::manticoresearch::get_columns(p, metadata_database, table).await.map(deduplicate_column_infos)
             }
             PoolKind::Mysql(p, _) if db_config.as_ref().is_some_and(db::mysql_compatible::uses_show_metadata) => {
-                let metadata_database = mysql_show_metadata_database_for_config(db_config.as_ref(), database);
+                // Resolve the metadata database exactly like the plain MySQL
+                // branch below: a qualified `db.table` reference puts the
+                // database in `schema` (MySQL-family two-part names), so an
+                // empty or different tab/execution database must not send the
+                // lookup to the wrong namespace (fixes #6590).
+                let effective_db = mysql_table_metadata_catalog(database, schema);
                 // Doris/StarRocks previously went straight to `SHOW COLUMNS` for
                 // speed (see perf(doris) commit), but `SHOW COLUMNS` reports the
                 // `Key` column as `YES`/`NO` rather than MySQL's `PRI`, so primary
@@ -6085,7 +6106,7 @@ async fn get_columns_core_for_session_inner(
                 // correctly identifies primary keys (and only real primary keys,
                 // not duplicate-key sort columns) — and falls back to `SHOW COLUMNS`
                 // automatically when information_schema is unavailable.
-                db::mysql::get_columns(p, metadata_database, table).await.map(deduplicate_column_infos)
+                db::mysql::get_columns(p, effective_db, table).await.map(deduplicate_column_infos)
             }
             PoolKind::Mysql(p, mode) => {
                 let effective_db = mysql_table_metadata_catalog(database, schema);
