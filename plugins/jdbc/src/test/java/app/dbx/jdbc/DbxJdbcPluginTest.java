@@ -954,6 +954,117 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void phoenixDirectUrlPropertiesArePassedToTheDriver() throws Exception {
+        RecordingConnectDriver driver = new RecordingConnectDriver("jdbc:phoenix:");
+        DriverManager.registerDriver(driver);
+        String connection = """
+            {
+              "connection_string": "jdbc:phoenix:ambari01,ambari02,ambari03:2181:/hbase-unsecure;phoenix.schema.isNamespaceMappingEnabled=true;phoenix.schema.mapSystemTablesToNamespace=true;user=url-user",
+              "username": "phoenix-user",
+              "connect_timeout_secs": 30
+            }
+            """;
+        try {
+            JsonNode response = request("testConnection", """
+                { "connection": %s }
+                """.formatted(connection));
+
+            assertFalse(response.has("error"), response.toString());
+            assertEquals(
+                "jdbc:phoenix:ambari01,ambari02,ambari03:2181:/hbase-unsecure;phoenix.schema.isNamespaceMappingEnabled=true;phoenix.schema.mapSystemTablesToNamespace=true;user=url-user",
+                driver.urls.get(0)
+            );
+            assertEquals("true", driver.properties.get(0).getProperty("phoenix.schema.isNamespaceMappingEnabled"));
+            assertEquals("true", driver.properties.get(0).getProperty("phoenix.schema.mapSystemTablesToNamespace"));
+            assertEquals("phoenix-user", driver.properties.get(0).getProperty("user"));
+        } finally {
+            closeAndDeregister(connection, driver);
+        }
+    }
+
+    @Test
+    void phoenixConnectionUrlParamsUseSemicolonAndReachDriverProperties() throws Exception {
+        RecordingConnectDriver driver = new RecordingConnectDriver("jdbc:phoenix:");
+        DriverManager.registerDriver(driver);
+        String connection = """
+            {
+              "connection_string": "jdbc:phoenix:zk1,zk2:2181:/hbase-unsecure",
+              "url_params": "phoenix.schema.isNamespaceMappingEnabled=true;phoenix.schema.mapSystemTablesToNamespace=true",
+              "connect_timeout_secs": 30
+            }
+            """;
+        try {
+            JsonNode response = request("testConnection", """
+                { "connection": %s }
+                """.formatted(connection));
+
+            assertFalse(response.has("error"), response.toString());
+            assertEquals(
+                "jdbc:phoenix:zk1,zk2:2181:/hbase-unsecure;phoenix.schema.isNamespaceMappingEnabled=true;phoenix.schema.mapSystemTablesToNamespace=true",
+                driver.urls.get(0)
+            );
+            assertEquals("true", driver.properties.get(0).getProperty("phoenix.schema.isNamespaceMappingEnabled"));
+            assertEquals("true", driver.properties.get(0).getProperty("phoenix.schema.mapSystemTablesToNamespace"));
+        } finally {
+            closeAndDeregister(connection, driver);
+        }
+    }
+
+    @Test
+    void phoenixUrlPropertyParsingIgnoresMalformedSegmentsAndPreservesEqualsInValue() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("applyPhoenixUrlProperties", String.class, Properties.class);
+        method.setAccessible(true);
+        Properties properties = new Properties();
+
+        method.invoke(
+            null,
+            "jdbc:phoenix;broken;=ignored;phoenix.query.custom=a=b",
+            properties
+        );
+
+        assertEquals("a=b", properties.getProperty("phoenix.query.custom"));
+        assertFalse(properties.containsKey("broken"));
+        assertFalse(properties.containsKey(""));
+    }
+
+    @Test
+    void phoenixThinUrlParamsUseSemicolonSyntax() throws Exception {
+        JsonNode connection = MAPPER.readTree("""
+            {
+              "connection_string": "jdbc:phoenix:thin:url=http://127.0.0.1:8765;serialization=PROTOBUF",
+              "url_params": "authentication=SPNEGO"
+            }
+            """);
+
+        assertEquals(
+            "jdbc:phoenix:thin:url=http://127.0.0.1:8765;serialization=PROTOBUF;authentication=SPNEGO",
+            DbxJdbcPlugin.jdbcUrl(connection)
+        );
+    }
+
+    @Test
+    void nonPhoenixSemicolonUrlPropertiesAreNotCopiedToDriverProperties() throws Exception {
+        RecordingConnectDriver driver = new RecordingConnectDriver("jdbc:dbx-semicolon:");
+        DriverManager.registerDriver(driver);
+        String connection = """
+            {
+              "connection_string": "jdbc:dbx-semicolon:demo;custom.option=true",
+              "connect_timeout_secs": 30
+            }
+            """;
+        try {
+            JsonNode response = request("testConnection", """
+                { "connection": %s }
+                """.formatted(connection));
+
+            assertFalse(response.has("error"), response.toString());
+            assertFalse(driver.properties.get(0).containsKey("custom.option"));
+        } finally {
+            closeAndDeregister(connection, driver);
+        }
+    }
+
+    @Test
     void phoenixAutoCommitConfigurationSkipsNonPhoenixConnections() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod(
             "configurePhoenixAutoCommit",

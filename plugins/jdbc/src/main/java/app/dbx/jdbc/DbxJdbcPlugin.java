@@ -552,6 +552,7 @@ public final class DbxJdbcPlugin {
         JdbcUrlCredentials urlCredentials = extractJdbcUrlCredentials(url);
         url = urlCredentials.url;
         Properties properties = new Properties();
+        applyPhoenixUrlProperties(url, properties);
         String username = optionalText(connection, "username");
         String password = optionalText(connection, "password");
         if (username == null) {
@@ -586,11 +587,45 @@ public final class DbxJdbcPlugin {
     }
 
     private static boolean isPhoenixConnection(JsonNode connection, String url) {
-        if (urlMatchesPrefix(url, "jdbc:phoenix:")) {
+        if (isPhoenixUrl(url)) {
             return true;
         }
         String driverClass = optionalText(connection, "jdbc_driver_class");
         return driverClass != null && driverClass.equalsIgnoreCase("org.apache.phoenix.jdbc.PhoenixDriver");
+    }
+
+    private static void applyPhoenixUrlProperties(String url, Properties properties) {
+        if (!isPhoenixDirectUrl(url)) {
+            return;
+        }
+        int propertiesStart = url.indexOf(';');
+        if (propertiesStart < 0) {
+            return;
+        }
+        // Phoenix builds its HBase client configuration from Driver.connect Properties,
+        // while arbitrary semicolon URL attributes are not merged into QueryServices.
+        for (String part : url.substring(propertiesStart + 1).split(";")) {
+            int equals = part.indexOf('=');
+            if (equals <= 0) {
+                continue;
+            }
+            String key = part.substring(0, equals).trim();
+            if (!key.isEmpty()) {
+                properties.setProperty(key, part.substring(equals + 1).trim());
+            }
+        }
+    }
+
+    private static boolean isPhoenixDirectUrl(String url) {
+        return isPhoenixUrl(url) && !urlMatchesPrefix(url, "jdbc:phoenix:thin:");
+    }
+
+    private static boolean isPhoenixUrl(String url) {
+        String prefix = "jdbc:phoenix";
+        if (url == null || !url.regionMatches(true, 0, prefix, 0, prefix.length())) {
+            return false;
+        }
+        return url.length() == prefix.length() || url.charAt(prefix.length()) == ':' || url.charAt(prefix.length()) == ';';
     }
 
     private static void applyJdbcxExtensionSecurity(JsonNode connection, String url, Properties properties) {
@@ -2923,7 +2958,11 @@ public final class DbxJdbcPlugin {
     }
 
     private static String jdbcUrlParamSeparator(String base) {
-        if (urlMatchesPrefix(base, "jdbc:sqlserver:") || urlMatchesPrefix(base, "jdbc:dremio:")) {
+        if (
+            urlMatchesPrefix(base, "jdbc:sqlserver:") ||
+            urlMatchesPrefix(base, "jdbc:dremio:") ||
+            isPhoenixUrl(base)
+        ) {
             return base.endsWith(";") ? "" : ";";
         }
         if (jdbcUrlUsesColonProperties(base)) {
