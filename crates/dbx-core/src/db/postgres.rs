@@ -1018,6 +1018,37 @@ fn pg_error_to_string(err: tokio_postgres::Error) -> String {
     err.as_db_error().map(ToString::to_string).unwrap_or_else(|| err.to_string())
 }
 
+/// Tries each SQL tier in `tiers` in order (most-capable first), via `run`,
+/// returning the first tier that succeeds. Every driver-compat query in this
+/// module (a "does this server have the newer catalog column" primary/compat
+/// split, occasionally with a further information_schema fallback) used to
+/// hand-roll this same try/log/combine-errors shape once per query; this is
+/// the shared version.
+///
+/// If every tier fails, all of their errors are logged together at debug
+/// level (so a fallback firing in production is diagnosable) and the last
+/// tier's error is returned to the caller, since it's usually the most
+/// specific one for whatever the connected server actually is.
+async fn query_with_compat_fallback<T, F, Fut>(
+    log_context: &str,
+    tiers: &[&'static str],
+    mut run: F,
+) -> Result<T, String>
+where
+    F: FnMut(&'static str) -> Fut,
+    Fut: std::future::Future<Output = Result<T, tokio_postgres::Error>>,
+{
+    let mut errors: Vec<String> = Vec::new();
+    for sql in tiers {
+        match run(sql).await {
+            Ok(value) => return Ok(value),
+            Err(error) => errors.push(pg_error_to_string(error)),
+        }
+    }
+    log::debug!("[postgres][{log_context}:compat-failed] {}", errors.join("; "));
+    Err(errors.into_iter().next_back().unwrap_or_else(|| format!("[postgres][{log_context}] no SQL tiers configured")))
+}
+
 fn pg_db_error_to_string(err: &tokio_postgres::error::DbError) -> String {
     format!("{err} (SQLSTATE {})", err.code().code())
 }
@@ -3243,23 +3274,11 @@ pub async fn get_columns_for_relations(
 ) -> Result<HashMap<i64, Vec<ColumnInfo>>, String> {
     let oids: Vec<i64> = relations.iter().map(|(oid, _, _)| *oid).collect();
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    let [primary_sql, compat_sql] = postgres_columns_for_relations_query_tiers();
-    match get_columns_for_relations_with_sql(&client, primary_sql, &oids).await {
-        Ok(columns) => Ok(columns),
-        Err(primary_error) => match get_columns_for_relations_with_sql(&client, compat_sql, &oids).await {
-            Ok(columns) => Ok(columns),
-            Err(fallback_error) => {
-                let primary_message = pg_error_to_string(primary_error);
-                let fallback_message = pg_error_to_string(fallback_error);
-                log::debug!(
-                    "[postgres][get_columns_for_relations:compat-failed] primary_error={} fallback_error={}",
-                    primary_message,
-                    fallback_message
-                );
-                Err(fallback_message)
-            }
-        },
-    }
+    let tiers = postgres_columns_for_relations_query_tiers();
+    query_with_compat_fallback("get_columns_for_relations", &tiers, |sql| {
+        get_columns_for_relations_with_sql(&client, sql, &oids)
+    })
+    .await
 }
 
 async fn get_columns_for_relations_with_sql(
@@ -3280,6 +3299,15 @@ fn postgres_columns_for_relations_query_tiers() -> [&'static str; 2] {
     [postgres_columns_for_relations_sql(), postgres_columns_for_relations_compat_sql()]
 }
 
+// Sibling of `POSTGRES_COLUMNS_SQL`/`POSTGRES_COLUMNS_COMPAT_SQL` below (~line
+// 4880): same column list and detection logic (identity/serial inference,
+// numeric precision/scale, enum values), batched by oid instead of a single
+// (schema, table) pair. Kept as a separate literal rather than sharing a
+// fragment — `pg_class` needs the `c` alias here for the oid filter, which
+// pushes `information_schema.columns` to `ic` instead of the single-relation
+// version's `c`, and every column's position in the SELECT list is relied on
+// positionally by `column_info_from_row_offset`. A change to one almost
+// certainly needs the same change in the other.
 fn postgres_columns_for_relations_sql() -> &'static str {
     "SELECT c.oid::bigint AS relid, a.attname AS column_name, \
              format_type(a.atttypid, a.atttypmod) AS full_type, \
@@ -3352,6 +3380,8 @@ fn postgres_columns_for_relations_sql() -> &'static str {
              ORDER BY c.oid, a.attnum"
 }
 
+// Compat-tier sibling of `POSTGRES_COLUMNS_COMPAT_SQL` (~line 4938) — see the
+// note on `postgres_columns_for_relations_sql` above.
 fn postgres_columns_for_relations_compat_sql() -> &'static str {
     "SELECT c.oid::bigint AS relid, a.attname AS column_name, \
              format_type(a.atttypid, a.atttypmod) AS full_type, \
@@ -3438,23 +3468,11 @@ pub async fn list_indexes_for_relations(
 ) -> Result<HashMap<i64, Vec<IndexInfo>>, String> {
     let oids: Vec<i64> = relations.iter().map(|(oid, _, _)| *oid).collect();
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    let [primary_sql, compat_sql] = postgres_indexes_for_relations_query_tiers();
-    match list_indexes_for_relations_with_sql(&client, primary_sql, &oids).await {
-        Ok(indexes) => Ok(indexes),
-        Err(primary_error) => match list_indexes_for_relations_with_sql(&client, compat_sql, &oids).await {
-            Ok(indexes) => Ok(indexes),
-            Err(fallback_error) => {
-                let primary_message = pg_error_to_string(primary_error);
-                let fallback_message = pg_error_to_string(fallback_error);
-                log::debug!(
-                    "[postgres][list_indexes_for_relations:compat-failed] primary_error={} fallback_error={}",
-                    primary_message,
-                    fallback_message
-                );
-                Err(fallback_message)
-            }
-        },
-    }
+    let tiers = postgres_indexes_for_relations_query_tiers();
+    query_with_compat_fallback("list_indexes_for_relations", &tiers, |sql| {
+        list_indexes_for_relations_with_sql(&client, sql, &oids)
+    })
+    .await
 }
 
 async fn list_indexes_for_relations_with_sql(
@@ -3493,6 +3511,11 @@ fn postgres_indexes_for_relations_query_tiers() -> [&'static str; 2] {
     [postgres_indexes_for_relations_sql(), postgres_indexes_for_relations_compat_sql()]
 }
 
+// Sibling of `POSTGRES_INDEXES_SQL`/`POSTGRES_INDEXES_COMPAT_SQL` (~line
+// 6042): same index-detection logic, batched by oid instead of a single
+// (schema, table) pair. Not merged into a shared fragment for the same
+// reason as the columns queries above — an alias would need renaming to
+// line up, and result columns are read positionally.
 fn postgres_indexes_for_relations_sql() -> &'static str {
     "SELECT t.oid::bigint AS relid, i.relname AS index_name, \
              array_agg(COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, k.n::int, true)) ORDER BY k.n) AS columns, \
@@ -3515,6 +3538,8 @@ fn postgres_indexes_for_relations_sql() -> &'static str {
              ORDER BY t.oid, i.relname"
 }
 
+// Compat-tier sibling of `POSTGRES_INDEXES_COMPAT_SQL` (~line 6063) — see the
+// note on `postgres_indexes_for_relations_sql` above.
 fn postgres_indexes_for_relations_compat_sql() -> &'static str {
     "SELECT t.oid::bigint AS relid, i.relname AS index_name, \
              ARRAY( \
@@ -5101,6 +5126,9 @@ pub async fn list_schema_infos_with_system(pool: &Pool, show_system_schemas: boo
         .collect())
 }
 
+// Sibling of `postgres_columns_for_relations_sql`/`_compat_sql` above (~line
+// 3086), for a single (schema, table) instead of a batch of oids — see the
+// note there about why these aren't merged into a shared fragment.
 const POSTGRES_COLUMNS_SQL: &str = "SELECT a.attname AS column_name, \
              format_type(a.atttypid, a.atttypmod) AS full_type, \
              COALESCE(c.is_nullable = 'YES', NOT a.attnotnull) AS is_nullable, \
@@ -5169,6 +5197,8 @@ const POSTGRES_COLUMNS_SQL: &str = "SELECT a.attname AS column_name, \
              AND a.attnum > 0 AND NOT a.attisdropped \
              ORDER BY a.attnum";
 
+// Compat-tier sibling of `postgres_columns_for_relations_compat_sql` (~line
+// 3148) — see the note on `POSTGRES_COLUMNS_SQL` above.
 const POSTGRES_COLUMNS_COMPAT_SQL: &str = "SELECT a.attname AS column_name, \
              format_type(a.atttypid, a.atttypmod) AS full_type, \
              COALESCE(c.is_nullable = 'YES', NOT a.attnotnull) AS is_nullable, \
@@ -5348,29 +5378,8 @@ async fn get_columns_with_sql(
 pub async fn get_columns(pool: &Pool, schema: &str, table: &str) -> Result<Vec<ColumnInfo>, String> {
     let schema = if schema.is_empty() { "public" } else { schema };
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    match get_columns_with_sql(&client, POSTGRES_COLUMNS_SQL, schema, table).await {
-        Ok(columns) => Ok(columns),
-        Err(primary_error) => match get_columns_with_sql(&client, POSTGRES_COLUMNS_COMPAT_SQL, schema, table).await {
-            Ok(columns) => Ok(columns),
-            Err(fallback_error) => {
-                let primary_message = pg_error_to_string(primary_error);
-                let fallback_message = pg_error_to_string(fallback_error);
-                match get_columns_with_sql(&client, POSTGRES_COLUMNS_INFORMATION_SCHEMA_SQL, schema, table).await {
-                    Ok(columns) => Ok(columns),
-                    Err(information_schema_error) => {
-                        let information_schema_message = pg_error_to_string(information_schema_error);
-                        log::debug!(
-                            "[postgres][get_columns:compat-failed] primary_error={} fallback_error={} information_schema_error={}",
-                            primary_message,
-                            fallback_message,
-                            information_schema_message
-                        );
-                        Err(information_schema_message)
-                    }
-                }
-            }
-        },
-    }
+    let tiers = [POSTGRES_COLUMNS_SQL, POSTGRES_COLUMNS_COMPAT_SQL, POSTGRES_COLUMNS_INFORMATION_SCHEMA_SQL];
+    query_with_compat_fallback("get_columns", &tiers, |sql| get_columns_with_sql(&client, sql, schema, table)).await
 }
 
 fn pg_quote_literal(value: &str) -> String {
@@ -6372,6 +6381,8 @@ async fn execute_query_with_max_rows_inner(
     }
 }
 
+// Sibling of `postgres_indexes_for_relations_sql` (~line 3288), for a single
+// (schema, table) instead of a batch of oids — see the note there.
 const POSTGRES_INDEXES_SQL: &str = "SELECT i.relname AS index_name, \
              array_agg(COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, k.n::int, true)) ORDER BY k.n) AS columns, \
              ix.indisunique AS is_unique, \
@@ -6393,6 +6404,8 @@ const POSTGRES_INDEXES_SQL: &str = "SELECT i.relname AS index_name, \
              GROUP BY i.relname, i.oid, ix.indisunique, ix.indisprimary, ix.indpred, ix.indrelid, am.amname, ix.indnkeyatts, ix.indkey \
              ORDER BY i.relname";
 
+// Compat-tier sibling of `postgres_indexes_for_relations_compat_sql` (~line
+// 3312) — see the note on `POSTGRES_INDEXES_SQL` above.
 const POSTGRES_INDEXES_COMPAT_SQL: &str = "SELECT i.relname AS index_name, \
              ARRAY( \
                SELECT COALESCE(a.attname, pg_get_indexdef(ix.indexrelid, pos.n, true)) \
@@ -6465,7 +6478,7 @@ const POSTGRES_COLUMN_ACL_PRIVILEGES_SQL: &str =
      WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p') \
      ORDER BY 5, 1, 2, 3, 4";
 
-fn postgres_owner_object_type(relkind: &str) -> &str {
+pub(crate) fn postgres_owner_object_type(relkind: &str) -> &str {
     match relkind {
         "r" => "TABLE",
         "v" => "VIEW",
@@ -6476,6 +6489,29 @@ fn postgres_owner_object_type(relkind: &str) -> &str {
         "I" => "PARTITIONED INDEX",
         _ => relkind,
     }
+}
+
+/// Looks up a relation's own `relkind` (e.g. `'r'`, `'v'`, `'S'`), regardless
+/// of whether it's a kind this driver otherwise treats as a table. Used to
+/// give a specific diagnostic ("it's a view, not a table") instead of a bare
+/// "not found" when a `(schema, table)` request turns out not to be a
+/// table/partition/foreign table.
+pub(crate) async fn postgres_relation_relkind(
+    pool: &Pool,
+    schema: &str,
+    table: &str,
+) -> Result<Option<String>, String> {
+    let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
+    let row = client
+        .query_opt(
+            "SELECT c.relkind::text FROM pg_catalog.pg_class c \
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relname = $2 LIMIT 1",
+            &[&schema, &table],
+        )
+        .await
+        .map_err(pg_error_to_string)?;
+    row.map(|row| row.try_get::<_, String>(0)).transpose().map_err(pg_error_to_string)
 }
 
 async fn list_indexes_with_sql(
@@ -6516,22 +6552,8 @@ async fn list_indexes_with_sql(
 
 pub async fn list_indexes(pool: &Pool, schema: &str, table: &str) -> Result<Vec<IndexInfo>, String> {
     let client = checkout_postgres_client(pool, None, super::connection_timeout()).await?;
-    match list_indexes_with_sql(&client, POSTGRES_INDEXES_SQL, schema, table).await {
-        Ok(indexes) => Ok(indexes),
-        Err(primary_error) => match list_indexes_with_sql(&client, POSTGRES_INDEXES_COMPAT_SQL, schema, table).await {
-            Ok(indexes) => Ok(indexes),
-            Err(fallback_error) => {
-                let primary_message = pg_error_to_string(primary_error);
-                let fallback_message = pg_error_to_string(fallback_error);
-                log::debug!(
-                    "[postgres][list_indexes:compat-failed] primary_error={} fallback_error={}",
-                    primary_message,
-                    fallback_message
-                );
-                Err(fallback_message)
-            }
-        },
-    }
+    let tiers = [POSTGRES_INDEXES_SQL, POSTGRES_INDEXES_COMPAT_SQL];
+    query_with_compat_fallback("list_indexes", &tiers, |sql| list_indexes_with_sql(&client, sql, schema, table)).await
 }
 
 /// Names of same-table indexes whose `pg_index.indisvalid` is `false`.
