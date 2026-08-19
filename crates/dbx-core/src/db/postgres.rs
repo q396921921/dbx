@@ -2041,12 +2041,41 @@ async fn connect_with_optional_local_timezone(
     timezone: Option<&str>,
 ) -> Result<Pool, String> {
     let url_with_keepalive = inject_postgres_keepalive_params(url);
-    let postgres_url = postgres_connection_url(&url_with_keepalive)?;
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-
     let timeout = super::parse_connect_timeout_with_fallback(url, fallback_timeout);
 
-    let (pool, client) = super::with_connection_timeout("PostgreSQL", timeout, async {
+    let first_attempt = connect_postgres_pool_attempt(&url_with_keepalive, timeout).await;
+    let (pool, client) = match first_attempt {
+        Err(error) if postgres_error_should_retry_without_tls(&error) => {
+            let Some(fallback_url) = postgres_ssl_fallback_url(&url_with_keepalive) else {
+                return Err(error);
+            };
+            log::info!("PostgreSQL TLS handshake failed in sslmode=prefer; retrying without TLS");
+            connect_postgres_pool_attempt(&fallback_url, timeout).await?
+        }
+        result => result?,
+    };
+
+    // Creating the physical connection and applying session defaults are two
+    // sequential network phases. Give each phase the configured connection
+    // timeout instead of sharing one deadline that can expire during the
+    // optional SET timezone round-trip on higher-latency tunnels.
+    if !pg_url_has_timezone_setting(url) {
+        if let Some(timezone) = timezone {
+            postgres_session_setup_with_timeout(timeout, set_automatic_postgres_timezone(&client, timezone)).await?;
+        }
+    }
+
+    drop(client);
+    Ok(pool)
+}
+
+async fn connect_postgres_pool_attempt(
+    url: &str,
+    timeout: Duration,
+) -> Result<(Pool, deadpool_postgres::Client), String> {
+    let postgres_url = postgres_connection_url(url)?;
+    super::with_connection_timeout("PostgreSQL", timeout, async {
         let pg_config = tokio_postgres::Config::from_str(&postgres_url.url)
             .map_err(|e| format!("Invalid PostgreSQL connection URL: {e}"))?;
 
@@ -2083,20 +2112,45 @@ async fn connect_with_optional_local_timezone(
             pool.get().await.map_err(|e| format!("PostgreSQL connection failed: {}", pg_pool_error_to_string(e)))?;
         Ok((pool, client))
     })
-    .await?;
+    .await
+}
 
-    // Creating the physical connection and applying session defaults are two
-    // sequential network phases. Give each phase the configured connection
-    // timeout instead of sharing one deadline that can expire during the
-    // optional SET timezone round-trip on higher-latency tunnels.
-    if !pg_url_has_timezone_setting(url) {
-        if let Some(timezone) = timezone {
-            postgres_session_setup_with_timeout(timeout, set_automatic_postgres_timezone(&client, timezone)).await?;
-        }
+fn postgres_error_should_retry_without_tls(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("tls handshake")
+}
+
+fn postgres_ssl_fallback_url(url: &str) -> Option<String> {
+    let parsed = postgres_connection_url(url).ok()?;
+    let pg_config = tokio_postgres::Config::from_str(&parsed.url).ok()?;
+    if pg_config.get_ssl_mode() != SslMode::Prefer {
+        return None;
     }
 
-    drop(client);
-    Ok(pool)
+    let (base, fragment) = url.split_once('#').map_or((url, None), |(base, fragment)| (base, Some(fragment)));
+    let (prefix, query) = base.split_once('?').map_or((base, None), |(prefix, query)| (prefix, Some(query)));
+    let mut params = Vec::new();
+    let mut inserted_sslmode = false;
+    for param in query.into_iter().flat_map(|query| query.split('&')).filter(|param| !param.is_empty()) {
+        let is_sslmode = param.split_once('=').is_some_and(|(key, _)| key.trim().eq_ignore_ascii_case("sslmode"));
+        if is_sslmode {
+            if !inserted_sslmode {
+                params.push("sslmode=disable".to_string());
+                inserted_sslmode = true;
+            }
+        } else {
+            params.push(param.to_string());
+        }
+    }
+    if !inserted_sslmode {
+        params.insert(0, "sslmode=disable".to_string());
+    }
+
+    let mut fallback = format!("{prefix}?{}", params.join("&"));
+    if let Some(fragment) = fragment {
+        fallback.push('#');
+        fallback.push_str(fragment);
+    }
+    Some(fallback)
 }
 
 async fn postgres_session_setup_with_timeout<T, F>(timeout: Duration, future: F) -> Result<T, String>
@@ -6227,11 +6281,15 @@ async fn cancel_postgres_query(
                 Ok(Ok(())) => return,
                 Ok(Err(err)) => {
                     log::warn!("Failed to send PostgreSQL TLS cancel request: {err}");
-                    return;
+                    if ctx.ssl_mode != SslMode::Prefer {
+                        return;
+                    }
                 }
                 Err(_) => {
                     log::warn!("Timed out sending PostgreSQL TLS cancel request ({}s)", cancel_timeout.as_secs());
-                    return;
+                    if ctx.ssl_mode != SslMode::Prefer {
+                        return;
+                    }
                 }
             },
             Err(err) => {
@@ -7102,7 +7160,66 @@ mod tests {
     use std::cell::Cell;
     use std::process::Command;
     use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
     use tokio_postgres::types::FromSql;
+
+    fn postgres_error_response(message: &str) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(b"SERROR\0");
+        payload.extend_from_slice(b"C0A000\0");
+        payload.push(b'M');
+        payload.extend_from_slice(message.as_bytes());
+        payload.extend_from_slice(b"\0\0");
+
+        let mut response = vec![b'E'];
+        response.extend_from_slice(&u32::try_from(payload.len() + 4).unwrap().to_be_bytes());
+        response.extend_from_slice(&payload);
+        response.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        response
+    }
+
+    async fn serve_tls_handshake_failure_then_plaintext(listener: TcpListener) {
+        let (mut tls_socket, _) = listener.accept().await.unwrap();
+        let mut ssl_request = [0_u8; 8];
+        tls_socket.read_exact(&mut ssl_request).await.unwrap();
+        assert_eq!(ssl_request, [0, 0, 0, 8, 4, 210, 22, 47]);
+        tls_socket.write_all(b"S").await.unwrap();
+        tls_socket.write_all(&[0x15, 0x03, 0x03, 0, 2, 2, 40]).await.unwrap();
+        drop(tls_socket);
+
+        let (mut plain_socket, _) = listener.accept().await.unwrap();
+        let startup_len = plain_socket.read_u32().await.unwrap();
+        assert!(startup_len >= 8);
+        let mut startup = vec![0_u8; startup_len as usize - 4];
+        plain_socket.read_exact(&mut startup).await.unwrap();
+        assert_eq!(&startup[..4], &[0, 3, 0, 0]);
+        plain_socket
+            .write_all(&[
+                b'R', 0, 0, 0, 8, 0, 0, 0, 0, // AuthenticationOk
+                b'K', 0, 0, 0, 12, 0, 0, 0, 1, 0, 0, 0, 2, // BackendKeyData
+                b'Z', 0, 0, 0, 5, b'I', // ReadyForQuery
+            ])
+            .await
+            .unwrap();
+
+        let mut request = [0_u8; 1024];
+        let read = plain_socket.read(&mut request).await.unwrap();
+        assert!(read > 0, "client should issue the best-effort identity query");
+        plain_socket.write_all(&postgres_error_response("identity probe unavailable")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn postgres_prefer_retries_plaintext_after_tls_handshake_failure() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(serve_tls_handshake_failure_then_plaintext(listener));
+        let url = format!("postgres://postgres@127.0.0.1:{port}/postgres?sslmode=prefer");
+
+        let result = connect_with_optional_local_timezone(&url, Duration::from_secs(2), None).await;
+        assert!(result.is_ok(), "prefer mode should retry without TLS: {result:?}");
+        server.await.unwrap();
+    }
 
     fn pg_array_binary(element_oid: u32, elements: &[Option<Vec<u8>>]) -> Vec<u8> {
         let mut raw = Vec::new();
@@ -9128,6 +9245,36 @@ mod tests {
         let pg_config = tokio_postgres::Config::from_str("postgres://localhost/db?sslmode=disable").unwrap();
 
         assert!(!postgres_sslmode_accepts_invalid_certs(pg_config.get_ssl_mode()));
+    }
+
+    #[test]
+    fn postgres_prefer_fallback_url_preserves_other_options() {
+        assert_eq!(
+            postgres_ssl_fallback_url("postgres://localhost/db?application_name=dbx&sslmode=prefer&connect_timeout=5"),
+            Some("postgres://localhost/db?application_name=dbx&sslmode=disable&connect_timeout=5".to_string())
+        );
+        assert_eq!(
+            postgres_ssl_fallback_url("postgres://localhost/db?application_name=dbx"),
+            Some("postgres://localhost/db?sslmode=disable&application_name=dbx".to_string())
+        );
+    }
+
+    #[test]
+    fn postgres_prefer_fallback_never_downgrades_strict_tls_modes() {
+        for sslmode in ["require", "verify-ca", "verify-full", "disable"] {
+            let url = format!("postgres://localhost/db?sslmode={sslmode}");
+            assert_eq!(postgres_ssl_fallback_url(&url), None, "unexpected fallback for {sslmode}");
+        }
+    }
+
+    #[test]
+    fn postgres_prefer_fallback_only_retries_tls_handshake_errors() {
+        assert!(postgres_error_should_retry_without_tls(
+            "error performing TLS handshake: received fatal alert: HandshakeFailure"
+        ));
+        assert!(!postgres_error_should_retry_without_tls("password authentication failed for user postgres"));
+        assert!(!postgres_error_should_retry_without_tls("connection timed out"));
+        assert!(!postgres_error_should_retry_without_tls("server does not support TLS"));
     }
 
     // --- SQL generation ---
