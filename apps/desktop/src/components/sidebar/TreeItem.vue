@@ -167,6 +167,7 @@ const props = defineProps<{
   node: TreeNode;
   depth: number;
   reorderDisabled?: boolean;
+  moveToGroupOnly?: boolean;
   referenceDragDisabled?: boolean;
   pendingRename?: boolean;
   highlighted?: boolean;
@@ -1023,7 +1024,7 @@ const {
   // together; otherwise just the grabbed one (issue #681).
   const selected = connectionStore.selectedTreeNodeIds;
   const draggedIds = selected.length > 1 && selected.includes(draggedId) ? [...selected] : [draggedId];
-  connectionStore.reorderSidebarEntries(draggedIds, targetId, position);
+  connectionStore.reorderSidebarEntries(draggedIds, targetId, position, { preserveSameGroupOrder: props.moveToGroupOnly });
 });
 
 const canReorderTreeNode = computed(() => {
@@ -1066,6 +1067,12 @@ function updateTreeDragTarget(event: MouseEvent) {
     return;
   }
   updateTarget(event, activeNode.value.id, activeNode.value.type);
+  // While the list is display-sorted, the underlying manual order used for
+  // before/after positioning is invisible, so only moving into a different
+  // group (a display-order-independent operation) is a coherent drop.
+  if (props.moveToGroupOnly && dragState.dropPosition !== "inside") {
+    clearTarget(activeNode.value.id);
+  }
 }
 
 function clearTreeDragTarget() {
