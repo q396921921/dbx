@@ -650,12 +650,28 @@ fn sqlserver_option_functions_and_invalid_hints_are_not_suppressed() {
 fn postgres_create_procedure_bodies_do_not_raise_syntax_errors() {
     let or_replace_with_default_param = "CREATE OR REPLACE PROCEDURE dwd.lzshklx_batch_update_device_id(\n    p_batch_size INT DEFAULT 100,\n    p_total_batches INT DEFAULT NULL\n)\nLANGUAGE plpgsql\nAS $$\nDECLARE\n    v_affected_rows INT;\nBEGIN\n    NULL;\nEND;\n$$;";
     let plain_dollar_quoted = "CREATE PROCEDURE dwd.foo(p_id INT) LANGUAGE plpgsql AS $tag$ BEGIN NULL; END; $tag$;";
+    let block_comment_separated = "CREATE /* create */ OR /* or */ REPLACE /* replace */ PROCEDURE dwd.foo() LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;";
+    let line_comment_separated = "CREATE -- create\nOR -- or\nREPLACE -- replace\nPROCEDURE dwd.foo() LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;";
 
-    for sql in [or_replace_with_default_param, plain_dollar_quoted] {
+    for sql in [or_replace_with_default_param, plain_dollar_quoted, block_comment_separated, line_comment_separated] {
         let analysis = analyze_sql_references(sql, Some("postgres"))
             .expect("postgres CREATE PROCEDURE should not surface a false parser error");
         assert!(analysis.tables.is_empty());
         assert!(analysis.columns.is_empty());
+    }
+}
+
+#[test]
+fn postgres_create_procedure_syntax_errors_are_not_suppressed() {
+    for sql in [
+        "CREATE PROCEDURE",
+        "CREATE PROCEDURE dwd.foo() LANGUAGE plpgsql AS",
+        "CREATE OR REPLACE PROCEDURE dwd.foo(p_id INT,, p_name TEXT) LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$;",
+        "CREATE PROCEDURE dwd.foo() LANGUAGE plpgsql AS $$ BEGIN NULL; END; $$ trailing",
+    ] {
+        let error = analyze_sql_references(sql, Some("postgres"))
+            .expect_err("invalid postgres CREATE PROCEDURE must keep its parser error");
+        assert!(!error.is_empty(), "invalid postgres CREATE PROCEDURE returned an empty error: {sql}");
     }
 }
 
