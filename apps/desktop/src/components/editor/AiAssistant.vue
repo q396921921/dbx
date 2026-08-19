@@ -2614,8 +2614,8 @@ async function openExternalUrl(url: string) {
                         <GitBranch class="h-3 w-3" />
                         {{ t("explain.title") }}
                       </Button>
-                      <div v-if="step.toolName === 'explain_query' && step.explainData && connection?.db_type" class="mb-1">
-                        <ExplainPlanViewer :plan="parseExplainFromData(step.explainData, connection.db_type)" class="max-h-64" />
+                      <div v-if="step.toolName === 'explain_query' && step.explainData && connection?.db_type" class="mb-1 h-64 overflow-hidden rounded border">
+                        <ExplainPlanViewer :plan="parseExplainFromData(step.explainData, connection.db_type)" />
                       </div>
                       <div v-else-if="step.isError && step.toolResult" class="text-[10px] text-red-600 dark:text-red-400">{{ step.toolResult }}</div>
                       <div v-else-if="step.toolResult" class="max-h-48 overflow-auto text-[10px] text-muted-foreground whitespace-pre-wrap">{{ step.toolResult }}</div>
