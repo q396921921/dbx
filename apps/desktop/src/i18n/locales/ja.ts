@@ -2980,6 +2980,7 @@ export default withEnglishFallback({
     indexes: "インデックス",
     foreignKeys: "外部キー",
     triggers: "トリガー",
+    events: "イベント",
     constraints: "制約",
     tables: "テーブル",
     tableNameFilterActive: "フィルターあり",

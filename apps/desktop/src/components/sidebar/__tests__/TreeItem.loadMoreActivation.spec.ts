@@ -431,6 +431,24 @@ describe("TreeItem load-more activation", () => {
   });
 });
 
+describe("TreeItem object counts", () => {
+  it("renders the event group count", async () => {
+    const node: TreeNode = {
+      id: "connection-1:app:__events",
+      label: "tree.events",
+      type: "group-events",
+      connectionId: "connection-1",
+      database: "app",
+      objectCount: 17,
+      children: [],
+    };
+
+    const { row } = await mountTreeItem(node);
+
+    expect(row.textContent).toContain("17");
+  });
+});
+
 describe("TreeItem searched connection activation", () => {
   function searchedConnection(): TreeNode {
     const filtered = filterSidebarTree(

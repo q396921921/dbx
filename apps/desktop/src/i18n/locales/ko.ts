@@ -2859,6 +2859,7 @@ export default withEnglishFallback({
     indexes: "인덱스",
     foreignKeys: "외래 키",
     triggers: "트리거",
+    events: "이벤트",
     constraints: "제약 조건",
     tables: "테이블",
     tableNameFilterActive: "필터됨",

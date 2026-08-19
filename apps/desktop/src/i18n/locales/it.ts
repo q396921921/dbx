@@ -2954,6 +2954,7 @@ export default withEnglishFallback({
     indexes: "Indici",
     foreignKeys: "Chiavi Esterne",
     triggers: "Trigger",
+    events: "Eventi",
     constraints: "Vincoli",
     tables: "Tabelle",
     tableNameFilterActive: "filtrato",

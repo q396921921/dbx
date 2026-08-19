@@ -16,6 +16,7 @@ import {
   Link,
   Link2,
   Zap,
+  Clock,
   ListTree,
   FileCode,
   Network,
@@ -252,6 +253,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Link, colorClass: "text-blue-400" };
     case "group-triggers":
       return { icon: Zap, colorClass: "text-orange-400" };
+    case "group-events":
+      return { icon: Clock, colorClass: "text-orange-400" };
     case "group-constraints":
       return { icon: Key, colorClass: "text-amber-500" };
     case "group-table-partitions":
@@ -279,6 +282,8 @@ function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
       return { icon: Link, colorClass: "text-blue-300" };
     case "trigger":
       return { icon: Zap, colorClass: "text-orange-300" };
+    case "event":
+      return { icon: Clock, colorClass: "text-orange-300" };
     case "redis-db":
       return { icon: Database, colorClass: "text-red-400" };
     case "mq-tenant":
@@ -1418,6 +1423,7 @@ function onKeydown(event: KeyboardEvent) {
                   node.type === 'group-procedures' ||
                   node.type === 'group-functions' ||
                   node.type === 'group-triggers' ||
+                  node.type === 'group-events' ||
                   node.type === 'group-sequences' ||
                   node.type === 'group-synonyms' ||
                   node.type === 'group-packages' ||

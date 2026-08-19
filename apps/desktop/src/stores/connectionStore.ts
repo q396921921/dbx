@@ -1303,7 +1303,7 @@ export const useConnectionStore = defineStore("connection", () => {
   // recurse into raw objects, its `meta` too), mirroring the markRaw() treatment
   // queryStore already applies to result rows. Containers stay reactive so their
   // children / isExpanded / isLoading mutations still drive the UI.
-  const LEAF_TREE_NODE_TYPES = new Set<TreeNode["type"]>(["column", "index", "fkey", "trigger", "type-member"]);
+  const LEAF_TREE_NODE_TYPES = new Set<TreeNode["type"]>(["column", "index", "fkey", "trigger", "event", "type-member"]);
 
   function markRawLeafTreeNodes(nodes: TreeNode[]): TreeNode[] {
     for (const node of nodes) {

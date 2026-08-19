@@ -54,11 +54,11 @@ const objectBrowserNodeTypes = new Set<TreeNodeType>(["database", "schema", "obj
 export function shouldOpenObjectBrowserOnSingleClick(type: TreeNodeType, enabled: boolean): boolean {
   return enabled && objectBrowserNodeTypes.has(type);
 }
-const sourceNodeTypes = new Set<TreeNodeType>(["materialized_view", "procedure", "function", "trigger", "sequence", "synonym", "package", "package-body", "type", "type-body"]);
+const sourceNodeTypes = new Set<TreeNodeType>(["materialized_view", "procedure", "function", "trigger", "event", "sequence", "synonym", "package", "package-body", "type", "type-body"]);
 const savedSqlNodeTypes = new Set<TreeNodeType>(["saved-sql-file"]);
 const tableChildGroupNodeTypes = new Set<TreeNodeType>(["group-columns", "group-indexes", "group-fkeys", "group-triggers", "group-constraints", "group-partitions", "group-table-partitions", "group-table-subpartitions"]);
-const databaseChildGroupNodeTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
-const displayPathObjectNodeTypes = new Set<TreeNodeType>(["table", "view", "materialized_view", "procedure", "function", "trigger"]);
+const databaseChildGroupNodeTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-events", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
+const displayPathObjectNodeTypes = new Set<TreeNodeType>(["table", "view", "materialized_view", "procedure", "function", "trigger", "event"]);
 
 export function objectSourceKindForTreeNode(type: TreeNodeType): ObjectSourceKind | null {
   if (type === "view") return "VIEW";
@@ -66,6 +66,7 @@ export function objectSourceKindForTreeNode(type: TreeNodeType): ObjectSourceKin
   if (type === "procedure") return "PROCEDURE";
   if (type === "function") return "FUNCTION";
   if (type === "trigger") return "TRIGGER";
+  if (type === "event") return "EVENT";
   if (type === "sequence") return "SEQUENCE";
   if (type === "synonym") return "SYNONYM";
   if (type === "package") return "PACKAGE";

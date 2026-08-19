@@ -2951,6 +2951,7 @@ export default withEnglishFallback({
     indexes: "索引",
     foreignKeys: "外键",
     triggers: "触发器",
+    events: "事件",
     constraints: "约束",
     tables: "表",
     doltSystemTables: "Dolt 系统表",
