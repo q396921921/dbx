@@ -248,6 +248,16 @@ describe("programmable database objects", () => {
     ]);
   });
 
+  it("groups MySQL scheduled events under a dedicated Events group", () => {
+    const objects: ObjectInfo[] = [{ name: "event_daily_middle_db_sync", object_type: "EVENT", schema: "shop" }];
+
+    const groups = buildGroupedObjectTreeNodes({ ...context, schema: "shop", objects, databaseType: "mysql" });
+    const eventGroup = groups.find((node) => node.type === "group-events");
+
+    expect(eventGroup).toEqual(expect.objectContaining({ objectCount: 1, label: "tree.events" }));
+    expect(eventGroup?.children).toEqual([expect.objectContaining({ type: "event", objectName: "event_daily_middle_db_sync" })]);
+  });
+
   it("groups Xugu private synonyms as source objects", () => {
     const objects: ObjectInfo[] = [{ name: "SYN_SHOP_USERS", object_type: "SYNONYM", schema: "SYSDBA", valid: true }];
 

@@ -2953,6 +2953,7 @@ export default withEnglishFallback({
     indexes: "Índices",
     foreignKeys: "Claves foráneas",
     triggers: "Disparadores",
+    events: "Eventos",
     constraints: "Restricciones",
     tables: "Tablas",
     tableNameFilterActive: "filtrado",

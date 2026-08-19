@@ -2954,6 +2954,7 @@ export default withEnglishFallback({
     indexes: "Índices",
     foreignKeys: "Chaves estrangeiras",
     triggers: "Triggers",
+    events: "Eventos",
     constraints: "Restrições",
     tables: "Tabelas",
     tableNameFilterActive: "filtrado",

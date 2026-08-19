@@ -627,7 +627,7 @@ export function buildSimpleObjectTreeNodes({ nodeId, connectionId, database, sch
 
   for (const obj of coalesceXuguPackageObjects(objects, databaseType)) {
     const objectType = normalizeObjectType(obj.object_type);
-    if (!["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"].includes(objectType)) {
+    if (!["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "EVENT", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"].includes(objectType)) {
       continue;
     }
 
@@ -688,6 +688,7 @@ function simpleObjectNodeType(objectType: DatabaseObjectTreeKind): TreeNodeType 
   if (objectType === "PROCEDURE") return "procedure";
   if (objectType === "FUNCTION") return "function";
   if (objectType === "TRIGGER") return "trigger";
+  if (objectType === "EVENT") return "event";
   if (objectType === "SEQUENCE") return "sequence";
   if (objectType === "SYNONYM") return "synonym";
   if (objectType === "PACKAGE_BODY") return "package-body";
@@ -741,6 +742,13 @@ const groupDefs: Array<{
     childType: "trigger",
   },
   {
+    key: "__events",
+    label: "tree.events",
+    objectTypes: ["EVENT"],
+    nodeType: "group-events",
+    childType: "event",
+  },
+  {
     key: "__sequences",
     label: "tree.sequences",
     objectTypes: ["SEQUENCE"],
@@ -770,7 +778,7 @@ const groupDefs: Array<{
   },
 ];
 
-const objectGroupNodeTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
+const objectGroupNodeTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-events", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
 
 export function buildObjectGroupPlaceholderNodes({
   nodeId,

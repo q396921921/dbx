@@ -3024,6 +3024,7 @@ export default {
     indexes: "Indexes",
     foreignKeys: "Foreign Keys",
     triggers: "Triggers",
+    events: "Events",
     constraints: "Constraints",
     tables: "Tables",
     doltSystemTables: "Dolt System Tables",
