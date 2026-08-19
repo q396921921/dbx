@@ -2278,7 +2278,7 @@ async fn list_tables_once(
                 let tables = db::ob_oracle::list_tables(p, schema).await?;
                 Ok(filter_table_infos(tables, filter, limit, offset, object_types, table_name_filter))
             } else if mysql_table_list_source_for_config(db_config.as_ref()) == MysqlTableListSource::ShowFullTables {
-                db::mysql::list_shardingsphere_tables(p, mysql_table_metadata_catalog(database, schema))
+                db::mysql::list_logical_tables_show(p, mysql_table_metadata_catalog(database, schema))
                     .await
                     .map(|tables| filter_table_infos(tables, filter, limit, offset, object_types, table_name_filter))
             } else {
@@ -2739,10 +2739,11 @@ fn is_shardingsphere_proxy_version(version: &str) -> bool {
 }
 
 fn mysql_table_list_source_for_config(config: Option<&ConnectionConfig>) -> MysqlTableListSource {
-    if config
-        .and_then(|config| config.database_info.as_ref())
-        .and_then(|info| info.product_version.as_deref())
-        .is_some_and(is_shardingsphere_proxy_version)
+    if config.is_some_and(db::tdsql_mysql::is_config)
+        || config
+            .and_then(|config| config.database_info.as_ref())
+            .and_then(|info| info.product_version.as_deref())
+            .is_some_and(is_shardingsphere_proxy_version)
     {
         MysqlTableListSource::ShowFullTables
     } else {
@@ -3857,6 +3858,14 @@ for line in sys.stdin:
         config.database_info.as_mut().unwrap().product_version = Some("8.0.36-MySQL Community Server".to_string());
         assert_eq!(mysql_table_list_source_for_config(Some(&config)), MysqlTableListSource::InformationSchema);
         assert_eq!(mysql_table_list_source_for_config(None), MysqlTableListSource::InformationSchema);
+    }
+
+    #[test]
+    fn tdsql_profile_uses_logical_show_full_tables_source() {
+        let mut config = test_connection_config(DatabaseType::Mysql);
+        config.driver_profile = Some("TDSQL".to_string());
+
+        assert_eq!(mysql_table_list_source_for_config(Some(&config)), MysqlTableListSource::ShowFullTables);
     }
 
     #[test]
@@ -5422,6 +5431,10 @@ async fn list_objects_once(
                 db::starrocks::list_table_objects(p, database).await.map(unpaged_object_list)
             } else if db_config.as_ref().is_some_and(db::mysql_compatible::uses_show_metadata) {
                 db::mysql::list_table_objects_show(p, database).await.map(unpaged_object_list)
+            } else if mysql_table_list_source_for_config(db_config.as_ref()) == MysqlTableListSource::ShowFullTables {
+                db::mysql::list_objects_with_logical_tables(p, database, object_types, mysql_limit, mysql_offset)
+                    .await
+                    .map(|result| ObjectListOutcome { objects: result.objects, paging_applied: result.paging_applied })
             } else {
                 db::mysql::list_objects(p, database, object_types, mysql_limit, mysql_offset)
                     .await

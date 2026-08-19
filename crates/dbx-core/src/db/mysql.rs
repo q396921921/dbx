@@ -2816,7 +2816,7 @@ async fn list_table_names_show(pool: &MySqlPool, database: &str) -> Result<Vec<T
     list_table_names_show_filtered(pool, database, None, &[]).await
 }
 
-fn shardingsphere_show_full_tables_sql(database: &str) -> String {
+fn logical_show_full_tables_sql(database: &str) -> String {
     if database.trim().is_empty() {
         "SHOW FULL TABLES".to_string()
     } else {
@@ -2840,14 +2840,30 @@ fn table_infos_from_show_rows(rows: &[mysql_async::Row]) -> Vec<TableInfo> {
     tables
 }
 
-pub async fn list_shardingsphere_tables(pool: &MySqlPool, database: &str) -> Result<Vec<TableInfo>, String> {
-    // ShardingSphere's logical names are authoritative here. Do not add SHOW TABLE STATUS:
-    // this hot path must replace the information_schema lookup with one metadata request.
-    let sql = shardingsphere_show_full_tables_sql(database);
+pub async fn list_logical_tables_show(pool: &MySqlPool, database: &str) -> Result<Vec<TableInfo>, String> {
+    // Proxy logical names are authoritative here. Do not add SHOW TABLE STATUS: this hot
+    // path must replace the information_schema lookup with one metadata request.
+    let sql = logical_show_full_tables_sql(database);
     let mut conn = get_conn_with_timeout(pool, super::connection_timeout()).await?;
     let result = conn.query_iter(&sql).await.map_err(|error| error.to_string())?;
     let rows = result.collect_and_drop::<mysql_async::Row>().await.map_err(|error| error.to_string())?;
     Ok(table_infos_from_show_rows(&rows))
+}
+
+async fn list_logical_table_objects_show_filtered(
+    pool: &MySqlPool,
+    database: &str,
+    object_types: Option<&[String]>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<Vec<ObjectInfo>, String> {
+    let tables = list_logical_tables_show(pool, database).await?;
+    Ok(filter_table_objects_fallback(
+        table_infos_to_objects(tables, &HashMap::new(), database),
+        object_types,
+        limit,
+        offset,
+    ))
 }
 
 async fn list_table_names_show_filtered(
@@ -3264,6 +3280,14 @@ fn object_query_supports_paging(object_types: Option<&[String]>) -> bool {
     all_types_supported && uses_table_source != uses_routine_source
 }
 
+fn logical_table_supplemental_types(object_types: Option<&[String]>) -> Vec<String> {
+    ["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]
+        .into_iter()
+        .filter(|object_type| requested_object_type(object_types, object_type))
+        .map(str::to_string)
+        .collect()
+}
+
 pub async fn list_objects(
     pool: &MySqlPool,
     database: &str,
@@ -3363,6 +3387,29 @@ pub async fn list_objects(
                 log::warn!("Skipping events for database `{}` in object browser: {}", database, e);
             }
         }
+    }
+
+    Ok(PagedObjectList { objects, paging_applied })
+}
+
+pub async fn list_objects_with_logical_tables(
+    pool: &MySqlPool,
+    database: &str,
+    object_types: Option<&[String]>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+) -> Result<PagedObjectList, String> {
+    if !wants_table_objects(object_types) {
+        return list_objects(pool, database, object_types, limit, offset).await;
+    }
+
+    let paging_applied = limit.is_some() && object_query_supports_paging(object_types);
+    let (query_limit, query_offset) = if paging_applied { (limit, offset) } else { (None, None) };
+    let mut objects =
+        list_logical_table_objects_show_filtered(pool, database, object_types, query_limit, query_offset).await?;
+    let supplemental_types = logical_table_supplemental_types(object_types);
+    if !supplemental_types.is_empty() {
+        objects.extend(list_objects(pool, database, Some(&supplemental_types), None, None).await?.objects);
     }
 
     Ok(PagedObjectList { objects, paging_applied })
@@ -6159,13 +6206,13 @@ mod tests {
     }
 
     #[test]
-    fn shardingsphere_show_full_tables_is_one_exact_statement() {
-        assert_eq!(shardingsphere_show_full_tables_sql("app"), "SHOW FULL TABLES FROM `app`");
-        assert_eq!(shardingsphere_show_full_tables_sql(""), "SHOW FULL TABLES");
+    fn logical_show_full_tables_is_one_exact_statement() {
+        assert_eq!(logical_show_full_tables_sql("app"), "SHOW FULL TABLES FROM `app`");
+        assert_eq!(logical_show_full_tables_sql(""), "SHOW FULL TABLES");
     }
 
     #[test]
-    fn shardingsphere_show_rows_keep_logical_names_and_types_without_comments() {
+    fn proxy_show_rows_keep_logical_names_and_types_without_comments() {
         let rows = vec![
             mysql_test_row(vec![Value::Bytes(b"normal_table".to_vec()), Value::Bytes(b"BASE TABLE".to_vec())]),
             mysql_test_row(vec![Value::Bytes(b"t_order".to_vec()), Value::Bytes(b"BASE TABLE".to_vec())]),
@@ -6472,6 +6519,16 @@ mod tests {
         assert!(object_query_supports_paging(Some(&["TABLE".to_string(), "VIEW".to_string()])));
         assert!(!object_query_supports_paging(Some(&["TABLE".to_string(), "PROCEDURE".to_string()])));
         assert!(!object_query_supports_paging(None));
+    }
+
+    #[test]
+    fn logical_table_objects_keep_only_requested_non_table_sources() {
+        assert_eq!(logical_table_supplemental_types(None), ["PROCEDURE", "FUNCTION", "TRIGGER", "EVENT"]);
+        assert!(logical_table_supplemental_types(Some(&["TABLE".to_string(), "VIEW".to_string()])).is_empty());
+        assert_eq!(
+            logical_table_supplemental_types(Some(&["TABLE".to_string(), "PROCEDURE".to_string()])),
+            ["PROCEDURE"]
+        );
     }
 
     #[test]
