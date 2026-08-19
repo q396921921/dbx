@@ -232,6 +232,7 @@ const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   quit_on_close: false,
   close_action_prompted: false,
   debug_logging_enabled: false,
+  metadata_cache_max_memory_mb: 64,
   duckdb_worker_process_isolation: false,
   duckdb_worker_max_processes: 4,
   saved_sql_sync_dir: null,
@@ -580,6 +581,14 @@ export async function installAgent(dbType: string, _source?: UpdateDownloadSourc
 
 export async function upgradeAllAgents(_source?: UpdateDownloadSource, operationId?: string): Promise<UpgradeAllAgentDriversResult> {
   return post("/api/agents/upgrade-all", { operationId });
+}
+
+export async function cancelAgentInstall(dbType: string, operationId?: string): Promise<void> {
+  await post("/api/agents/cancel-install", { dbType, operationId });
+}
+
+export async function cancelAgentUpgradeAll(operationId?: string): Promise<void> {
+  await post("/api/agents/cancel-upgrade-all", { operationId });
 }
 
 export async function checkAgentUpdateBlockers(dbTypes: string[]): Promise<AgentUpdateBlocker[]> {
