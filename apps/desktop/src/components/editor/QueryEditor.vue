@@ -771,6 +771,7 @@ function editorIndentUnit(): string {
 }
 
 function handleTab(view: EditorViewType): boolean {
+  if (view.state.selection.ranges.some((range) => !range.empty)) return codeMirrorIndentMore?.(view) ?? false;
   if (tabKeyAcceptsCompletion()) {
     return acceptCompletionOrNextSnippetField(view) || performNormalTab(view);
   }
@@ -794,8 +795,8 @@ function handleTabWithoutAcceptingCompletion(view: EditorViewType): boolean {
 
 function performNormalTab(view: EditorViewType): boolean {
   const { state, dispatch } = view;
+  if (state.selection.ranges.some((range) => !range.empty)) return codeMirrorIndentMore?.(view) ?? false;
   const sel = state.selection.main;
-  if (!sel.empty) return codeMirrorIndentMore?.(view) ?? false;
   const line = state.doc.lineAt(sel.from);
   const before = line.text.slice(0, sel.from - line.from);
   if (/^\s*$/.test(before)) return codeMirrorIndentMore?.(view) ?? false;
@@ -1973,10 +1974,10 @@ function extendQueryEditorSelectionForView(currentView: EditorViewType): boolean
 }
 
 function acceptCompletionOrNextSnippetField(view: EditorViewType): boolean {
-  // A non-empty selection means Tab is being used for block indent, not word
-  // completion. A completion popup can still appear as a side effect of the
-  // indent edit itself, so it must never hijack this (or a following) Tab press.
-  if (view.state.selection.main.empty) {
+  // Any non-empty selection range means Tab is being used for block indent,
+  // not word completion. A completion popup can still appear as a side effect
+  // of the indent edit itself, so it must never hijack this or a following Tab.
+  if (view.state.selection.ranges.every((range) => range.empty)) {
     const completionStatus = codeMirrorCompletionStatus?.(view.state) ?? null;
     if (completionStatus === "active" && (codeMirrorAcceptCompletion?.(view) ?? false)) return true;
     if (completionStatus) return waitForCompletionTab(view);
@@ -1993,13 +1994,13 @@ function clearPendingCompletionTab() {
 function waitForCompletionTab(view: EditorViewType): boolean {
   clearPendingCompletionTab();
   const initialDoc = view.state.doc;
-  const initialSelection = view.state.selection.main;
+  const initialSelectionRanges = view.state.selection.ranges.map((range) => ({ anchor: range.anchor, head: range.head }));
   const startedAt = Date.now();
 
   const retry = () => {
     pendingCompletionTabTimer = null;
-    const selection = view.state.selection.main;
-    if (view.state.doc !== initialDoc || selection.anchor !== initialSelection.anchor || selection.head !== initialSelection.head) return;
+    const selectionRanges = view.state.selection.ranges;
+    if (view.state.doc !== initialDoc || selectionRanges.length !== initialSelectionRanges.length || selectionRanges.some((range, index) => !range.empty || range.anchor !== initialSelectionRanges[index]?.anchor || range.head !== initialSelectionRanges[index]?.head)) return;
 
     const completionStatus = codeMirrorCompletionStatus?.(view.state) ?? null;
     if (completionStatus === "active" && (codeMirrorAcceptCompletion?.(view) ?? false)) return;
