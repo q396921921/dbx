@@ -30,6 +30,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
+import java.sql.SQLClientInfoException;
 import java.sql.SQLFeatureNotSupportedException;
 import java.lang.reflect.Method;
 import java.sql.Statement;
@@ -74,12 +75,15 @@ public final class DbxJdbcPlugin {
         false,
         false,
         false,
+        null,
         StatementMaxRowsMode.READ_LOOP_ONLY
     );
     private static final JdbcDriverQuirks USE_CATALOG_QUIRKS = DEFAULT_QUIRKS.withUseCatalogFallbackSql(true);
     private static final JdbcDriverQuirks HIVE_QUIRKS = USE_CATALOG_QUIRKS.withSchemasAsDatabasesFallback(true);
     private static final JdbcDriverQuirks KINGBASE_QUIRKS = DEFAULT_QUIRKS.withIgnoreCatalogForSchemaMetadata(true);
-    private static final JdbcDriverQuirks TAOS_QUIRKS = DEFAULT_QUIRKS.withPreferExecuteQueryForResultSetSql(true);
+    private static final JdbcDriverQuirks TAOS_QUIRKS = DEFAULT_QUIRKS
+        .withPreferExecuteQueryForResultSetSql(true)
+        .withDatabaseClientInfoProperty("dbname");
     private static final JdbcDriverQuirks YASHAN_QUIRKS = new JdbcDriverQuirks(
         true,
         true,
@@ -88,6 +92,7 @@ public final class DbxJdbcPlugin {
         false,
         false,
         false,
+        null,
         StatementMaxRowsMode.APPLY_STATEMENT_MAX_ROWS
     );
     private static final JdbcDriverQuirks IRIS_QUIRKS = new JdbcDriverQuirks(
@@ -98,6 +103,7 @@ public final class DbxJdbcPlugin {
         false,
         false,
         false,
+        null,
         StatementMaxRowsMode.READ_LOOP_ONLY
     );
     private static final JdbcDriverQuirks ORACLE_QUIRKS = new JdbcDriverQuirks(
@@ -108,6 +114,7 @@ public final class DbxJdbcPlugin {
         false,
         false,
         false,
+        null,
         StatementMaxRowsMode.APPLY_STATEMENT_MAX_ROWS
     );
     private static final List<JdbcDriverQuirkRule> DRIVER_QUIRK_RULES = List.of(
@@ -122,7 +129,8 @@ public final class DbxJdbcPlugin {
         new JdbcDriverQuirkRule("jdbc:oracle:", ORACLE_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:dm:", ORACLE_QUIRKS),
         new JdbcDriverQuirkRule("jdbc:taos:", TAOS_QUIRKS),
-        new JdbcDriverQuirkRule("jdbc:taos-ws:", TAOS_QUIRKS)
+        new JdbcDriverQuirkRule("jdbc:taos-ws:", TAOS_QUIRKS),
+        new JdbcDriverQuirkRule("jdbc:taos-rs:", TAOS_QUIRKS)
     );
     private static String registeredDriverKey = "";
     private static String sharedConnectionKey = "";
@@ -137,6 +145,7 @@ public final class DbxJdbcPlugin {
         boolean ignoreCatalogForSchemaMetadata,
         boolean preferExecuteQueryForResultSetSql,
         boolean schemasAsDatabasesFallback,
+        String databaseClientInfoProperty,
         StatementMaxRowsMode statementMaxRowsMode
     ) {
         JdbcDriverQuirks withUseCatalogFallbackSql(boolean value) {
@@ -148,6 +157,7 @@ public final class DbxJdbcPlugin {
                 ignoreCatalogForSchemaMetadata,
                 preferExecuteQueryForResultSetSql,
                 schemasAsDatabasesFallback,
+                databaseClientInfoProperty,
                 statementMaxRowsMode
             );
         }
@@ -161,6 +171,7 @@ public final class DbxJdbcPlugin {
                 value,
                 preferExecuteQueryForResultSetSql,
                 schemasAsDatabasesFallback,
+                databaseClientInfoProperty,
                 statementMaxRowsMode
             );
         }
@@ -174,6 +185,7 @@ public final class DbxJdbcPlugin {
                 ignoreCatalogForSchemaMetadata,
                 value,
                 schemasAsDatabasesFallback,
+                databaseClientInfoProperty,
                 statementMaxRowsMode
             );
         }
@@ -186,6 +198,21 @@ public final class DbxJdbcPlugin {
                 useCatalogFallbackSql,
                 ignoreCatalogForSchemaMetadata,
                 preferExecuteQueryForResultSetSql,
+                value,
+                databaseClientInfoProperty,
+                statementMaxRowsMode
+            );
+        }
+
+        JdbcDriverQuirks withDatabaseClientInfoProperty(String value) {
+            return new JdbcDriverQuirks(
+                skipExecutionContext,
+                useOracleMetadata,
+                caseInsensitiveSchemaMetadata,
+                useCatalogFallbackSql,
+                ignoreCatalogForSchemaMetadata,
+                preferExecuteQueryForResultSetSql,
+                schemasAsDatabasesFallback,
                 value,
                 statementMaxRowsMode
             );
@@ -1505,7 +1532,8 @@ public final class DbxJdbcPlugin {
     }
 
     private static void applyExecutionContext(JsonNode connection, Connection conn, String database, String schema) throws SQLException {
-        if (driverQuirks(connection).skipExecutionContext()) {
+        JdbcDriverQuirks quirks = driverQuirks(connection);
+        if (quirks.skipExecutionContext()) {
             return;
         }
         String catalog = emptyToNull(database);
@@ -1514,7 +1542,13 @@ public final class DbxJdbcPlugin {
                 conn.setCatalog(catalog);
             } catch (SQLFeatureNotSupportedException | AbstractMethodError | UnsupportedOperationException ignored) {
             }
-            if (driverQuirks(connection).useCatalogFallbackSql()) {
+            if (quirks.databaseClientInfoProperty() != null) {
+                try {
+                    conn.setClientInfo(quirks.databaseClientInfoProperty(), catalog);
+                } catch (SQLClientInfoException | AbstractMethodError | UnsupportedOperationException ignored) {
+                }
+            }
+            if (quirks.useCatalogFallbackSql()) {
                 applyUseCatalogFallback(conn, catalog);
             }
         }
