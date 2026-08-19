@@ -51,7 +51,7 @@ function objectGroup(type: "group-views" | "group-procedures", key: string, chil
   };
 }
 
-function installApiMocks(options?: { listTables?: ReturnType<typeof vi.fn>; listObjects?: ReturnType<typeof vi.fn>; loadSchemaCache?: ReturnType<typeof vi.fn> }) {
+function installApiMocks(options?: { listTables?: ReturnType<typeof vi.fn>; listObjects?: ReturnType<typeof vi.fn> }) {
   vi.doMock("@/lib/backend/tauriRuntime", () => ({ isTauriRuntime: () => false }));
   vi.doMock("@/lib/backend/api", () => ({
     checkConnectionHealth: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +59,7 @@ function installApiMocks(options?: { listTables?: ReturnType<typeof vi.fn>; list
     listInstalledAgents: vi.fn().mockResolvedValue([]),
     listObjects: options?.listObjects ?? vi.fn().mockResolvedValue([]),
     listTables: options?.listTables ?? vi.fn().mockResolvedValue([]),
-    loadSchemaCache: options?.loadSchemaCache ?? vi.fn().mockResolvedValue(null),
+    loadSchemaCache: vi.fn().mockResolvedValue(null),
     saveConnections: vi.fn().mockResolvedValue(undefined),
     saveSchemaCache: vi.fn().mockResolvedValue(undefined),
     saveSidebarLayout: vi.fn().mockResolvedValue(undefined),
@@ -130,51 +130,5 @@ describe("connectionStore tree refresh state", () => {
     expect(store.isTreeNodeChildrenLoaded(root.id)).toBe(true);
     expect(store.isTreeNodeChildrenLoaded(viewsGroupId)).toBe(false);
     expect(store.isTreeNodeChildrenLoaded(proceduresGroupId)).toBe(false);
-  });
-
-  describe("reconcileLoadedObjectGroupNode", () => {
-    function viewsGroupFixture() {
-      const oldView: TreeNode = { id: "pg-1:app:public:old_view", label: "old_view", type: "view", connectionId: "pg-1", database: "app", schema: "public" };
-      const viewsGroup = objectGroup("group-views", "__views", oldView);
-      const root = schemaNode([viewsGroup]);
-      return { viewsGroup, root };
-    }
-
-    it("stays request-free on repeated re-expand while the persisted cache is fresh", async () => {
-      const listTables = vi.fn().mockResolvedValue([{ name: "fresh_view", table_type: "VIEW", comment: null }]);
-      const loadSchemaCache = vi.fn().mockResolvedValue({ version: 3, cachedAt: new Date().toISOString(), children: [] });
-      installApiMocks({ listTables, loadSchemaCache });
-      const { viewsGroup, root } = viewsGroupFixture();
-      const store = await createStore(root);
-
-      await store.reconcileLoadedObjectGroupNode(viewsGroup);
-      await store.reconcileLoadedObjectGroupNode(viewsGroup);
-      await store.reconcileLoadedObjectGroupNode(viewsGroup);
-
-      expect(listTables).not.toHaveBeenCalled();
-    });
-
-    it("does not fire a request when there is no persisted cache entry to check", async () => {
-      const listTables = vi.fn().mockResolvedValue([]);
-      installApiMocks({ listTables });
-      const { viewsGroup, root } = viewsGroupFixture();
-      const store = await createStore(root);
-
-      await store.reconcileLoadedObjectGroupNode(viewsGroup);
-
-      expect(listTables).not.toHaveBeenCalled();
-    });
-
-    it("dedupes overlapping reconciliations once the persisted cache goes stale", async () => {
-      const listTables = vi.fn().mockResolvedValue([{ name: "fresh_view", table_type: "VIEW", comment: null }]);
-      const staleCachedAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
-      const loadSchemaCache = vi.fn().mockResolvedValue({ version: 3, cachedAt: staleCachedAt, children: [] });
-      installApiMocks({ listTables, loadSchemaCache });
-      const { viewsGroup, root } = viewsGroupFixture();
-      const store = await createStore(root);
-
-      await Promise.all([store.reconcileLoadedObjectGroupNode(viewsGroup), store.reconcileLoadedObjectGroupNode(viewsGroup)]);
-      await vi.waitFor(() => expect(listTables).toHaveBeenCalledOnce());
-    });
   });
 });

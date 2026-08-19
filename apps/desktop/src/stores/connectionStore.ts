@@ -2125,16 +2125,6 @@ export const useConnectionStore = defineStore("connection", () => {
       .finally(() => staleTreeRefreshIds.delete(liveNode.id));
   }
 
-  // Cheap local cache check so a loaded-node re-expand only escalates to
-  // refreshStaleTreeNode (which dedupes) once SCHEMA_TREE_CACHE_TTL_MS has elapsed.
-  async function reconcileLoadedObjectGroupNode(node: TreeNode) {
-    const cacheKey = objectGroupCacheKey(node);
-    const payload = await api.loadSchemaCache<unknown>(cacheKey).catch(() => null);
-    const decoded = decodeSchemaTreeCache<TreeNode[]>(payload);
-    if (!decoded || !decoded.isStale) return;
-    refreshStaleTreeNode(node);
-  }
-
   async function loadPersistedTreeChildren(node: TreeNode, cacheKey: string, load: TreeNodeLoadHandle): Promise<PersistedTreeChildrenLoadResult> {
     const trace = createMetadataLoadTrace({
       kind: "persisted-tree-cache",
@@ -8086,7 +8076,6 @@ export const useConnectionStore = defineStore("connection", () => {
     collapseAllTreeNodes,
     refreshSidebarObjectPagination,
     refreshTreeNode,
-    reconcileLoadedObjectGroupNode,
     refreshDatabaseTreeNode,
     refreshObjectListTreeNode,
     connectedIds,
