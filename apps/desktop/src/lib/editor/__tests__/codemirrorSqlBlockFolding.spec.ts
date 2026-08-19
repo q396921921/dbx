@@ -80,6 +80,32 @@ describe("sqlBlockFoldService", () => {
     expect(folded).toContain("END CATCH;"); // outer BEGIN must extend all the way to the real outer END
   });
 
+  it.each(["BEGIN TRAN", "begin transaction", "BeGiN DiStRiBuTeD TrAnSaCtIoN"])("does not treat SQL Server %s as a block opener inside BEGIN...END", (transactionBegin) => {
+    const sql = `BEGIN
+  ${transactionBegin};
+  SELECT CASE
+    WHEN 1 = 1 THEN 1
+    ELSE 0
+  END;
+  COMMIT TRAN;
+END`;
+    const state = stateFor(sql, "sqlserver");
+
+    expect(foldedTextAtLine(state, 2)).toBeNull();
+    expect(foldedTextAtLine(state, 3)).toBe("\n    WHEN 1 = 1 THEN 1\n    ELSE 0\n  ");
+    const folded = foldedTextAtLine(state, 1);
+    expect(folded).not.toBeNull();
+    expect(folded).toContain("COMMIT TRAN;");
+  });
+
+  it("keeps a similarly prefixed BEGIN word as an ordinary block opener", () => {
+    const sql = "BEGIN TRANS\n  SELECT CASE\n    WHEN 1 = 1 THEN 1\n  END;\nEND";
+    const state = stateFor(sql, "sqlserver");
+
+    expect(foldedTextAtLine(state, 1)).toContain("SELECT CASE");
+    expect(foldedTextAtLine(state, 2)).toBe("\n    WHEN 1 = 1 THEN 1\n  ");
+  });
+
   it("ignores keywords inside string/identifier/comment text", () => {
     const sql = "BEGIN\n  SELECT 'BEGIN END CASE', \"END\";\n  /* BEGIN nested comment END */\nEND";
     const state = stateFor(sql);

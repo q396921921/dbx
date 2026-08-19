@@ -41,6 +41,23 @@ const UNTRACKED_END_CONTINUATIONS = new Set(["IF", "WHILE", "LOOP"]);
 // between the two words (e.g. a `;` starting an unrelated statement) still fails the check.
 const GAP_IS_WHITESPACE_OR_COMMENT = /^(?:\s|--[^\n]*|\/\*[\s\S]*?\*\/)*$/;
 
+// T-SQL transaction openers do not have a matching `END`, so they must not consume the closer
+// of an enclosing procedural `BEGIN...END` block. Match complete keyword tokens only: `TRAN` is
+// SQL Server's documented abbreviation, while similar identifiers such as `TRANS` remain blocks.
+const SQLSERVER_TRANSACTION_BEGIN_WORDS = new Set(["TRAN", "TRANSACTION"]);
+
+function isSqlServerTransactionBegin(state: EditorState, tokens: SyntaxNode[], index: number): boolean {
+  const next = tokens[index + 1];
+  if (!next || !GAP_IS_WHITESPACE_OR_COMMENT.test(state.sliceDoc(tokens[index].to, next.from))) return false;
+
+  const nextText = state.sliceDoc(next.from, next.to).toUpperCase();
+  if (SQLSERVER_TRANSACTION_BEGIN_WORDS.has(nextText)) return true;
+  if (nextText !== "DISTRIBUTED") return false;
+
+  const transaction = tokens[index + 2];
+  return Boolean(transaction && GAP_IS_WHITESPACE_OR_COMMENT.test(state.sliceDoc(next.to, transaction.from)) && state.sliceDoc(transaction.from, transaction.to).toUpperCase() === "TRANSACTION");
+}
+
 // Keyed by the `Tree` instance (not `Text`): the syntax tree is also invalidated when the SQL
 // dialect is reconfigured with the document unchanged (QueryEditor.vue's databaseType/dialect
 // watcher), and when Lezer's incremental parser finishes covering more of a large document in the
@@ -84,7 +101,7 @@ function computeBlockFoldRanges(state: EditorState): Map<number, FoldRange> {
           byOpenerLine.set(openerLine.number, { from: openerLine.to, to: token.from });
         }
       }
-    } else if (BLOCK_OPENERS.has(text)) {
+    } else if (BLOCK_OPENERS.has(text) && (text !== "BEGIN" || !isSqlServerTransactionBegin(state, tokens, i))) {
       stack.push(token);
     }
   }
