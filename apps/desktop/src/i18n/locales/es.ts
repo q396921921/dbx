@@ -6138,6 +6138,7 @@ export default withEnglishFallback({
     mcpScopeSelectedCount: "{count} conexiones seleccionadas",
     mcpCodexConfig: "Configuración de Codex",
     mcpCodexConfigPath: "Codex puede usar ~/.codex/config.toml o .codex/config.toml dentro del proyecto.",
+    mcpDeepSeekHarnessConfigPath: "Para dsh web, combina esta entrada insert con $DSH_HOME/profiles/web/cordis.patch.yml; sustituye web para otro perfil. No sobrescribas las entradas patch existentes. Verifica con dsh web --dump-config o deja que HMR recargue el cambio.",
     mcpCursorConfigPath: "Cursor puede usar .cursor/mcp.json en el proyecto o ~/.cursor/mcp.json globalmente.",
     mcpTraeConfigPath: "TRAE: Configuración > MCP > Agregar > Agregar manualmente; luego pega la configuración JSON.",
     mcpCherryStudioConfigPath: "Cherry Studio: Configuración > Servidores MCP > Agregar servidor > Importar JSON; luego pega la configuración.",

@@ -6152,6 +6152,7 @@ export default withEnglishFallback({
     mcpScopeSelectedCount: "{count}件の接続を選択中",
     mcpCodexConfig: "Codex設定",
     mcpCodexConfigPath: "Codexは ~/.codex/config.toml またはプロジェクトレベルの .codex/config.toml を使用できます。",
+    mcpDeepSeekHarnessConfigPath: "dsh web では、この insert エントリを $DSH_HOME/profiles/web/cordis.patch.yml に追加します。別の profile では web を置き換えてください。既存の patch エントリは上書きしないでください。dsh web --dump-config で確認するか、HMR で変更を再読み込みできます。",
     mcpCursorConfigPath: "Cursorはプロジェクトの .cursor/mcp.json またはグローバル ~/.cursor/mcp.json を使用できます。",
     mcpTraeConfigPath: "TRAE: 設定 > MCP > 追加 > 手動で追加 からJSON設定を貼り付けます。",
     mcpCherryStudioConfigPath: "Cherry Studio: 設定 > MCPサーバー > サーバーを追加 > JSONをインポート から設定を貼り付けます。",
