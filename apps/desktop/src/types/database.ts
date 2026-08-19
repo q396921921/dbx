@@ -64,6 +64,7 @@ export type DatabaseType =
   | "bigquery"
   | "kylin"
   | "ignite"
+  | "ignite3"
   | "sundb"
   | "oscar"
   | "tdengine"

@@ -40,6 +40,7 @@ const DRIVER_STARTUP_FLOOR_TYPES = new Set<DatabaseType>([
   "bigquery",
   "kylin",
   "ignite",
+  "ignite3",
   "sundb",
   "oscar",
   "tdengine",

@@ -601,6 +601,7 @@ pub enum DatabaseType {
     #[serde(rename = "questdb")]
     Questdb,
     Ignite,
+    Ignite3,
     Jdbc,
     /// Message queue admin connection (Pulsar / Kafka / RocketMQ). The specific
     /// system is determined by `external_config.systemKind`.
@@ -1145,6 +1146,7 @@ impl ConnectionConfig {
             }
             DatabaseType::Questdb => format!("questdb://{host}:{port}{db_part}"),
             DatabaseType::Ignite => format!("ignite://{host}:{port}{db_part}"),
+            DatabaseType::Ignite3 => format!("ignite3://{host}:{port}{db_part}"),
             DatabaseType::Gbase => format!("gbase://{host}:{port}{db_part}"),
             DatabaseType::H2 => format!("h2://{host}:{port}{db_part}"),
             DatabaseType::Snowflake => format!("snowflake://{host}/{db_part}"),
@@ -1351,6 +1353,9 @@ impl ConnectionConfig {
             }
             DatabaseType::Ignite => {
                 format!("ignite://{}:{}@{host}:{port}{db_part}", username, password)
+            }
+            DatabaseType::Ignite3 => {
+                format!("ignite3://{}:{}@{host}:{port}{db_part}", username, password)
             }
             DatabaseType::Gbase => {
                 format!("gbase://{}:{}@{host}:{port}{db_part}", username, password)

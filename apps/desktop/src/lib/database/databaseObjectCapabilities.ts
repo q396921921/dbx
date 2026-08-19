@@ -79,6 +79,7 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   ["bigquery", TABLE_VIEW_OBJECTS],
   ["kylin", TABLE_VIEW_OBJECTS],
   ["ignite", TABLE_VIEW_OBJECTS],
+  ["ignite3", TABLE_VIEW_OBJECTS],
   ["tdengine", TABLE_VIEW_OBJECTS],
   ["iotdb", TABLE_VIEW_OBJECTS],
   ["neo4j", TABLE_VIEW_OBJECTS],

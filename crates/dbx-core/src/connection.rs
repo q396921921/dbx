@@ -222,6 +222,7 @@ macro_rules! agent_connection_pool_database_type {
             | DatabaseType::Bigquery
             | DatabaseType::Kylin
             | DatabaseType::Ignite
+            | DatabaseType::Ignite3
             | DatabaseType::Sundb
             | DatabaseType::Oscar
             | DatabaseType::Tdengine
