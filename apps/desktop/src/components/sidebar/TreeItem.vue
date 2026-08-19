@@ -1024,7 +1024,7 @@ const {
   // together; otherwise just the grabbed one (issue #681).
   const selected = connectionStore.selectedTreeNodeIds;
   const draggedIds = selected.length > 1 && selected.includes(draggedId) ? [...selected] : [draggedId];
-  connectionStore.reorderSidebarEntries(draggedIds, targetId, position);
+  connectionStore.reorderSidebarEntries(draggedIds, targetId, position, { preserveSameGroupOrder: props.moveToGroupOnly });
 });
 
 const canReorderTreeNode = computed(() => {

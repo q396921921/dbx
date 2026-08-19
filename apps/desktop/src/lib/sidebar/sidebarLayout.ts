@@ -354,6 +354,20 @@ export function moveConnectionToGroup(layout: SidebarLayout, connectionId: strin
 
 export type DropPosition = "before" | "after" | "inside";
 
+export interface ReorderEntriesOptions {
+  preserveSameGroupOrder?: boolean;
+}
+
+function findEntryParentGroupId(entries: SidebarOrderEntry[], entryId: string, parentGroupId: string | null = null): string | null | undefined {
+  for (const entry of entries) {
+    if (entry.id === entryId) return parentGroupId;
+    if (entry.type !== "group") continue;
+    const found = findEntryParentGroupId(entryChildren(entry), entryId, entry.id);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 export function reorderEntry(layout: SidebarLayout, draggedId: string, targetId: string, position: DropPosition): SidebarLayout {
   if (draggedId === targetId) return layout;
 
@@ -385,6 +399,16 @@ export function reorderEntry(layout: SidebarLayout, draggedId: string, targetId:
 
   if (!insertNear(order)) order.push(dragged);
   return { ...layout, order };
+}
+
+export function reorderEntries(layout: SidebarLayout, draggedIds: string[], targetId: string, position: DropPosition, options: ReorderEntriesOptions = {}): SidebarLayout {
+  let nextLayout = layout;
+  for (const draggedId of draggedIds) {
+    if (draggedId === targetId) continue;
+    if (position === "inside" && options.preserveSameGroupOrder && findEntryParentGroupId(nextLayout.order, draggedId) === targetId) continue;
+    nextLayout = reorderEntry(nextLayout, draggedId, targetId, position);
+  }
+  return nextLayout;
 }
 
 export function createGroup(layout: SidebarLayout, name: string, parentGroupId?: string | null): { layout: SidebarLayout; groupId: string } {
