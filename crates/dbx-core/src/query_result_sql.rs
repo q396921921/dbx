@@ -9,7 +9,8 @@ use crate::sql_dialect::{
     firebird_rows_clause, pagination_strategy, quote_table_identifier, PaginationContext, TablePaginationStrategy,
 };
 use sqlparser::ast::{
-    visit_expressions, Expr, GroupByExpr, OrderByKind, Select, SelectItem, SetExpr, Statement, Value, ValueWithSpan,
+    visit_expressions, Expr, GroupByExpr, LimitClause, OrderByKind, Select, SelectItem, SetExpr, Statement, Value,
+    ValueWithSpan,
 };
 use sqlparser::dialect::{ClickHouseDialect, GenericDialect, MsSqlDialect, MySqlDialect};
 use sqlparser::parser::Parser;
@@ -521,7 +522,10 @@ fn has_top_level_select_into(sql: &str) -> bool {
 }
 
 fn add_sql_server_offset_fetch(statement: &str, limit: usize, offset: usize) -> Option<String> {
-    if has_top_level_offset_fetch_next(statement) {
+    // 用户已写 OFFSET/FETCH 时必须原样保留，不能再注入 TOP（两者同块会被 SQL Server 拒绝）。
+    // 词法检测与 AST 检测任一命中即视为已有分页：词法扫描器在 # 临时表、
+    // 反斜杠字符串等场景会漏检，AST 检测负责把这些情况补上。
+    if has_top_level_offset_fetch_next(statement) || sql_server_ast_has_offset_or_fetch(statement) {
         return (offset == 0).then(|| statement.to_string());
     }
     if has_top_level_select_top(statement) {
@@ -534,11 +538,11 @@ fn add_sql_server_offset_fetch(statement: &str, limit: usize, offset: usize) -> 
 
     let order_by_index = find_top_level_trailing_order_by(statement);
     if order_by_index.is_none() && has_top_level_select_distinct(statement) {
-        return (offset == 0).then(|| add_sql_server_top(statement, limit));
+        return (offset == 0).then(|| inject_sql_server_top(statement, limit));
     }
 
     if offset == 0 {
-        return Some(add_sql_server_top(statement, limit));
+        return Some(inject_sql_server_top(statement, limit));
     }
 
     let statement_without_order = order_by_index.map(|index| statement[..index].trim_end()).unwrap_or(statement);
@@ -1232,10 +1236,9 @@ fn derived_projection_name(item: &SelectItem) -> Option<&str> {
     }
 }
 
-fn add_sql_server_top(sql: &str, limit: usize) -> String {
-    if has_top_level_select_top(sql) || has_top_level_offset_fetch_next(sql) {
-        return sql.to_string();
-    }
+/// Inserts TOP after add_sql_server_offset_fetch has ruled out an existing
+/// TOP or OFFSET/FETCH clause, avoiding a second AST parse on the first page.
+fn inject_sql_server_top(sql: &str, limit: usize) -> String {
     if sql.len() >= 6 && sql[..6].eq_ignore_ascii_case("SELECT") {
         let rest = &sql[6..];
         if let Some((leading, after_modifier)) = strip_sql_server_select_modifier(rest, "DISTINCT") {
@@ -1484,6 +1487,26 @@ fn has_top_level_offset_fetch_next(sql: &str) -> bool {
     let has_offset = tokens.iter().any(|token| token.text == "OFFSET");
     let has_fetch_next = tokens.windows(2).any(|w| w[0].text == "FETCH" && w[1].text == "NEXT");
     has_offset && has_fetch_next
+}
+
+/// 用 sqlparser AST 判断 SQL Server 语句顶层是否已带 OFFSET 或 FETCH。
+/// 词法扫描器（top_level_sql_tokens）存在三类漏检：
+/// 1. 把 `#`/`##` 临时表前缀当成注释跳过到行尾，丢掉同一行后面的 OFFSET/FETCH；
+/// 2. 要求 OFFSET 与 FETCH NEXT 同时出现，漏掉只写 `OFFSET n ROWS` 的合法语句；
+/// 3. 把字符串里的反斜杠当转义符，引号配对错乱后丢失后续词法。
+///
+/// AST 解析不受这些影响，因此作为补充检测，避免向已有分页的语句注入 TOP。
+fn sql_server_ast_has_offset_or_fetch(statement: &str) -> bool {
+    // 解析失败时返回 false，交由原有词法检测结果决定，不改变既有行为。
+    let Ok(statements) = Parser::parse_sql(&MsSqlDialect {}, statement) else {
+        return false;
+    };
+    let [Statement::Query(query)] = statements.as_slice() else {
+        return false;
+    };
+    // OFFSET 挂在 limit_clause 里（可能是 `OFFSET n ROWS` 单独出现，也可能与 FETCH 同时出现）。
+    let has_offset = matches!(&query.limit_clause, Some(LimitClause::LimitOffset { offset: Some(_), .. }));
+    has_offset || query.fetch.is_some()
 }
 
 fn add_fetch_first_limit(statement: &str, limit: usize, offset: usize) -> String {
@@ -3094,16 +3117,103 @@ WHERE u.id = picked.id;
     }
 
     #[test]
-    fn keeps_sqlserver_offset_fetch_next_when_offset_is_zero() {
+    fn sqlserver_first_page_preserves_existing_pagination_or_injects_top() {
+        for (original_sql, expected_sql) in [
+            (
+                "SELECT * FROM TABLE_NAME ORDER BY id OFFSET 1 ROWS FETCH NEXT 10 ROWS ONLY",
+                "SELECT * FROM TABLE_NAME ORDER BY id OFFSET 1 ROWS FETCH NEXT 10 ROWS ONLY",
+            ),
+            ("SELECT id FROM TABLE_NAME", "SELECT TOP (100) id FROM TABLE_NAME"),
+        ] {
+            let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+                original_sql: original_sql.to_string(),
+                database_type: Some(DatabaseType::SqlServer),
+                limit: 100,
+                offset: 0,
+            });
+
+            assert!(result.ok, "{original_sql}");
+            assert_eq!(result.sql.as_deref(), Some(expected_sql), "{original_sql}");
+        }
+    }
+
+    // 临时表 #tmp 会让词法扫描器把同一行后面的 OFFSET/FETCH 当成注释丢掉，
+    // 必须靠 AST 检测拦住 TOP 注入，否则 SQL Server 报“TOP 不能与 OFFSET 同用”。
+    #[test]
+    fn keeps_sqlserver_offset_fetch_next_with_temp_table_on_same_line() {
         let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
-            original_sql: "SELECT * FROM TABLE_NAME ORDER BY id OFFSET 1 ROWS FETCH NEXT 10 ROWS ONLY".to_string(),
+            original_sql: "SELECT * FROM #tmp ORDER BY id OFFSET 0 ROWS FETCH NEXT 62000 ROWS ONLY".to_string(),
             database_type: Some(DatabaseType::SqlServer),
-            limit: 100,
+            limit: 500,
             offset: 0,
         });
 
         assert!(result.ok);
-        assert_eq!(result.sql.unwrap(), "SELECT * FROM TABLE_NAME ORDER BY id OFFSET 1 ROWS FETCH NEXT 10 ROWS ONLY");
+        assert_eq!(result.sql.unwrap(), "SELECT * FROM #tmp ORDER BY id OFFSET 0 ROWS FETCH NEXT 62000 ROWS ONLY");
+    }
+
+    // 全局临时表 ##tmp 同样不能被注入 TOP。
+    #[test]
+    fn keeps_sqlserver_offset_fetch_next_with_global_temp_table() {
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT * FROM ##tmp ORDER BY id OFFSET 0 ROWS FETCH NEXT 62000 ROWS ONLY".to_string(),
+            database_type: Some(DatabaseType::SqlServer),
+            limit: 500,
+            offset: 0,
+        });
+
+        assert!(result.ok);
+        assert_eq!(result.sql.unwrap(), "SELECT * FROM ##tmp ORDER BY id OFFSET 0 ROWS FETCH NEXT 62000 ROWS ONLY");
+    }
+
+    // 只写 OFFSET 不写 FETCH NEXT 也是 SQL Server 合法分页写法，同样不能注入 TOP。
+    #[test]
+    fn keeps_sqlserver_offset_without_fetch_next() {
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT * FROM t ORDER BY id OFFSET 0 ROWS".to_string(),
+            database_type: Some(DatabaseType::SqlServer),
+            limit: 500,
+            offset: 0,
+        });
+
+        assert!(result.ok);
+        assert_eq!(result.sql.unwrap(), "SELECT * FROM t ORDER BY id OFFSET 0 ROWS");
+    }
+
+    // 字符串里的反斜杠会让词法扫描器引号配对错乱，AST 检测需补位。
+    #[test]
+    fn keeps_sqlserver_offset_fetch_next_with_backslash_string() {
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"
+                .to_string(),
+            database_type: Some(DatabaseType::SqlServer),
+            limit: 500,
+            offset: 0,
+        });
+
+        assert!(result.ok);
+        assert_eq!(
+            result.sql.unwrap(),
+            "SELECT * FROM t WHERE p = 'C:\\' ORDER BY id OFFSET 0 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
+    }
+
+    // UNION 顶层的 OFFSET/FETCH 也不能被注入 TOP。
+    #[test]
+    fn keeps_sqlserver_offset_fetch_next_after_union() {
+        let result = build_paginated_query_sql(PaginatedQuerySqlOptions {
+            original_sql: "SELECT id FROM a UNION SELECT id FROM b ORDER BY id OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY"
+                .to_string(),
+            database_type: Some(DatabaseType::SqlServer),
+            limit: 500,
+            offset: 0,
+        });
+
+        assert!(result.ok);
+        assert_eq!(
+            result.sql.unwrap(),
+            "SELECT id FROM a UNION SELECT id FROM b ORDER BY id OFFSET 5 ROWS FETCH NEXT 10 ROWS ONLY"
+        );
     }
 
     #[test]
