@@ -24,6 +24,9 @@ static CLICKHOUSE_STRICTNESS_FIRST_JOIN_RE: LazyLock<Regex> = LazyLock::new(|| {
 static POSTGRES_DEFAULT_PRIVILEGES_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*ALTER\s+DEFAULT\s+PRIVILEGES\b").expect("valid PostgreSQL default privileges regex")
 });
+static POSTGRES_CREATE_PROCEDURE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*CREATE\s+(?:OR\s+REPLACE\s+)?PROCEDURE\b").expect("valid PostgreSQL create procedure regex")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SqlReferenceAnalysis {
@@ -543,7 +546,11 @@ fn starts_with_duckdb_parser_gap_sql(sql: &str) -> bool {
 }
 
 fn starts_with_postgres_parser_gap_sql(sql: &str) -> bool {
-    POSTGRES_DEFAULT_PRIVILEGES_RE.is_match(sql)
+    // sqlparser's Postgres CREATE PROCEDURE support can't parse the dollar-quoted plpgsql
+    // bodies Postgres itself requires (`AS $$ ... $$`), and separately rejects `OR REPLACE`
+    // before ever reaching the PROCEDURE keyword. Both are upstream parser gaps, not real
+    // syntax errors, so skip diagnostics rather than show a false "sql parser error".
+    POSTGRES_DEFAULT_PRIVILEGES_RE.is_match(sql) || POSTGRES_CREATE_PROCEDURE_RE.is_match(sql)
 }
 
 fn normalize_clickhouse_join_order_for_parser(sql: &str) -> String {

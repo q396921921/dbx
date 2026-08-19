@@ -647,6 +647,19 @@ fn sqlserver_option_functions_and_invalid_hints_are_not_suppressed() {
 }
 
 #[test]
+fn postgres_create_procedure_bodies_do_not_raise_syntax_errors() {
+    let or_replace_with_default_param = "CREATE OR REPLACE PROCEDURE dwd.lzshklx_batch_update_device_id(\n    p_batch_size INT DEFAULT 100,\n    p_total_batches INT DEFAULT NULL\n)\nLANGUAGE plpgsql\nAS $$\nDECLARE\n    v_affected_rows INT;\nBEGIN\n    NULL;\nEND;\n$$;";
+    let plain_dollar_quoted = "CREATE PROCEDURE dwd.foo(p_id INT) LANGUAGE plpgsql AS $tag$ BEGIN NULL; END; $tag$;";
+
+    for sql in [or_replace_with_default_param, plain_dollar_quoted] {
+        let analysis = analyze_sql_references(sql, Some("postgres"))
+            .expect("postgres CREATE PROCEDURE should not surface a false parser error");
+        assert!(analysis.tables.is_empty());
+        assert!(analysis.columns.is_empty());
+    }
+}
+
+#[test]
 fn duckdb_parser_gap_queries_do_not_raise_syntax_errors() {
     for sql in ["FROM users;", "SUMMARIZE users;", "SUMMARISE users;"] {
         let analysis = analyze_sql_references(sql, Some("duckdb")).expect("duckdb parser gap query should analyze");
