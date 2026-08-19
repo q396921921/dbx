@@ -308,29 +308,42 @@ fn is_postgres_reserved_identifier(name: &str) -> bool {
 /// GaussDB/openGauss — `hot`, `nlssort`, and `warmup` aren't keywords at
 /// all, and `fenced`, `internal`, `plan`, `tsfield`, `tstag`, and `tstime`
 /// are `unreserved` — so quoting them would have reintroduced the
-/// case-locking bug this PR fixes. They've been dropped. The remaining 15
-/// words below are confirmed `reserved` or `reserved (can be function or
-/// type name)` on that instance; `compact` was additionally confirmed by
-/// running `CREATE TABLE ... (compact int)` unquoted, which fails with
-/// `ERROR: syntax error at or near "compact"`.
+/// case-locking bug this PR fixes. They've been dropped. `compact` was
+/// additionally confirmed by running `CREATE TABLE ... (compact int)`
+/// unquoted, which fails with `ERROR: syntax error at or near "compact"`.
+///
+/// A follow-up review on #6283 diffed this list against the *full*
+/// `pg_get_keywords()` result set from that same instance (653 rows) rather
+/// than spot-checking individual words, and found 7 more reserved words
+/// this hand-picked list had missed: `csn`, `excluded`, `groupparent`,
+/// `nocycle`, `rownum`, `shrink`, `verify`. All 22 words below have
+/// `catcode` `R` (`reserved`) or `T` (`reserved, can be function or type
+/// name`) on that instance.
 fn is_gaussdb_only_reserved_identifier(name: &str) -> bool {
     matches!(
         name,
         "authid"
             | "buckets"
             | "compact"
+            | "csn"
             | "deltamerge"
+            | "excluded"
+            | "groupparent"
             | "hdfsdirectory"
             | "less"
             | "maxvalue"
             | "minus"
             | "modify"
+            | "nocycle"
             | "performance"
             | "procedure"
             | "recyclebin"
             | "reject"
+            | "rownum"
+            | "shrink"
             | "sysdate"
             | "timecapsule"
+            | "verify"
     )
 }
 

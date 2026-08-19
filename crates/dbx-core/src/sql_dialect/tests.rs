@@ -70,23 +70,32 @@ fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
     // writable openGauss 5.0.0 instance's own `pg_get_keywords()` (not just
     // Huawei's GaussDB(DWS) doc) — see the comment on
     // `is_gaussdb_only_reserved_identifier` for how the DWS-derived list was
-    // trimmed down to these instance-confirmed words.
+    // trimmed down to these instance-confirmed words. `csn` through `verify`
+    // below were caught by diffing against the instance's full 653-row
+    // keyword catalog rather than spot-checking individual words.
     for name in [
         "authid",
         "buckets",
         "compact",
+        "csn",
         "deltamerge",
+        "excluded",
+        "groupparent",
         "hdfsdirectory",
         "less",
         "maxvalue",
         "minus",
         "modify",
+        "nocycle",
         "performance",
         "procedure",
         "recyclebin",
         "reject",
+        "rownum",
+        "shrink",
         "sysdate",
         "timecapsule",
+        "verify",
     ] {
         assert_eq!(
             quote_table_data_identifier(Some(DatabaseType::Gaussdb), name, Some("\"")),
@@ -102,7 +111,7 @@ fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
 
     // The same words are not reserved in real PostgreSQL, so the dialect-aware
     // check must not over-quote a genuine Postgres target.
-    for name in ["compact", "buckets", "sysdate", "minus", "modify"] {
+    for name in ["compact", "buckets", "sysdate", "minus", "modify", "excluded", "rownum", "verify"] {
         assert_eq!(
             quote_table_data_identifier(Some(DatabaseType::Postgres), name, Some("\"")),
             name,

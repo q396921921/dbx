@@ -8906,27 +8906,31 @@ mod tests {
         // set would leave it unquoted — but GaussDB reserves it (Huawei's
         // GaussDB(DWS) keyword reference lists it as "Reserved (functions and
         // types allowed)"), and unquoted `compact` is invalid in GaussDB DDL.
-        let cols = vec![test_column("compact", "int"), test_column("sysdate", "text")];
+        // `rownum`/`verify` (used below as the table/schema names) were caught
+        // by a follow-up full-catalog diff — see `is_gaussdb_only_reserved_identifier`.
+        let cols = vec![test_column("compact", "int"), test_column("sysdate", "text"), test_column("excluded", "text")];
 
         let ddl = generate_create_table_ddl(
             &cols,
-            "t",
+            "rownum",
             "",
-            "public",
+            "verify",
             &DatabaseType::Gaussdb,
             &DatabaseType::Mysql,
             None,
             None,
         );
 
+        assert!(ddl.contains("\"verify\".\"rownum\""), "target-only reserved schema/table must be quoted, ddl: {ddl}");
         assert!(ddl.contains("\"compact\""), "target-only reserved word must be quoted, ddl: {ddl}");
         assert!(ddl.contains("\"sysdate\""), "target-only reserved word must be quoted, ddl: {ddl}");
+        assert!(ddl.contains("\"excluded\""), "target-only reserved word must be quoted, ddl: {ddl}");
 
         let opengauss_ddl = generate_create_table_ddl(
             &cols,
-            "t",
+            "rownum",
             "",
-            "public",
+            "verify",
             &DatabaseType::OpenGauss,
             &DatabaseType::Mysql,
             None,
@@ -8935,6 +8939,45 @@ mod tests {
         assert!(
             opengauss_ddl.contains("\"compact\""),
             "OpenGauss must also quote target-only reserved word, ddl: {opengauss_ddl}"
+        );
+        assert!(
+            opengauss_ddl.contains("\"verify\".\"rownum\""),
+            "OpenGauss must also quote target-only reserved schema/table, ddl: {opengauss_ddl}"
+        );
+    }
+
+    #[test]
+    fn gaussdb_insert_quotes_target_only_reserved_words() {
+        // t8y2/dbx#6283 follow-up: the INSERT path shares `quote_transfer_identifier`
+        // with CREATE TABLE, but had no dedicated regression test — cover table,
+        // schema, and column names here with words missed by the original
+        // Postgres-only reserved-word check (`csn`, `groupparent`, `nocycle`,
+        // `shrink` weren't covered by the CREATE TABLE test above either).
+        let columns = vec!["id".to_string(), "csn".to_string(), "groupparent".to_string(), "nocycle".to_string()];
+        let rows = vec![vec![
+            serde_json::Value::from(1),
+            serde_json::Value::from(2),
+            serde_json::Value::from(3),
+            serde_json::Value::from(4),
+        ]];
+
+        let sql = generate_insert_typed(
+            &columns,
+            &vec![None; columns.len()],
+            &rows,
+            "shrink",
+            "verify",
+            &DatabaseType::Gaussdb,
+            None,
+        );
+
+        assert!(
+            sql.starts_with("INSERT INTO \"verify\".\"shrink\""),
+            "reserved schema/table must be quoted, sql: {sql}"
+        );
+        assert!(
+            sql.contains("(id, \"csn\", \"groupparent\", \"nocycle\")"),
+            "plain `id` must stay unquoted and the reserved words must be quoted, sql: {sql}"
         );
     }
 
