@@ -168,6 +168,7 @@ const props = defineProps<{
   node: TreeNode;
   depth: number;
   reorderDisabled?: boolean;
+  moveToGroupOnly?: boolean;
   referenceDragDisabled?: boolean;
   pendingRename?: boolean;
   highlighted?: boolean;
@@ -1028,7 +1029,7 @@ const {
   // together; otherwise just the grabbed one (issue #681).
   const selected = connectionStore.selectedTreeNodeIds;
   const draggedIds = selected.length > 1 && selected.includes(draggedId) ? [...selected] : [draggedId];
-  connectionStore.reorderSidebarEntries(draggedIds, targetId, position);
+  connectionStore.reorderSidebarEntries(draggedIds, targetId, position, { preserveSameGroupOrder: props.moveToGroupOnly });
 });
 
 const canReorderTreeNode = computed(() => {
@@ -1071,6 +1072,12 @@ function updateTreeDragTarget(event: MouseEvent) {
     return;
   }
   updateTarget(event, activeNode.value.id, activeNode.value.type);
+  // While the list is display-sorted, the underlying manual order used for
+  // before/after positioning is invisible, so only moving into a different
+  // group (a display-order-independent operation) is a coherent drop.
+  if (props.moveToGroupOnly && dragState.dropPosition !== "inside") {
+    clearTarget(activeNode.value.id);
+  }
 }
 
 function clearTreeDragTarget() {
@@ -1333,7 +1340,7 @@ function onKeydown(event: KeyboardEvent) {
     <LightTooltip :text="visibleLabel(node)" :disabled="isTooltipDisabled()" side="right" :side-offset="8" :delay="0" :close-delay="30" :surface="detailTooltip ? 'popover' : 'foreground'">
       <div
         ref="rowRef"
-        class="group flex cursor-default items-center gap-2 py-1 px-2 relative outline-none"
+        class="group flex cursor-default items-center gap-2 min-h-7 py-1 px-2 relative outline-none"
         style="contain: layout style"
         :class="[
           rowWidthClass,

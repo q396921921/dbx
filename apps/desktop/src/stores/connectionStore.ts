@@ -57,9 +57,11 @@ import {
   remapSidebarLayoutConnectionIds,
   mergeSidebarLayout,
   reorderEntry as reorderEntryOp,
+  reorderEntries as reorderEntriesOp,
   buildConnectionGroupPathMap,
   connectionSidebarSearchAliases,
   type DropPosition,
+  type ReorderEntriesOptions,
 } from "@/lib/sidebar/sidebarLayout";
 import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionObject, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
 import { mergeSqlObjectNavigationType, sqlObjectNavigationTypeFromTableType } from "@/lib/sql/sqlNavigation";
@@ -8293,17 +8295,9 @@ export const useConnectionStore = defineStore("connection", () => {
     reorderSidebarEntry(draggedId: string, targetId: string, position: DropPosition) {
       updateLayoutAndRebuild(reorderEntryOp(sidebarLayout.value, draggedId, targetId, position));
     },
-    reorderSidebarEntries(draggedIds: string[], targetId: string, position: DropPosition) {
-      // Apply each dragged entry in turn so a multi-selection moves together,
-      // not just the single grabbed row (issue #681).
-      let layout = sidebarLayout.value;
-      let changed = false;
-      for (const id of draggedIds) {
-        if (id === targetId) continue;
-        layout = reorderEntryOp(layout, id, targetId, position);
-        changed = true;
-      }
-      if (changed) updateLayoutAndRebuild(layout);
+    reorderSidebarEntries(draggedIds: string[], targetId: string, position: DropPosition, options?: ReorderEntriesOptions) {
+      const layout = reorderEntriesOp(sidebarLayout.value, draggedIds, targetId, position, options);
+      if (layout !== sidebarLayout.value) updateLayoutAndRebuild(layout);
     },
   };
 });

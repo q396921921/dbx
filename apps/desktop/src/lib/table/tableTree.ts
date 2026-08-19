@@ -410,6 +410,10 @@ export function mergeTableTreePageChildren(currentChildren: TreeNode[], pageChil
   const roots = [...currentChildren];
   const nodesByKey = new Map<string, TreeNode>();
   const rootKeys = new Set<string>();
+  // Non-table children (e.g. views in simple-display pagination) have no key
+  // bucket of their own; dedupe them by id so paging drift can never insert
+  // the same node twice. Duplicate ids break the sidebar scroller's key-field.
+  const rootNodeIds = new Set<string>(roots.map((node) => node.id));
 
   const nodeKey = (node: TreeNode) => exactObjectIdentityKey("TABLE", node.schema, node.label);
   const collect = (nodes: readonly TreeNode[]) => {
@@ -484,7 +488,10 @@ export function mergeTableTreePageChildren(currentChildren: TreeNode[], pageChil
 
   const addNode = (node: TreeNode) => {
     if (node.type !== "table") {
-      roots.push(node);
+      if (!rootNodeIds.has(node.id)) {
+        roots.push(node);
+        rootNodeIds.add(node.id);
+      }
       return;
     }
 
@@ -636,7 +643,9 @@ export function buildSimpleObjectTreeNodes({ nodeId, connectionId, database, sch
 
     const childSchema = obj.schema ? normalizeDatabaseObjectName(obj.schema) : schema;
     const signature = obj.signature?.trim() || "";
-    const dedupeKey = exactObjectIdentityKey(objectType, childSchema, name, signature);
+    const triggerParentName = objectType === "TRIGGER" && obj.parent_name ? normalizeDatabaseObjectName(obj.parent_name) : undefined;
+    const triggerParentSchema = objectType === "TRIGGER" && obj.parent_schema ? normalizeDatabaseObjectName(obj.parent_schema) : undefined;
+    const dedupeKey = `${exactObjectIdentityKey(objectType, childSchema, name, signature)}\0${triggerParentName || ""}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
@@ -657,8 +666,8 @@ export function buildSimpleObjectTreeNodes({ nodeId, connectionId, database, sch
     } else {
       const simpleNodeType = simpleObjectNodeType(objectType);
       objectNodes.push({
-        id: objectType === "VIEW" || objectType === "MATERIALIZED_VIEW" ? entry.node.id : `${nodeId}:${childSchema ? `${childSchema}:` : ""}${name}:${signature}:${objectType}`,
-        label: signature && (objectType === "FUNCTION" || objectType === "PROCEDURE") ? `${name}(${signature})` : name,
+        id: objectType === "VIEW" || objectType === "MATERIALIZED_VIEW" ? entry.node.id : `${nodeId}:${childSchema ? `${childSchema}:` : ""}${name}:${signature}:${triggerParentName || ""}:${objectType}`,
+        label: signature && (objectType === "FUNCTION" || objectType === "PROCEDURE") ? `${name}(${signature})` : triggerParentName ? `${name} (${triggerParentName})` : name,
         type: simpleNodeType,
         objectName: name,
         signature: signature || undefined,
@@ -673,6 +682,9 @@ export function buildSimpleObjectTreeNodes({ nodeId, connectionId, database, sch
         connectionId,
         database,
         schema: childSchema,
+        parentSchema: triggerParentSchema,
+        parentName: triggerParentName,
+        tableName: triggerParentName,
         isExpanded: false,
         children: undefined,
       });
@@ -834,7 +846,8 @@ export function buildGroupedObjectTreeNodes({ nodeId, connectionId, database, sc
     const t = normalizeObjectType(obj.object_type);
     const objectSchema = obj.schema ? normalizeDatabaseObjectName(obj.schema) : schema || "";
     const signature = (obj.signature ?? "").trim();
-    const key = exactObjectIdentityKey(t, objectSchema, name, signature);
+    const triggerParentName = t === "TRIGGER" && obj.parent_name ? normalizeDatabaseObjectName(obj.parent_name) : "";
+    const key = `${exactObjectIdentityKey(t, objectSchema, name, signature)}\0${triggerParentName}`;
     if (seen.has(key)) continue;
     seen.add(key);
     const arr = buckets.get(t) ?? [];
@@ -864,9 +877,11 @@ export function buildGroupedObjectTreeNodes({ nodeId, connectionId, database, sc
           const objectTypeSuffix = objectType === "PACKAGE" || objectType === "PACKAGE_BODY" || objectType === "TYPE" || objectType === "TYPE_BODY" ? `:${objectType}` : "";
           const signature = obj.signature?.trim() || "";
           const signatureIdPart = signature && (objectType === "FUNCTION" || objectType === "PROCEDURE") ? `:${signature}` : "";
+          const triggerParentName = objectType === "TRIGGER" && obj.parent_name ? normalizeDatabaseObjectName(obj.parent_name) : undefined;
+          const triggerParentSchema = objectType === "TRIGGER" && obj.parent_schema ? normalizeDatabaseObjectName(obj.parent_schema) : undefined;
           return {
-            id: `${nodeId}:${def.key}:${childSchema ? `${childSchema}:` : ""}${obj.name}${signatureIdPart}${objectTypeSuffix}`,
-            label: signature && (objectType === "FUNCTION" || objectType === "PROCEDURE") ? `${obj.name}(${signature})` : obj.name,
+            id: `${nodeId}:${def.key}:${childSchema ? `${childSchema}:` : ""}${obj.name}${signatureIdPart}${triggerParentName ? `:${triggerParentName}` : ""}${objectTypeSuffix}`,
+            label: signature && (objectType === "FUNCTION" || objectType === "PROCEDURE") ? `${obj.name}(${signature})` : triggerParentName ? `${obj.name} (${triggerParentName})` : obj.name,
             type: childType,
             objectName: obj.name,
             signature: signature || undefined,
@@ -881,6 +896,9 @@ export function buildGroupedObjectTreeNodes({ nodeId, connectionId, database, sc
             connectionId,
             database,
             schema: childSchema,
+            parentSchema: triggerParentSchema,
+            parentName: triggerParentName,
+            tableName: triggerParentName,
             isExpanded: false,
             children: undefined,
           };
