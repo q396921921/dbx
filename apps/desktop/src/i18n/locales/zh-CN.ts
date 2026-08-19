@@ -6804,6 +6804,18 @@ export default withEnglishFallback({
     beginOffset: "最小 Offset",
     endOffset: "最大 Offset",
     messageCount: "消息数",
+    // RabbitMQ 队列表格列（issue #6600）
+    rabbitmqQueueType: "类型",
+    rabbitmqQueueTypeHint: "Management API 报告的队列类型（type 或 x-queue-type）：classic / quorum / stream",
+    rabbitmqQueueTypeUnknown: "队列",
+    rabbitmqFeatures: "特性",
+    rabbitmqState: "状态",
+    rabbitmqArguments: "参数",
+    consumers: "消费者",
+    rabbitmqRates: "速率",
+    rabbitmqPublishRate: "发布",
+    rabbitmqDeliverRate: "投递/获取",
+    rabbitmqAckRate: "确认",
   },
   mqExchanges: {
     searchPlaceholder: "搜索交换机",

@@ -6819,6 +6819,18 @@ export default {
     beginOffset: "Min offset",
     endOffset: "Max offset",
     messageCount: "Messages",
+    // RabbitMQ queue table columns (issue #6600)
+    rabbitmqQueueType: "Type",
+    rabbitmqQueueTypeHint: "Queue type reported by the management API (type or x-queue-type); classic / quorum / stream",
+    rabbitmqQueueTypeUnknown: "Queue",
+    rabbitmqFeatures: "Features",
+    rabbitmqState: "State",
+    rabbitmqArguments: "Arguments",
+    consumers: "Consumers",
+    rabbitmqRates: "Rates",
+    rabbitmqPublishRate: "Publish",
+    rabbitmqDeliverRate: "Deliver/Get",
+    rabbitmqAckRate: "Ack",
   },
   mqExchanges: {
     searchPlaceholder: "Search exchanges",
