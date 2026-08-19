@@ -165,6 +165,15 @@ const MONGO_LEGACY_DRIVER_PROFILE = "mongodb-legacy";
 const MONGO_LEGACY_DRIVER_LABEL = "MongoDB (Legacy)";
 const XUGU_TABLE_CHILD_METADATA_AGENT_VERSION = "0.1.23";
 const SUPERSEDED_CONNECTION_ATTEMPT_MESSAGE = "Connection attempt was superseded by a newer attempt";
+const SHARDINGSPHERE_PROXY_VERSION_MARKER = "shardingsphere-proxy";
+
+function usesShardingSphereLogicalTables(databaseInfo: DatabaseConnectionInfo | undefined): boolean {
+  return databaseInfo?.productVersion?.toLowerCase().includes(SHARDINGSPHERE_PROXY_VERSION_MARKER) === true;
+}
+
+function mysqlTableListSourceChanged(config: ConnectionConfig, databaseInfo: DatabaseConnectionInfo): boolean {
+  return config.db_type === "mysql" && usesShardingSphereLogicalTables(config.database_info) !== usesShardingSphereLogicalTables(databaseInfo);
+}
 
 function normalizeTableNameFilter(filter: Partial<TableNameFilter> | undefined | null): TableNameFilter {
   const normalizePatterns = (patterns: unknown): string[] => (Array.isArray(patterns) ? patterns.map((pattern) => (typeof pattern === "string" ? pattern.trim() : "")).filter(Boolean) : []);
@@ -514,6 +523,7 @@ export const useConnectionStore = defineStore("connection", () => {
   const successfulLocalConnectionAttempts = new Map<string, number>();
   const connectionStateRevisions = new Map<string, number>();
   const connectionErrorRevisions = new Map<string, number>();
+  const tableListSourceRevisions = new Map<string, number>();
   const treeNodeLoads = new TreeNodeLoadRegistry();
   const filteredObjectGroupChildrenIds = new Set<string>();
   const primaryVisibleObjectRefreshInFlight = new Set<string>();
@@ -1646,13 +1656,24 @@ export const useConnectionStore = defineStore("connection", () => {
     });
   }
 
-  function tableNameFilterMetadataExtra(filter: TableNameFilter | undefined): MetadataScopeInput["extra"] {
-    return filter
-      ? {
-          tableNameFilterInclude: filter.includePatterns,
-          tableNameFilterExclude: filter.excludePatterns,
-        }
-      : undefined;
+  function tableListSourceRevision(connectionId: string): number {
+    return tableListSourceRevisions.get(connectionId) ?? 0;
+  }
+
+  function bumpTableListSourceRevision(connectionId: string): void {
+    tableListSourceRevisions.set(connectionId, tableListSourceRevision(connectionId) + 1);
+  }
+
+  function tableNameFilterMetadataExtra(filter: TableNameFilter | undefined, sourceRevision: number): MetadataScopeInput["extra"] {
+    return {
+      tableListSourceRevision: sourceRevision,
+      ...(filter
+        ? {
+            tableNameFilterInclude: filter.includePatterns,
+            tableNameFilterExclude: filter.excludePatterns,
+          }
+        : {}),
+    };
   }
 
   function setSidebarTableNameFilter(scopeKey: string, filter: TableNameFilter) {
@@ -1888,6 +1909,7 @@ export const useConnectionStore = defineStore("connection", () => {
       catalog: options.node.catalog,
     });
     const tableNameFilter = effectiveTableNameFilterForNode(options.node, userTableNameFilter);
+    const sourceRevision = tableListSourceRevision(options.node.connectionId);
     // A search must never truncate the fuzzy result set to the first page: the
     // target table can sort beyond it (e.g. "T_Erp_Nc_SuPlan_List" for
     // "erpncs" in a large ERP schema), which silently drops it from the first
@@ -1909,14 +1931,16 @@ export const useConnectionStore = defineStore("connection", () => {
         limit: fetchLimit,
         offset: fetchOffset,
         sidebarDisplayMode: "grouped",
-        extra: tableNameFilterMetadataExtra(tableNameFilter),
+        extra: tableNameFilterMetadataExtra(tableNameFilter, sourceRevision),
       }),
       () => listTablesWithOptionalTableNameFilter(options.node.connectionId!, options.node.database!, options.querySchema, searchFilter, fetchLimit, fetchOffset, options.objectTypes, options.node.catalog, tableNameFilter),
       { force: options.force },
     );
     const hasMore = searchFilter ? false : tables.length > options.pageSize;
     const pageTables = hasMore ? tables.slice(0, options.pageSize) : tables;
-    indexCompletionTables(options.node.connectionId, options.node.database, options.effectiveSchema, tableInfosToCompletionTables(pageTables, options.effectiveSchema));
+    if (tableListSourceRevision(options.node.connectionId) === sourceRevision) {
+      indexCompletionTables(options.node.connectionId, options.node.database, options.effectiveSchema, tableInfosToCompletionTables(pageTables, options.effectiveSchema));
+    }
     const objects = mergeTableInfosIntoObjects([], pageTables, options.effectiveSchema);
     const children = objectGroupChildrenFromObjects({
       node: options.node,
@@ -2004,6 +2028,7 @@ export const useConnectionStore = defineStore("connection", () => {
       schema: options.effectiveSchema ?? options.querySchema,
       nodeKind: "simple-tables",
     });
+    const sourceRevision = tableListSourceRevision(options.connectionId);
     // A search must never truncate the fuzzy result set to the first page (see
     // loadPagedTableGroupChildren); results are bounded by
     // SIDEBAR_TABLE_SEARCH_RESULT_BUDGET, and unfiltered loads keep the
@@ -2021,14 +2046,16 @@ export const useConnectionStore = defineStore("connection", () => {
         limit: fetchLimit,
         offset: fetchOffset,
         sidebarDisplayMode: "simple",
-        extra: tableNameFilterMetadataExtra(tableNameFilter),
+        extra: tableNameFilterMetadataExtra(tableNameFilter, sourceRevision),
       }),
       () => listTablesWithOptionalTableNameFilter(options.connectionId, options.database, options.querySchema, searchFilter, fetchLimit, fetchOffset, undefined, undefined, tableNameFilter),
       { force: options.force },
     );
     const hasMore = searchFilter ? false : tables.length > options.pageSize;
     const pageTables = hasMore ? tables.slice(0, options.pageSize) : tables;
-    indexCompletionTables(options.connectionId, options.database, options.effectiveSchema, tableInfosToCompletionTables(pageTables, options.effectiveSchema));
+    if (tableListSourceRevision(options.connectionId) === sourceRevision) {
+      indexCompletionTables(options.connectionId, options.database, options.effectiveSchema, tableInfosToCompletionTables(pageTables, options.effectiveSchema));
+    }
 
     const children = buildTableTreeNodes({
       nodeId: options.nodeId,
@@ -2878,6 +2905,7 @@ export const useConnectionStore = defineStore("connection", () => {
     if (!current) return;
     if (expectedConfigFingerprint && connectionConfigFingerprint(current) !== expectedConfigFingerprint) return;
     if (JSON.stringify(current.database_info) === JSON.stringify(normalized)) return;
+    const tableListSourceChanged = mysqlTableListSourceChanged(current, normalized);
 
     await api.saveConnectionDatabaseInfo(connectionId, normalized);
     const index = connections.value.findIndex((connection) => connection.id === connectionId);
@@ -2886,9 +2914,25 @@ export const useConnectionStore = defineStore("connection", () => {
     const nextConnections = [...connections.value];
     nextConnections[index] = { ...nextConnections[index], database_info: normalized };
     connections.value = nextConnections;
-    // Database info is reactive connection metadata, not tree structure. Keep
-    // navigator node identities stable so an in-flight first expansion can
-    // still apply its loaded children after this background refresh completes.
+    if (tableListSourceChanged) {
+      // ShardingSphere switches table enumeration from information_schema to SHOW FULL TABLES.
+      // Discard physical-table metadata that may have loaded before background version detection completed.
+      bumpTableListSourceRevision(connectionId);
+      treeNodeLoads.cancelPrefix(connectionId);
+      invalidateCompletionCache(connectionId);
+      void invalidateSidebarTableSearchIndexesForConnection(connectionId);
+      const connectionNode = findConnectionNode(connectionId);
+      if (connectionNode?.isExpanded && connectedIds.value.has(connectionId)) {
+        void refreshTreeNode(connectionNode).catch((error) => {
+          console.debug("[DBX][connection-info:table-metadata-refresh-failed]", { connectionId, error });
+        });
+      } else {
+        clearLoadedChildrenCache(connectionId);
+      }
+    }
+    // Other database info is reactive connection metadata, not tree structure. Keep
+    // navigator node identities stable so an in-flight first expansion can apply
+    // its loaded children after this background refresh completes.
   }
 
   async function refreshConnectedDatabaseInfo(connectionId: string, config: ConnectionConfig): Promise<void> {

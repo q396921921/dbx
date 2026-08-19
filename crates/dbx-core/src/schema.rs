@@ -3864,6 +3864,7 @@ for line in sys.stdin:
     #[test]
     fn shardingsphere_proxy_marker_is_ascii_case_insensitive_and_exact() {
         assert!(super::is_shardingsphere_proxy_version("5.7.22-ShardingSphere-Proxy 5.5.2"));
+        assert!(super::is_shardingsphere_proxy_version("8.0.27-ShardingSphere-Proxy 5.5.2"));
         assert!(super::is_shardingsphere_proxy_version("8.0.36-SHARDINGSPHERE-PROXY 5.5.2"));
         assert!(!super::is_shardingsphere_proxy_version("8.0.36-ShardingSphere Proxy 5.5.2"));
         assert!(!super::is_shardingsphere_proxy_version("8.0.36-MySQL Community Server"));
