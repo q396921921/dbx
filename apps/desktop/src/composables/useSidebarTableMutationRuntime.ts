@@ -6,8 +6,13 @@ import type { DatabaseType, TreeNode } from "@/types/database";
 import { supportsTableTruncate } from "@/lib/database/databaseCapabilities";
 import { buildDropTableSql, buildEmptyTableSql, buildMysqlAutoIncrementSql, buildTruncateTableSql, supportsDropTableCascade, supportsNativeMysqlAutoIncrement, supportsTruncateTableCascade, type MysqlAutoIncrementSqlOptions, type TableAdminSqlOptions } from "@/lib/database/dbAdminSql";
 import { isSqlServerLinkedNode } from "@/lib/database/sqlServerLinkedServers";
+import { isQueryTimeoutErrorMessage } from "@/lib/sql/queryError";
+import { uuid } from "@/lib/common/utils";
+import * as api from "@/lib/backend/api";
 import {
   sidebarDangerTarget,
+  sidebarDangerRunningExecutionId,
+  sidebarDangerRunningCancel,
   showDropTableConfirm,
   showEmptyTableConfirm,
   showMysqlAutoIncrementConfirm,
@@ -28,7 +33,7 @@ interface SidebarTableMutationRuntimeOptions {
   connectionStore: ReturnType<typeof useConnectionStore>;
   currentDatabaseType: () => DatabaseType | undefined;
   databaseTypeForNode: (node: TreeNode) => DatabaseType | undefined;
-  executeWithProductionGuard: (node: Pick<TreeNode, "connectionId" | "database" | "schema">, sql: string, options?: { database?: string; schema?: string }) => Promise<unknown>;
+  executeWithProductionGuard: (node: Pick<TreeNode, "connectionId" | "database" | "schema">, sql: string, options?: { database?: string; schema?: string; executionId?: string }) => Promise<unknown>;
   closeDroppedTableObjectTabsForNode: (node: TreeNode) => void;
   refreshMutatedTableDataTabsForNode: (node: TreeNode) => Promise<void>;
 }
@@ -151,19 +156,48 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
     await connectionStore.refreshObjectListTreeNode(node.connectionId, node.database, node.schema);
   }
 
+  function beginDangerRunningExecution(): { executionId: string; wasCancelled: () => boolean } {
+    const executionId = uuid();
+    let cancelledByUser = false;
+    sidebarDangerRunningExecutionId.value = executionId;
+    sidebarDangerRunningCancel.value = async () => {
+      cancelledByUser = true;
+      await api.cancelQuery(executionId);
+    };
+    return { executionId, wasCancelled: () => cancelledByUser };
+  }
+
+  function endDangerRunningExecution() {
+    sidebarDangerRunningExecutionId.value = "";
+    sidebarDangerRunningCancel.value = null;
+  }
+
+  function toastDangerOperationError(name: string, message: string, wasCancelled: boolean) {
+    if (wasCancelled) {
+      toast(t("contextMenu.tableOperationCancelled", { name }), 3000);
+    } else if (isQueryTimeoutErrorMessage(message)) {
+      toast(t("contextMenu.tableOperationTimedOut", { name, message }), 8000);
+    } else {
+      toast(t("contextMenu.tableOperationFailed", { message }), 5000);
+    }
+  }
+
   async function confirmDropTable() {
     const node = sidebarDangerTarget.value ?? activeNode.value;
     if (!node.connectionId || node.database == null) return;
+    const { executionId, wasCancelled } = beginDangerRunningExecution();
     try {
       await connectionStore.ensureConnected(node.connectionId);
       const sql = dropTablePreviewSql.value || (await buildDropTableSql(tableAdminSqlOptionsForNode(node, { cascade: dropTableCascade.value && supportsDropTableCascade(databaseTypeForNode(node)) })));
-      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema, executionId });
       toast(t("contextMenu.dropTableSuccess", { name: node.label }), 3000);
       options.closeDroppedTableObjectTabsForNode(node);
       connectionStore.removeTreeNode(node.id);
       options.releaseActiveNodeReference([node.id]);
     } catch (error: any) {
-      toast(t("contextMenu.tableOperationFailed", { message: error?.message || String(error) }), 5000);
+      toastDangerOperationError(node.label, error?.message || String(error), wasCancelled());
+    } finally {
+      endDangerRunningExecution();
     }
   }
 
@@ -175,15 +209,18 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
   async function confirmEmptyTable() {
     const node = sidebarDangerTarget.value ?? activeNode.value;
     if (!node.connectionId || node.database == null) return;
+    const { executionId, wasCancelled } = beginDangerRunningExecution();
     try {
       await connectionStore.ensureConnected(node.connectionId);
       const sql = emptyTablePreviewSql.value || (await buildEmptyTableSql(tableAdminSqlOptionsForNode(node)));
-      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema, executionId });
       const messageKey = databaseTypeForNode(node) === "clickhouse" ? "contextMenu.emptyTableSubmitted" : "contextMenu.emptyTableSuccess";
       toast(t(messageKey, { name: node.label }), 3000);
       await options.refreshMutatedTableDataTabsForNode(node);
     } catch (error: any) {
-      toast(t("contextMenu.tableOperationFailed", { message: error?.message || String(error) }), 5000);
+      toastDangerOperationError(node.label, error?.message || String(error), wasCancelled());
+    } finally {
+      endDangerRunningExecution();
     }
   }
 
@@ -196,14 +233,17 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
   async function confirmTruncateTable() {
     const node = sidebarDangerTarget.value ?? activeNode.value;
     if (!node.connectionId || node.database == null) return;
+    const { executionId, wasCancelled } = beginDangerRunningExecution();
     try {
       await connectionStore.ensureConnected(node.connectionId);
       const sql = truncateTablePreviewSql.value || (await buildTruncateTableSql(tableAdminSqlOptionsForNode(node, { cascade: truncateTableCascade.value && supportsTruncateTableCascade(databaseTypeForNode(node)) })));
-      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema });
+      await options.executeWithProductionGuard(node, sql, { database: node.database, schema: node.schema, executionId });
       toast(t("contextMenu.truncateTableSuccess", { name: node.label }), 3000);
       await options.refreshMutatedTableDataTabsForNode(node);
     } catch (error: any) {
-      toast(t("contextMenu.tableOperationFailed", { message: error?.message || String(error) }), 5000);
+      toastDangerOperationError(node.label, error?.message || String(error), wasCancelled());
+    } finally {
+      endDangerRunningExecution();
     }
   }
 

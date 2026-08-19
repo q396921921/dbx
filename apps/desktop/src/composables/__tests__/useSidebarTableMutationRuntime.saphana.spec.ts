@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { shallowRef } from "vue";
 import type { TreeNode } from "@/types/database";
-import { dropTableCascade, dropTablePreviewSql, emptyTablePreviewSql, sidebarDangerTarget, truncateTableCascade, truncateTablePreviewSql } from "@/components/sidebar/sidebarTreeDialogState";
+import { dropTableCascade, dropTablePreviewSql, emptyTablePreviewSql, sidebarDangerRunningCancel, sidebarDangerRunningExecutionId, sidebarDangerTarget, truncateTableCascade, truncateTablePreviewSql } from "@/components/sidebar/sidebarTreeDialogState";
 
 const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   refreshMutatedTableDataTabsForNode: vi.fn(),
   removeTreeNode: vi.fn(),
   releaseActiveNodeReference: vi.fn(),
+  cancelQuery: vi.fn(),
 }));
 
 vi.mock("vue-i18n", () => ({ useI18n: () => ({ t: (key: string) => key }) }));
@@ -24,6 +25,7 @@ vi.mock("@/lib/database/dbAdminSql", async (importOriginal) => ({
   buildEmptyTableSql: mocks.buildEmptyTableSql,
   buildTruncateTableSql: mocks.buildTruncateTableSql,
 }));
+vi.mock("@/lib/backend/api", () => ({ cancelQuery: mocks.cancelQuery }));
 
 import { useSidebarTableMutationRuntime } from "@/composables/useSidebarTableMutationRuntime";
 
@@ -71,6 +73,8 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
   beforeEach(() => {
     vi.clearAllMocks();
     sidebarDangerTarget.value = null;
+    sidebarDangerRunningExecutionId.value = "";
+    sidebarDangerRunningCancel.value = null;
     dropTablePreviewSql.value = "";
     emptyTablePreviewSql.value = "";
     truncateTablePreviewSql.value = "";
@@ -94,7 +98,7 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
     expect(builder).toHaveBeenCalledOnce();
     expect(builder).toHaveBeenCalledWith({ databaseType: "saphana", schema: "APP", tableName: "ORDERS" });
     expect(mocks.executeWithProductionGuard).toHaveBeenCalledOnce();
-    expect(mocks.executeWithProductionGuard).toHaveBeenCalledWith(node, sql, { database: "", schema: "APP" });
+    expect(mocks.executeWithProductionGuard).toHaveBeenCalledWith(node, sql, { database: "", schema: "APP", executionId: expect.any(String) });
   });
 
   it("removes the dropped table and releases its active reference", async () => {
@@ -120,7 +124,7 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
 
     await feature[action]();
 
-    expect(mocks.executeWithProductionGuard).toHaveBeenCalledWith(node, sql, { database: "TENANT", schema: "APP" });
+    expect(mocks.executeWithProductionGuard).toHaveBeenCalledWith(node, sql, { database: "TENANT", schema: "APP", executionId: expect.any(String) });
   });
 
   it.each([null, undefined])("rejects a %s database context", async (database) => {
@@ -157,5 +161,43 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
 
     expect(mocks.refreshMutatedTableDataTabsForNode).not.toHaveBeenCalled();
     expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationFailed", 5000);
+  });
+
+  it("registers a running-execution cancel handler while empty table is in flight, and clears it afterward", async () => {
+    const { feature } = runtime("");
+    mocks.executeWithProductionGuard.mockImplementationOnce(async () => {
+      expect(sidebarDangerRunningExecutionId.value).not.toBe("");
+      expect(sidebarDangerRunningCancel.value).toBeTypeOf("function");
+    });
+
+    await feature.confirmEmptyTable();
+
+    expect(sidebarDangerRunningExecutionId.value).toBe("");
+    expect(sidebarDangerRunningCancel.value).toBeNull();
+  });
+
+  it("shows a timed-out (not failed) toast when the query is still running server-side", async () => {
+    const { feature } = runtime("");
+    mocks.executeWithProductionGuard.mockRejectedValueOnce(new Error("Query timed out after 60 seconds"));
+
+    await feature.confirmEmptyTable();
+
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationTimedOut", 8000);
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationFailed", 5000);
+  });
+
+  it("shows a cancelled toast when the user explicitly cancels the running query", async () => {
+    const { feature } = runtime("");
+    mocks.executeWithProductionGuard.mockImplementationOnce(async () => {
+      await sidebarDangerRunningCancel.value?.();
+      throw new Error("Query timed out after 60 seconds");
+    });
+
+    await feature.confirmEmptyTable();
+
+    expect(mocks.cancelQuery).toHaveBeenCalledOnce();
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelled", 3000);
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationTimedOut", 8000);
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationFailed", 5000);
   });
 });

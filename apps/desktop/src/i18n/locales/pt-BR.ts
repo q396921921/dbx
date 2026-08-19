@@ -2807,6 +2807,8 @@ export default withEnglishFallback({
     truncateTableSuccess: 'Tabela "{name}" truncada',
     duplicateStructureSuccess: 'Tabela clonada como "{name}"',
     tableOperationFailed: "Falha na operação: {message}",
+    tableOperationTimedOut: 'A operação em "{name}" está demorando mais do que o esperado e não foi cancelada — ela pode continuar em execução no banco de dados. Verifique o resultado mais tarde ou clique em Cancelar para interrompê-la. ({message})',
+    tableOperationCancelled: 'Operação em "{name}" cancelada',
     objectDropRefreshFailed: "Os objetos foram excluídos, mas não foi possível atualizar a barra lateral: {message}",
     duplicateNameTitle: "Clonar como Nova Tabela",
     duplicateNamePlaceholder: "Nome da nova tabela",
@@ -4567,6 +4569,7 @@ export default withEnglishFallback({
     mongoFieldDetails: "Campo: {field}",
     mongoArrayItemDetails: "Índice do item do array: {index}",
     cancel: "Cancelar",
+    cancelRunning: "Cancelar consulta",
     confirm: "Executar",
   },
   sqlParameters: {

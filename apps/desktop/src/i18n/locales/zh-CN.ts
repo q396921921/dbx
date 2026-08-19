@@ -2814,6 +2814,8 @@ export default withEnglishFallback({
     truncateTableSuccess: "表「{name}」已截断",
     duplicateStructureSuccess: "已克隆为新表「{name}」",
     tableOperationFailed: "操作失败：{message}",
+    tableOperationTimedOut: "「{name}」的操作耗时较长，尚未被取消，可能仍在数据库端继续执行。请稍后自行确认执行结果，或点击「取消」手动终止。（{message}）",
+    tableOperationCancelled: "「{name}」的操作已取消",
     objectDropRefreshFailed: "对象已删除，但侧边栏刷新失败：{message}",
     duplicateNameTitle: "克隆为新表",
     duplicateNamePlaceholder: "新表名",
@@ -4712,6 +4714,7 @@ export default withEnglishFallback({
     mongoFieldDetails: "字段：{field}",
     mongoArrayItemDetails: "数组项索引：{index}",
     cancel: "取消",
+    cancelRunning: "取消查询",
     confirm: "执行",
   },
   production: {
