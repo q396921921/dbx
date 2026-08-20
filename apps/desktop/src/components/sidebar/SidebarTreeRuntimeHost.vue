@@ -105,6 +105,7 @@ import {
   supportsPackageMemberExpansion,
   usesTreeSchemaMode,
   isSingleDatabase,
+  schemaNodeHasLoadableName,
 } from "@/lib/database/databaseCapabilities";
 import { copyDisplayPathForTreeNode, copyNameForTreeNode, isDirectNavigationTreeNode, isDocumentBrowserTreeNode, isRepeatableNavigationTreeNode, objectSourceTargetForTreeNode, shouldRunTreeNodeRowAction, treeNodeRowAction, treeNodeRowDoubleClickAction } from "@/lib/sidebar/treeNodeClick";
 import { customTypeCapabilities, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
@@ -197,6 +198,7 @@ import {
   isLoadingStructurePreview,
   showEmptyTableConfirm,
   showTruncateTableConfirm,
+  showVacuumTableConfirm,
   showMysqlAutoIncrementConfirm,
   showRenameObjectDialog,
   renameObjectName,
@@ -208,6 +210,10 @@ import {
   emptyTablePreviewSql,
   truncateTablePreviewSql,
   truncateTableCascade,
+  vacuumTableFull,
+  vacuumTableAnalyze,
+  vacuumTablePreviewSql,
+  vacuumTableExecuting,
   mysqlAutoIncrementValue,
   mysqlAutoIncrementPreviewSql,
   dropObjectPreviewSql,
@@ -510,6 +516,7 @@ const {
 const {
   isTableNotView,
   supportsTruncate,
+  supportsVacuum,
   supportsMysqlAutoIncrement,
   canDropTableCascade,
   canTruncateTableCascade,
@@ -522,6 +529,9 @@ const {
   confirmEmptyTable,
   truncateTable,
   confirmTruncateTable,
+  vacuumTable,
+  refreshVacuumPreviewForOptions,
+  confirmVacuumTable,
   mysqlAutoIncrement,
   refreshMysqlAutoIncrementPreviewSql,
   confirmMysqlAutoIncrement,
@@ -887,7 +897,7 @@ async function toggle(requestId = beginNavigationRequest()) {
       }
     } else if (node.type === "doris-catalog" && node.connectionId) {
       await connectionStore.loadDorisCatalogDatabases(node, treeLoadSearchOptions);
-    } else if (node.type === "schema" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.schema) {
+    } else if (node.type === "schema" && node.connectionId && hasTreeNodeDatabaseContext(node) && schemaNodeHasLoadableName(effectiveDatabaseTypeForConnection(connectionStore.getConfig(node.connectionId)), node.schema)) {
       await connectionStore.loadTables(node.connectionId, node.database, node.schema, treeLoadSearchOptions);
     } else if (node.type === "linked-server-root" && node.connectionId) {
       await connectionStore.loadSqlServerLinkedServers(node.connectionId, treeLoadSearchOptions);
@@ -1981,6 +1991,8 @@ function dropObjectSqlOptionsForNode(node: TreeNode): DropObjectSqlOptions | nul
     schema: node.schema,
     name: node.objectName || node.label,
     signature: node.signature,
+    // Cloud Spanner's dialect decides the quote; the static per-type mapping cannot.
+    identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
   };
 }
 
@@ -3629,6 +3641,7 @@ async function confirmDuplicateStructure() {
       sourceName: node.label,
       targetName: newName,
       tableComment: node.comment,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
     });
     await executeTreeNodeSqlWithProductionGuard(node, plan.sql, {
       database: node.database,
@@ -3679,6 +3692,7 @@ async function confirmPasteTable() {
           sourceName: entry.sourceName,
           targetName,
           tableComment: entry.tableComment,
+          identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
         });
         sourceColumns = plan.sourceColumns;
         const structureExecuted = await executeTreeNodeSqlWithProductionGuard(entry, plan.sql, {
@@ -3707,6 +3721,7 @@ async function confirmPasteTable() {
           sourceName: entry.sourceName,
           targetName,
           normalizeNewTargetName: mode === "structure-and-data",
+          identifierQuote: connectionStore.connectionIdentifierQuote?.(entry.connectionId),
           ...dataCopyColumnOptions,
         });
         const dataExecuted = await executeTreeNodeSqlWithProductionGuard(entry, dataSql, { database: entry.database, schema: entry.schema });
@@ -3945,11 +3960,19 @@ function dangerRequest(request: Omit<SidebarDangerDialogRequest, "target">): Sid
   const confirm = request.confirm;
   routedRequest.confirm = async () => {
     activateActionTarget(target);
-    await confirm();
+    return confirm();
   };
   if (request.option?.onChange) {
     const onChange = request.option.onChange;
     request.option.onChange = async (checked) => {
+      activateActionTarget(target);
+      await onChange(checked);
+    };
+  }
+  for (const option of request.options ?? []) {
+    if (!option.onChange) continue;
+    const onChange = option.onChange;
+    option.onChange = async (checked) => {
       activateActionTarget(target);
       await onChange(checked);
     };
@@ -4059,6 +4082,49 @@ routeDangerDialog(showTruncateTableConfirm, () =>
     closeOnConfirm: false,
     cancelRunning: () => sidebarDangerRunningCancel.value?.(),
     confirm: confirmTruncateTable,
+  }),
+);
+
+routeDangerDialog(showVacuumTableConfirm, () =>
+  dangerRequest({
+    title: t("contextMenu.vacuumTableTitle"),
+    message: t("contextMenu.vacuumTableMessage", { name: activeNode.value.label }),
+    get detailsText() {
+      if (vacuumTableExecuting.value) return t("contextMenu.vacuumTableRunningHint");
+      return vacuumTableFull.value ? t("contextMenu.vacuumTableFullRisk") : vacuumTableAnalyze.value ? t("contextMenu.vacuumTableAnalyzeRisk") : t("contextMenu.vacuumTableDefaultRisk");
+    },
+    get sql() {
+      return vacuumTablePreviewSql.value;
+    },
+    get confirmLabel() {
+      return vacuumTableExecuting.value ? t("contextMenu.vacuumTableRunning") : vacuumTableFull.value ? t("contextMenu.vacuumTableFullConfirm") : t("contextMenu.vacuumTable");
+    },
+    loading: false,
+    closeOnConfirm: false,
+    options: [
+      {
+        checked: vacuumTableAnalyze.value,
+        label: t("contextMenu.vacuumTableAnalyze"),
+        hint: t("contextMenu.vacuumTableAnalyzeHint"),
+        compact: true,
+        async onChange(checked) {
+          vacuumTableAnalyze.value = checked;
+          await refreshVacuumPreviewForOptions();
+        },
+      },
+      {
+        checked: vacuumTableFull.value,
+        label: t("contextMenu.vacuumTableFull"),
+        hint: t("contextMenu.vacuumTableFullHint"),
+        compact: true,
+        danger: true,
+        async onChange(checked) {
+          vacuumTableFull.value = checked;
+          await refreshVacuumPreviewForOptions();
+        },
+      },
+    ],
+    confirm: confirmVacuumTable,
   }),
 );
 
@@ -5178,6 +5244,9 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
       items.push({ label: t("contextMenu.duplicateStructure"), action: duplicateStructure, icon: CopyPlus });
       // Keep menu copy aligned with keyboard copy so frozen multi-selection and single-row fallback stay compatible.
       items.push(...treeTableClipboardMenuItems(node));
+      if (supportsVacuum.value) {
+        destructiveActions.push({ label: t("contextMenu.vacuumTable"), action: vacuumTable, icon: Activity, variant: "destructive" as const });
+      }
       if (supportsMysqlAutoIncrement.value) {
         items.push({ label: t("contextMenu.mysqlAutoIncrement"), action: mysqlAutoIncrement, icon: Gauge });
       }
