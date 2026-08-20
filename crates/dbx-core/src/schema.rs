@@ -1089,6 +1089,35 @@ pub async fn get_vector_collection_detail_core(
     db::vector_driver::get_collection_detail(&client, database, collection).await
 }
 
+pub async fn drop_vector_database_core(state: &AppState, connection_id: &str, database: &str) -> Result<(), String> {
+    let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
+    let client = {
+        let connections = state.connections.read().await;
+        match connections.get(&pool_key) {
+            Some(PoolKind::VectorDb(client)) => client.clone(),
+            _ => return Err("Not a vector database connection".to_string()),
+        }
+    };
+    db::vector_driver::drop_database(&client, database).await
+}
+
+pub async fn drop_vector_collection_core(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    collection: &str,
+) -> Result<(), String> {
+    let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
+    let client = {
+        let connections = state.connections.read().await;
+        match connections.get(&pool_key) {
+            Some(PoolKind::VectorDb(client)) => client.clone(),
+            _ => return Err("Not a vector database connection".to_string()),
+        }
+    };
+    db::vector_driver::drop_collection(&client, database, collection).await
+}
+
 pub async fn get_table_comment_core(
     state: &AppState,
     connection_id: &str,

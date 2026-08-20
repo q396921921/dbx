@@ -3504,6 +3504,14 @@ export async function mongoCloneCollection(connectionId: string, database: strin
   });
 }
 
+export async function vectorDropDatabase(connectionId: string, database: string): Promise<void> {
+  return invoke("vector_drop_database", { connectionId, database });
+}
+
+export async function vectorDropCollection(connectionId: string, database: string, collection: string): Promise<void> {
+  return invoke("vector_drop_collection", { connectionId, database, collection });
+}
+
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {
   const collections = await documentListCollections(connectionId, "default");
   return collections.map((c) => c.name);

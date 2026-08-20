@@ -776,6 +776,8 @@ async fn main() {
         .route("/mongo/list-databases", post(routes::mongo::list_databases))
         .route("/mongo/list-collections", post(routes::mongo::list_collections))
         .route("/mongo/vector-collection-detail", post(routes::mongo::vector_collection_detail))
+        .route("/vector/drop-database", post(routes::mongo::vector_drop_database))
+        .route("/vector/drop-collection", post(routes::mongo::vector_drop_collection))
         .route("/mongo/create-database", post(routes::mongo::create_database))
         .route("/mongo/drop-database", post(routes::mongo::drop_database))
         .route("/mongo/drop-collection", post(routes::mongo::drop_collection))

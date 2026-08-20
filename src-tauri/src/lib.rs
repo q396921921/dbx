@@ -2006,6 +2006,8 @@ pub fn run() {
             commands::mongo_cmd::mongo_create_database,
             commands::mongo_cmd::mongo_drop_database,
             commands::mongo_cmd::mongo_drop_collection,
+            commands::mongo_cmd::vector_drop_database,
+            commands::mongo_cmd::vector_drop_collection,
             commands::mongo_cmd::mongo_rename_collection,
             commands::mongo_cmd::mongo_clone_collection,
             commands::docs::docs_collect_snapshot,

@@ -448,7 +448,9 @@ const {
 
 const {
   canDropMongoDatabase,
+  canDropMilvusDatabase,
   canDropMongoCollection,
+  canDropMilvusCollection,
   canRenameMongoCollection,
   canCloneMongoCollection,
   prepareRenameMongoCollectionDialog,
@@ -497,6 +499,7 @@ const {
   openEditNacosNamespaceDialog,
   confirmEditNacosNamespace,
   dropMongoCollection,
+  dropMilvusCollection,
   dropMongoIndex,
   dropAllMongoIndexes,
   flushRedisDb,
@@ -509,6 +512,8 @@ const {
   confirmFlushRedisDb,
   confirmDropMongoDatabase,
   confirmDropMongoCollection,
+  confirmDropMilvusDatabase,
+  confirmDropMilvusCollection,
   confirmDropMongoIndex,
   confirmDropAllMongoIndexes,
 } = useSidebarDatabaseSpecificMutationRuntime({ activeNode, connectionStore });
@@ -1285,8 +1290,16 @@ function requestDeleteSelectedNode(): boolean {
     dropDatabase();
     return true;
   }
+  if (canDropMilvusDatabase.value) {
+    dropDatabase();
+    return true;
+  }
   if (canDropMongoCollection.value) {
     dropMongoCollection();
+    return true;
+  }
+  if (canDropMilvusCollection.value) {
+    dropMilvusCollection();
     return true;
   }
   if (canDropSchema.value) {
@@ -2945,6 +2958,10 @@ async function refreshDropDatabasePreviewSql() {
     dropDatabasePreviewSql.value = `db.getSiblingDB(${JSON.stringify(node.label)}).dropDatabase();`;
     return;
   }
+  if (node.type === "vector-database") {
+    dropDatabasePreviewSql.value = `POST /v2/vectordb/databases/drop\n{"dbName":${JSON.stringify(node.database || node.label)}}`;
+    return;
+  }
   dropDatabasePreviewSql.value = "";
   dropDatabasePreviewSql.value = await buildDropDatabaseSql({
     databaseType: currentDatabaseType(),
@@ -3511,6 +3528,10 @@ async function confirmDropDatabase() {
   const node = sidebarDangerTarget.value ?? activeNode.value;
   if (node.type === "mongo-db") {
     await confirmDropMongoDatabase();
+    return;
+  }
+  if (node.type === "vector-database") {
+    await confirmDropMilvusDatabase();
     return;
   }
 
@@ -4250,7 +4271,7 @@ routeDangerDialog(showDropMongoCollectionConfirm, () =>
       return dropMongoCollectionLoading.value;
     },
     closeOnConfirm: false,
-    confirm: confirmDropMongoCollection,
+    confirm: () => (activeNode.value.type === "vector-collection" ? confirmDropMilvusCollection() : confirmDropMongoCollection()),
   }),
 );
 
@@ -5040,7 +5061,7 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     return true;
   }
 
-  if (node.type === "redis-db" || node.type === "mongo-db") {
+  if (node.type === "redis-db" || node.type === "mongo-db" || node.type === "vector-database") {
     items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
     if (!isNodeDefaultDatabase.value) {
       items.push({ label: t("contextMenu.setDefaultDatabase"), action: setNodeAsDefaultDatabase, icon: Database });
@@ -5056,7 +5077,7 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
       items.push({ label: t("redis.setDatabaseAlias"), action: openRedisDatabaseAliasDialog, icon: Pencil });
       items.push({ label: t("redis.flushDb"), action: flushRedisDb, icon: Eraser, variant: "destructive" as const });
     }
-    if (canDropMongoDatabase.value) {
+    if (canDropMongoDatabase.value || canDropMilvusDatabase.value) {
       items.push({ label: "", separator: true });
       items.push({
         label: t("contextMenu.dropDatabase"),
@@ -5125,6 +5146,10 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     items.push({ label: "", separator: true });
     items.push({ label: t("contextMenu.viewData"), action: toggle, icon: TableProperties });
     items.push({ label: t("contextMenu.newQuery"), action: newQuery, icon: TerminalSquare });
+    if (canDropMilvusCollection.value) {
+      items.push({ label: "", separator: true });
+      items.push({ label: t("contextMenu.dropCollection"), action: dropMilvusCollection, icon: Trash2, shortcut: shortcutDelete, variant: "destructive" as const });
+    }
     return true;
   }
 
