@@ -15,6 +15,16 @@ describe("DataGrid delete row confirmation details", () => {
     expect(dialogSource).toContain(':details="deleteRowDetails"');
   });
 
+  it("uses the unbounded confirmation formatter for delete details", () => {
+    const detailsStart = dataGridSource.indexOf("const deleteRowDetails = computed");
+    const detailsEnd = dataGridSource.indexOf("const hasVisibleRows", detailsStart);
+
+    expect(detailsStart).toBeGreaterThanOrEqual(0);
+    expect(detailsEnd).toBeGreaterThan(detailsStart);
+    expect(dataGridSource.slice(detailsStart, detailsEnd)).toContain("formatGridItemCellForConfirmation");
+    expect(dataGridSource).toContain("formatCell(item.data[columnIndex], columnIndex, largeValueOriginalBytes(item, columnIndex), false)");
+  });
+
   it("keeps close-on-confirm disabled so confirmDeleteRow runs before the dialog auto-closes", () => {
     const dialogStart = dataGridSource.indexOf('v-model:open="showDeleteRowConfirm"');
     const dialogEnd = dataGridSource.indexOf('@confirm="confirmDeleteRow"', dialogStart);

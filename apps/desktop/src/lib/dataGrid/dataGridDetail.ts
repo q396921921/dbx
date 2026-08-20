@@ -240,7 +240,7 @@ export function buildDeleteRowConfirmDetails<TRow>(options: BuildDeleteRowConfir
   const rowLines = options.rowIds
     .map((rowId) => options.getRow(rowId))
     .filter((row): row is TRow => row !== undefined)
-    .map((row) => options.columns.map((name, columnIndex) => `${name}=${options.formatCell(row, columnIndex)}`).join(", "));
+    .map((row) => JSON.stringify(Object.fromEntries(options.columns.map((name, columnIndex) => [name, options.formatCell(row, columnIndex)]))));
   return rowLines.length > 0 ? [options.header, ...rowLines].join("\n") : options.header;
 }
 
