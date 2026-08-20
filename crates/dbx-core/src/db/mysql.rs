@@ -5291,7 +5291,7 @@ fn prefers_text_protocol_query(sql: &str, dialect: MySqlQueryDialect) -> bool {
 pub(crate) fn is_result_set_query(sql: &str, dialect: MySqlQueryDialect) -> bool {
     starts_with_executable_sql_keyword_for_database(
         sql,
-        &["SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH", "CALL"],
+        &["SELECT", "SHOW", "DESCRIBE", "EXPLAIN", "WITH", "CALL", "CHECKSUM"],
         DatabaseType::Mysql,
     ) || mysql_statement_returns_rows(sql)
         || is_xa_recover_query(sql)
@@ -6085,6 +6085,14 @@ mod tests {
     #[test]
     fn mysql_desc_queries_are_treated_as_result_sets() {
         assert!(is_result_set_query("DESC users", MySqlQueryDialect::default()));
+    }
+
+    #[test]
+    fn mysql_checksum_queries_are_treated_as_result_sets() {
+        let dialect = MySqlQueryDialect::default();
+
+        assert!(is_result_set_query("CHECKSUM TABLE `issue6693_repro`", dialect));
+        assert!(prefers_text_protocol_query("CHECKSUM TABLE `issue6693_repro`", dialect));
     }
 
     #[test]

@@ -211,7 +211,7 @@ pub fn contains_dangerous_sql_keyword(sql: &str) -> bool {
 /// PRAGMA is intentionally NOT in this list because some PRAGMA statements modify
 /// database or session state (e.g. SQLite `PRAGMA journal_mode=WAL`). Instead,
 /// read-only PRAGMA forms are handled separately in `is_safe_read_pragma`.
-const READ_SQL_KEYWORDS: &[&str] = &["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "FROM"];
+const READ_SQL_KEYWORDS: &[&str] = &["SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "FROM", "CHECKSUM"];
 
 /// PRAGMA names that are known to be safe read-only queries in SQLite/DuckDB.
 /// Only the function-call form `PRAGMA name(args)` matching these names is allowed.
@@ -1288,6 +1288,7 @@ mod tests {
         assert!(!is_write_sql("EXPLAIN SELECT * FROM users"));
         assert!(!is_write_sql("PRAGMA table_info(users)"));
         assert!(!is_write_sql("FROM users SELECT *"));
+        assert!(!is_write_sql("CHECKSUM TABLE `issue6693_repro`"));
     }
 
     #[test]
