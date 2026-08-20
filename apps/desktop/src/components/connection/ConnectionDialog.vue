@@ -1024,13 +1024,14 @@ const jdbcDriverSelectItems = computed<JdbcDriverSelectItem[]>(() => {
 });
 
 const jdbcDriverSelectItemById = computed(() => new Map(jdbcDriverSelectItems.value.map((item) => [item.id, item])));
-const jdbcManualClasspathCount = computed(
-  () =>
-    jdbcDriverPathsInput.value
-      .split(/\r?\n/)
-      .map((value) => value.trim())
-      .filter(Boolean).length,
-);
+const jdbcManualClasspathCount = computed(() => parsedJdbcDriverPaths().length);
+
+function parsedJdbcDriverPaths(): string[] {
+  return jdbcDriverPathsInput.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
 
 function applyCustomColor(value: string) {
   form.value.color = value;
@@ -2897,6 +2898,21 @@ function switchH2ConnectionMode(mode: H2ConnectionMode) {
   resetTestState();
 }
 
+function switchH2DriverProfile(profile: "h2" | "h2-v1" | "h2-v2" | "h2-v3" | "h2-custom") {
+  form.value.driver_profile = profile;
+  if (profile === "h2-custom") {
+    form.value.jdbc_driver_class = form.value.jdbc_driver_class?.trim() || "org.h2.Driver";
+    jdbcManualClasspathOpen.value = true;
+  } else {
+    form.value.jdbc_driver_class = undefined;
+    form.value.jdbc_driver_paths = [];
+    jdbcDriverPathsInput.value = "";
+    selectedJdbcDriverPath.value = "";
+    jdbcManualClasspathOpen.value = false;
+  }
+  resetTestState();
+}
+
 function isH2FileJdbcUrlLikePath(value: string): boolean {
   return /\.(mv|h2)\.db$/i.test(value.trim()) || value.includes("/") || value.includes("\\");
 }
@@ -3234,6 +3250,7 @@ const jdbcxHighPrivilegeExtensionsAllowed = computed({
 });
 const supportsNativeAgentJdbcDriverConfig = computed(() => supportsNativeAgentJdbcDriverConfigType(form.value.db_type));
 const isH2FileMode = computed(() => form.value.db_type === "h2" && h2ConnectionMode.value === "file");
+const isH2CustomDriver = computed(() => form.value.db_type === "h2" && form.value.driver_profile === "h2-custom");
 const usesLocalFilePathInput = computed(() => isLocalFileTypeDb(form.value.db_type) && (form.value.db_type !== "h2" || isH2FileMode.value));
 
 const connectionUrlPlaceholder = computed(() => getUrlPlaceholder(form.value.db_type));
@@ -4296,16 +4313,20 @@ function connectionConfigForSubmit(id: string, generatedName = ""): ConnectionCo
       config.jdbc_driver_class = GAUSSDB_M_JDBC_DRIVER_CLASS;
     }
     config.jdbc_driver_class = config.jdbc_driver_class?.trim() || undefined;
-    config.jdbc_driver_paths = jdbcDriverPathsInput.value
-      .split(/\r?\n/)
-      .map((path) => path.trim())
-      .filter(Boolean);
+    config.jdbc_driver_paths = parsedJdbcDriverPaths();
   } else if (config.db_type === "gaussdb") {
     config.connection_string = undefined;
     config.jdbc_driver_class = undefined;
     config.jdbc_driver_paths = [];
   }
   if (config.db_type === "h2") {
+    if (config.driver_profile === "h2-custom") {
+      config.jdbc_driver_class = config.jdbc_driver_class?.trim() || "org.h2.Driver";
+      config.jdbc_driver_paths = parsedJdbcDriverPaths();
+    } else {
+      config.jdbc_driver_class = undefined;
+      config.jdbc_driver_paths = [];
+    }
     const h2Mode = connectionUrlInput.value.trim() ? h2ConnectionModeForConfig(config) : h2ConnectionMode.value;
     if (h2Mode === "file") {
       const jdbcFilePath = h2FilePathFromJdbcUrl(config.connection_string);
@@ -6032,27 +6053,51 @@ function openExternalUrl(url: string) {
 
                 <div v-if="form.db_type === 'h2'" class="grid grid-cols-4 items-center gap-4">
                   <Label :class="connectionLabelSmallClass">Driver</Label>
-                  <div class="col-span-3 flex gap-2">
-                    <Button
-                      size="sm"
-                      :variant="form.driver_profile !== 'h2-legacy' ? 'default' : 'outline'"
-                      @click="
-                        form.driver_profile = 'h2';
-                        resetTestState();
-                      "
-                      >H2 2.3</Button
-                    >
-                    <Button
-                      size="sm"
-                      :variant="form.driver_profile === 'h2-legacy' ? 'default' : 'outline'"
-                      @click="
-                        form.driver_profile = 'h2-legacy';
-                        resetTestState();
-                      "
-                      >H2 2.1 Legacy</Button
-                    >
+                  <div class="col-span-3 flex flex-wrap gap-2">
+                    <Button size="sm" :variant="!form.driver_profile || form.driver_profile === 'h2' || form.driver_profile === 'h2-auto' ? 'default' : 'outline'" @click="switchH2DriverProfile('h2')">Auto</Button>
+                    <Button size="sm" :variant="form.driver_profile === 'h2-v1' ? 'default' : 'outline'" @click="switchH2DriverProfile('h2-v1')">H2 1.x</Button>
+                    <Button size="sm" :variant="form.driver_profile === 'h2-v2' || form.driver_profile === 'h2-legacy' ? 'default' : 'outline'" @click="switchH2DriverProfile('h2-v2')">H2 2.0–2.1</Button>
+                    <Button size="sm" :variant="form.driver_profile === 'h2-v3' ? 'default' : 'outline'" @click="switchH2DriverProfile('h2-v3')">H2 2.2+</Button>
+                    <Button size="sm" :variant="form.driver_profile === 'h2-custom' ? 'default' : 'outline'" @click="switchH2DriverProfile('h2-custom')">Custom JAR</Button>
                   </div>
                 </div>
+
+                <template v-if="isH2CustomDriver">
+                  <div class="grid grid-cols-4 items-start gap-4">
+                    <Label :class="connectionLabelTopClass">{{ t("connection.jdbcDriverPaths") }}</Label>
+                    <div class="col-span-3 space-y-2">
+                      <Select v-if="jdbcDriverSelectItems.length > 0" :model-value="selectedJdbcDriverPath" @update:model-value="onJdbcDriverSelect">
+                        <SelectTrigger>
+                          <SelectValue :placeholder="t('connection.jdbcDriverSelectPlaceholder')" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem v-for="driver in jdbcDriverSelectItems" :key="driver.id" :value="driver.id">
+                            {{ driver.label }}
+                          </SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <div class="flex items-start gap-1">
+                        <textarea
+                          v-model="jdbcDriverPathsInput"
+                          class="flex min-h-12 w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                          :placeholder="t('connection.jdbcDriverPathsPlaceholder')"
+                        />
+                        <Tooltip v-if="isDesktop">
+                          <TooltipTrigger as-child>
+                            <Button type="button" variant="outline" size="icon" class="h-9 w-9 shrink-0" @click="browseJdbcDriverPaths">
+                              <FolderOpen class="h-4 w-4" />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent>{{ t("connection.jdbcDriverBrowse") }}</TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="grid grid-cols-4 items-center gap-4">
+                    <Label :class="connectionLabelClass">{{ t("connection.jdbcDriverClass") }}</Label>
+                    <Input v-model="form.jdbc_driver_class" class="col-span-3" placeholder="org.h2.Driver" />
+                  </div>
+                </template>
 
                 <div v-if="h2DriverMissing" class="grid grid-cols-4 items-center gap-4">
                   <span />
