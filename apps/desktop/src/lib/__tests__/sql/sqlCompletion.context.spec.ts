@@ -730,6 +730,129 @@ describe("sqlCompletion scoped context classification", () => {
     expect(context.suggestRoutines).toBe(true);
   });
 
+  it("classifies unqualified WHERE field input as column context for unquoted non-ASCII table/schema names", () => {
+    const options = { databaseType: "mysql" } as const;
+
+    const tableOnly = getSqlCompletionContext("SELECT * FROM 用户表 WHERE ", "SELECT * FROM 用户表 WHERE ".length, options);
+    expect(tableOnly.contextKind).toBe("column");
+    expect(tableOnly.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "用户表" })]));
+    expect(tableOnly.suggestColumns).toBe(true);
+
+    const withSchema = getSqlCompletionContext("SELECT * FROM 中文库.用户表 WHERE ", "SELECT * FROM 中文库.用户表 WHERE ".length, options);
+    expect(withSchema.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ schema: "中文库", name: "用户表" })]));
+    expect(withSchema.suggestColumns).toBe(true);
+  });
+
+  it("does not treat a non-ASCII 'from' phrase inside a string literal as a referenced table", () => {
+    const sql = "SELECT * FROM real_table WHERE note = 'from 测试表' AND ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
+  });
+
+  it("does not treat a non-ASCII 'from' phrase inside a line comment as a referenced table", () => {
+    const sql = "SELECT *\nFROM real_table\n-- from 测试表\nWHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
+  });
+
+  it("does not treat a 'from' phrase inside a block comment as a referenced table", () => {
+    const sql = "SELECT *\nFROM real_table\n/* from ghost_table */\nWHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "ghost_table")).toBe(false);
+  });
+
+  it("does not let a quote inside a line comment desync literal/comment masking", () => {
+    const sql = "SELECT * FROM real_table -- it's a comment\nWHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+  });
+
+  it("does not let a comment-like sequence inside a string literal swallow real SQL", () => {
+    const sql = "SELECT * FROM t1 WHERE note = '-- not a comment' AND ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t1" })]));
+  });
+
+  it("does not match unquoted non-ASCII table names for ANSI-strict dialects", () => {
+    const sql = "SELECT * FROM 用户表 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "clickhouse" });
+    expect(context.referencedTables.some((t) => t.name === "用户表")).toBe(false);
+  });
+
+  it("masks a double-quoted value right after an operator from being read as a table reference (mysql)", () => {
+    const sql = 'SELECT * FROM real_table WHERE note = "from 测试表" AND ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
+  });
+
+  it("still recognizes a double-quoted table name in FROM position (mysql)", () => {
+    const sql = 'SELECT * FROM "orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders", nameQuoted: true })]));
+  });
+
+  it("masks a double-quoted value right after an operator from being read as a table reference (postgres)", () => {
+    const sql = 'SELECT * FROM real_table WHERE note = "from 测试表" AND ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "postgres" });
+    // Postgres treats "..." as a quoted identifier, not a string literal -- but a "..." span
+    // right after "=" is unambiguously a value position regardless of dialect, so this is masked
+    // the same way as mysql above, not left as a (harmless but avoidable) false-positive parse.
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
+  });
+
+  it("keeps a double-quoted table name intact for dialects where they aren't string literals (postgres)", () => {
+    const sql = 'SELECT * FROM "orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "postgres" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders", nameQuoted: true })]));
+  });
+
+  it("does not let a MySQL backslash-escaped quote desync the literal scan", () => {
+    const sql = "SELECT * FROM t1 WHERE note = 'it\\'s a test' UNION SELECT * FROM real_table2 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t1" }), expect.objectContaining({ name: "real_table2" })]));
+  });
+
+  it("does not treat MySQL's unspaced '--' double-negation as a comment", () => {
+    const sql = "SELECT * FROM t1 WHERE x = 1--1 FROM real_table3 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t1" }), expect.objectContaining({ name: "real_table3" })]));
+  });
+
+  it("still treats a bare '--' as a comment for non-MySQL dialects", () => {
+    const sql = "SELECT * FROM t1 WHERE x = 1--1 FROM real_table3 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "postgres" });
+    expect(context.referencedTables.some((t) => t.name === "real_table3")).toBe(false);
+  });
+
+  it("does not let a doubled single-quote escape desync the literal scan", () => {
+    const sql = "SELECT * FROM t1 WHERE note = 'it''s a test' AND ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t1" })]));
+  });
+
+  it("does not let a backslash-escaped quote desync the literal scan for MySQL-family dialects outside the dash-comment allowlist (hive)", () => {
+    const sql = "SELECT * FROM t1 WHERE note = 'it\\'s a test' UNION SELECT * FROM real_table2 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "hive" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t1" }), expect.objectContaining({ name: "real_table2" })]));
+  });
+
+  it("defaults to ASCII-only unquoted identifiers when databaseType is not yet known", () => {
+    const sql = "SELECT * FROM 用户表 WHERE ";
+    const context = getSqlCompletionContext(sql, sql.length, {});
+    expect(context.referencedTables.some((t) => t.name === "用户表")).toBe(false);
+  });
+
+  it("does not let a special character inside a double-quoted qualified table name desync the scan", () => {
+    const sql = 'SELECT * FROM "mydb"."orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ schema: "mydb", name: "orders" })]));
+  });
+
   it("auto-opens column completion after WHERE whitespace before LIMIT", () => {
     const sql = "SELECT *\nFROM t_0001 AS t0 WHERE \nLIMIT 100;";
     const cursor = "SELECT *\nFROM t_0001 AS t0 WHERE ".length;
@@ -740,6 +863,24 @@ describe("sqlCompletion scoped context classification", () => {
     expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "t_0001", alias: "t0" })]));
     expect(context.suggestColumns).toBe(true);
     expect(shouldAutoOpenSqlCompletion(sql, cursor)).toBe(true);
+  });
+
+  it("does not let a trailing comment's stray 'and'/'or' text suppress the AND/OR keyword suggestion", () => {
+    const sql = "SELECT * FROM t WHERE id = 1 # mentions where and or\n";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.preferredKeywords).toEqual(expect.arrayContaining(["AND", "OR"]));
+  });
+
+  it("does not let a special character inside a backtick-quoted table name break WHERE-clause keyword detection", () => {
+    const sql = "SELECT * FROM `my's table` t WHERE t.id = 1 ";
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.preferredKeywords).toEqual(expect.arrayContaining(["AND", "OR"]));
+  });
+
+  it("does not let a trailing comment's stray 'where' text auto-open column completion with no active clause", () => {
+    const sql = "SELECT * FROM t_0001 t0 -- mentions where\n";
+    const cursor = sql.length;
+    expect(shouldAutoOpenSqlCompletion(sql, cursor, { databaseType: "mysql" })).toBe(false);
   });
 
   it("classifies CALL routine contexts", () => {
