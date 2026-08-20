@@ -157,6 +157,8 @@ export default {
     compressSql: "Compress SQL",
     keywordCaseLower: "Use lower-case SQL keywords",
     keywordCaseUpper: "Use upper-case SQL keywords",
+    sqlSemanticDiagnosticsToggleOn: "SQL semantic diagnostics: On (click to disable)",
+    sqlSemanticDiagnosticsToggleOff: "SQL semantic diagnostics: Off (click to enable)",
     autoCommit: "Auto Commit",
     manualTransaction: "Manual Transaction",
     autoCommitAgent: "Auto Commit (depends on Agent backend)",

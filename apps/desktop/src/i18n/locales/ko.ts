@@ -158,6 +158,8 @@ export default withEnglishFallback({
     compressSql: "SQL 압축",
     keywordCaseLower: "SQL 키워드 소문자 사용",
     keywordCaseUpper: "SQL 키워드 대문자 사용",
+    sqlSemanticDiagnosticsToggleOn: "SQL 의미 진단: 켜짐 (클릭하여 끄기)",
+    sqlSemanticDiagnosticsToggleOff: "SQL 의미 진단: 꺼짐 (클릭하여 켜기)",
     autoCommit: "자동 커밋",
     manualTransaction: "수동 트랜잭션",
     autoCommitAgent: "자동 커밋 (Agent 백엔드에 따라)",

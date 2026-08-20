@@ -159,6 +159,8 @@ export default withEnglishFallback({
     compressSql: "壓縮 SQL",
     keywordCaseLower: "使用小寫 SQL 關鍵字",
     keywordCaseUpper: "使用大寫 SQL 關鍵字",
+    sqlSemanticDiagnosticsToggleOn: "SQL 語意診斷：已開啟（點擊關閉）",
+    sqlSemanticDiagnosticsToggleOff: "SQL 語意診斷：已關閉（點擊開啟）",
     autoCommit: "自動提交",
     manualTransaction: "手動事務",
     autoCommitAgent: "自動提交（取決於 Agent 後端資料庫）",

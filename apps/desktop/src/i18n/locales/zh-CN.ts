@@ -82,6 +82,8 @@ export default withEnglishFallback({
     compressSql: "压缩 SQL",
     keywordCaseLower: "使用小写 SQL 关键字",
     keywordCaseUpper: "使用大写 SQL 关键字",
+    sqlSemanticDiagnosticsToggleOn: "SQL 语义诊断：已开启（点击关闭）",
+    sqlSemanticDiagnosticsToggleOff: "SQL 语义诊断：已关闭（点击开启）",
     autoCommit: "自动提交",
     manualTransaction: "手动事务",
     autoCommitAgent: "自动提交（取决于 Agent 后端数据库）",

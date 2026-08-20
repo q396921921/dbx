@@ -159,6 +159,8 @@ export default withEnglishFallback({
     compressSql: "SQLを圧縮",
     keywordCaseLower: "SQLキーワードを小文字にする",
     keywordCaseUpper: "SQLキーワードを大文字にする",
+    sqlSemanticDiagnosticsToggleOn: "SQLセマンティック診断：オン（クリックでオフ）",
+    sqlSemanticDiagnosticsToggleOff: "SQLセマンティック診断：オフ（クリックでオン）",
     autoCommit: "自動コミット",
     manualTransaction: "手動トランザクション",
     autoCommitAgent: "自動コミット（Agentバックエンドに依存）",
