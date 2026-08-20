@@ -259,6 +259,40 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
     expect(sidebarDangerRunningCancel.value).toBeNull();
   });
 
+  it("waits for an in-flight cancel confirmation before classifying a cancelled execution", async () => {
+    const { feature } = runtime("");
+    let signalCancelStarted: () => void = () => {};
+    let resolveCancel: (confirmed: boolean) => void = () => {};
+    const cancelStarted = new Promise<void>((resolve) => {
+      signalCancelStarted = resolve;
+    });
+    const cancelResult = new Promise<boolean>((resolve) => {
+      resolveCancel = resolve;
+    });
+    mocks.cancelQuery.mockImplementationOnce(() => {
+      signalCancelStarted();
+      return cancelResult;
+    });
+    mocks.executeWithProductionGuard.mockImplementationOnce(async (_node: unknown, _sql: unknown, options: { markDispatched: () => void }) => {
+      options.markDispatched();
+      void sidebarDangerRunningCancel.value?.();
+      throw new Error("Query cancelled");
+    });
+
+    const operationPromise = feature.confirmEmptyTable();
+    await cancelStarted;
+
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationCancelUnconfirmed", 8000);
+    resolveCancel(true);
+    await operationPromise;
+
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelled", 3000);
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationCancelUnconfirmed", 8000);
+    expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationCancelPending", 6000);
+    expect(sidebarDangerRunningExecutionId.value).toBe("");
+    expect(sidebarDangerRunningCancel.value).toBeNull();
+  });
+
   it("never dispatches the SQL when the user cancels before the operation is sent to the database (registration race)", async () => {
     const { feature } = runtime("");
     mocks.ensureConnected.mockImplementationOnce(async () => {

@@ -286,7 +286,17 @@ impl RegisteredQuery {
     /// otherwise drops normally. Centralizes the branch duplicated across
     /// every HTTP/Tauri query-execution entry point.
     pub fn finish<T>(self, result: &Result<T, crate::query::QueryExecutionError>) {
-        if matches!(result, Err(crate::query::QueryExecutionError::Timeout(_))) {
+        self.finish_with_late_cancel(result, true);
+    }
+
+    /// Finishes a registration while preserving timed-out work only when the
+    /// caller has an execution id it can use for a later explicit cancel.
+    pub fn finish_with_late_cancel<T>(
+        self,
+        result: &Result<T, crate::query::QueryExecutionError>,
+        keep_timeout_reachable: bool,
+    ) {
+        if keep_timeout_reachable && matches!(result, Err(crate::query::QueryExecutionError::Timeout(_))) {
             self.detach();
         }
         // else: falls out of scope here and Drop removes the registration.
@@ -398,6 +408,21 @@ mod tests {
         let registered = running.register("exec-ok".to_string());
         registered.finish(&Result::<(), _>::Ok(()));
         assert!(!running.has("exec-ok"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finish_only_keeps_timed_out_registration_when_late_cancel_is_reachable() {
+        let running = RunningQueries::default();
+        let timeout = Result::<(), _>::Err(crate::query::QueryExecutionError::Timeout("t".into()));
+
+        let registered = running.register("exec-internal".to_string());
+        registered.finish_with_late_cancel(&timeout, false);
+        assert!(!running.has("exec-internal"));
+
+        let registered = running.register("exec-client".to_string());
+        registered.finish_with_late_cancel(&timeout, true);
+        assert!(running.has("exec-client"));
+        assert!(running.cancel("exec-client"));
     }
 
     #[test]

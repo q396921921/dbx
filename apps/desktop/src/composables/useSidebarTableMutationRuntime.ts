@@ -336,6 +336,7 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
     markDispatched: () => void;
     wasCancelled: () => boolean;
     cancelConfirmed: () => boolean;
+    waitForCancelConfirmation: () => Promise<boolean>;
     markHandedOff: () => void;
   }
 
@@ -344,6 +345,7 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
     let dispatched = false;
     let cancelledByUser = false;
     let cancelConfirmedFlag = false;
+    let cancelConfirmationPromise: Promise<boolean> | null = null;
     // Set once the owning confirm*Table() call has already given up waiting
     // (a client-observed timeout) and deferred final cleanup to a later
     // confirmed cancel — see markHandedOff below.
@@ -370,30 +372,43 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
         finalizeConfirmedCancel();
         return;
       }
-      const { confirmedWithinTimeout, retryPromise } = confirmCancelWithRetryAndTimeout(executionId);
-      // Do not discard the losing side of the race: if the retry loop is
-      // still going when the UI timeout wins below and it later succeeds,
-      // still finalize the confirmed cancel instead of dropping the result.
-      void retryPromise.then((eventuallyConfirmed) => {
-        if (eventuallyConfirmed) finalizeConfirmedCancel();
-      });
-      const confirmed = await confirmedWithinTimeout;
-      if (confirmed) {
-        finalizeConfirmedCancel();
-      } else if (sidebarDangerRunningExecutionId.value === executionId) {
-        // The confirmation window elapsed with no answer from the database.
-        // The operation may genuinely still be running server-side, so leave
-        // sidebarDangerRunningExecutionId / the running-execution state
-        // intact — the user can retry Cancel or just wait for it to settle
-        // — but don't leave the Cancel button silently usable again with
-        // zero explanation of what happened.
-        //
-        // Only surface this if the execution is still the one being tracked:
-        // by the time this arrives, confirmDropTable/confirmEmptyTable/
-        // confirmTruncateTable may have already resolved (success or an
-        // unrelated failure) and moved on, in which case this stale warning
-        // would contradict the outcome the user already saw.
-        toast(t("contextMenu.tableOperationCancelPending", { name: nodeLabel }), 6000);
+      if (!cancelConfirmationPromise) {
+        cancelConfirmationPromise = (async () => {
+          const { confirmedWithinTimeout, retryPromise } = confirmCancelWithRetryAndTimeout(executionId);
+          // Do not discard the losing side of the race: if the retry loop is
+          // still going when the UI timeout wins below and it later succeeds,
+          // still finalize the confirmed cancel instead of dropping the result.
+          void retryPromise.then((eventuallyConfirmed) => {
+            if (eventuallyConfirmed) finalizeConfirmedCancel();
+          });
+          const confirmed = await confirmedWithinTimeout;
+          if (confirmed) {
+            finalizeConfirmedCancel();
+          } else if (sidebarDangerRunningExecutionId.value === executionId) {
+            // The confirmation window elapsed with no answer from the database.
+            // The operation may genuinely still be running server-side, so leave
+            // sidebarDangerRunningExecutionId / the running-execution state
+            // intact — the user can retry Cancel or just wait for it to settle
+            // — but don't leave the Cancel button silently usable again with
+            // zero explanation of what happened.
+            //
+            // Only surface this if the execution is still the one being tracked:
+            // by the time this arrives, confirmDropTable/confirmEmptyTable/
+            // confirmTruncateTable may have already resolved (success or an
+            // unrelated failure) and moved on, in which case this stale warning
+            // would contradict the outcome the user already saw.
+            toast(t("contextMenu.tableOperationCancelPending", { name: nodeLabel }), 6000);
+          }
+          return confirmed;
+        })();
+      }
+      const currentConfirmation = cancelConfirmationPromise;
+      try {
+        await currentConfirmation;
+      } finally {
+        if (cancelConfirmationPromise === currentConfirmation) {
+          cancelConfirmationPromise = null;
+        }
       }
     };
 
@@ -405,6 +420,7 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
       },
       wasCancelled: () => cancelledByUser,
       cancelConfirmed: () => cancelConfirmedFlag,
+      waitForCancelConfirmation: () => cancelConfirmationPromise ?? Promise.resolve(cancelConfirmedFlag),
       markHandedOff: () => {
         handedOff = true;
       },
@@ -437,7 +453,7 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
   async function runDangerOperation(config: DangerOperationConfig) {
     const { node, buildSql, onSuccess } = config;
     if (!node.connectionId || node.database == null) return;
-    const { executionId, isCancelledBeforeDispatch, markDispatched, wasCancelled, cancelConfirmed, markHandedOff } = beginDangerRunningExecution(node.label);
+    const { executionId, isCancelledBeforeDispatch, markDispatched, wasCancelled, cancelConfirmed, waitForCancelConfirmation, markHandedOff } = beginDangerRunningExecution(node.label);
     try {
       await connectionStore.ensureConnected(node.connectionId);
       const sql = await buildSql();
@@ -454,8 +470,10 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
     } catch (error: any) {
       const message = error?.message || String(error);
       const backendError = normalizeBackendError(error) ?? undefined;
-      toastDangerOperationError(node.label, message, wasCancelled(), cancelConfirmed(), backendError);
-      if (cancelConfirmed() || !isQueryTimeoutErrorMessage(message, backendError)) {
+      const cancellationWasRequested = wasCancelled();
+      const cancellationWasConfirmed = cancelConfirmed() || (cancellationWasRequested && (await waitForCancelConfirmation()));
+      toastDangerOperationError(node.label, message, cancellationWasRequested, cancellationWasConfirmed, backendError);
+      if (cancellationWasConfirmed || !isQueryTimeoutErrorMessage(message, backendError)) {
         endDangerRunningExecution();
       } else {
         markHandedOff();
