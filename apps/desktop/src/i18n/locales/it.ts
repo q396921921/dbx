@@ -5990,6 +5990,8 @@ export default withEnglishFallback({
     shortcutCloseTab: "Chiudi scheda",
     shortcutFocusSearch: "Focalizza la ricerca nella vista corrente",
     shortcutQuickOpen: "Apertura rapida (ricerca tutti gli oggetti del database)",
+    shortcutNavigateTabHistoryBack: "Torna alla scheda visualizzata in precedenza",
+    shortcutNavigateTabHistoryForward: "Vai avanti alla scheda visualizzata successiva",
     shortcutSwitchToPreviousTab: "Passa alla scheda precedente",
     shortcutSwitchToNextTab: "Passa alla scheda successiva",
     shortcutSwitchToTab1: "Passa alla scheda 1",

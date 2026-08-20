@@ -6287,6 +6287,8 @@ export default withEnglishFallback({
     shortcutToggleSidebar: "切换侧边栏",
     shortcutFocusSearch: "聚焦当前页面搜索",
     shortcutQuickOpen: "快速打开 (搜索所有数据库对象)",
+    shortcutNavigateTabHistoryBack: "返回到上一个查看的标签页",
+    shortcutNavigateTabHistoryForward: "前进到下一个查看的标签页",
     shortcutSwitchToPreviousTab: "切换到左侧标签页",
     shortcutSwitchToNextTab: "切换到右侧标签页",
     shortcutSwitchToTab1: "切换到第 1 个标签页",

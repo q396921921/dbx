@@ -5301,6 +5301,8 @@ export default withEnglishFallback({
     shortcutToggleSidebar: "切換側邊欄",
     shortcutFocusSearch: "聚焦目前頁面搜尋",
     shortcutQuickOpen: "快速開啟 (搜尋所有資料庫物件)",
+    shortcutNavigateTabHistoryBack: "返回到上一個檢視的分頁",
+    shortcutNavigateTabHistoryForward: "前進到下一個檢視的分頁",
     shortcutSwitchToPreviousTab: "切換到左側分頁",
     shortcutSwitchToNextTab: "切換到右側分頁",
     shortcutSwitchToTab1: "切換到第 1 個分頁",

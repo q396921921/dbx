@@ -5991,6 +5991,8 @@ export default withEnglishFallback({
     shortcutToggleSidebar: "Alternar barra lateral",
     shortcutFocusSearch: "Enfocar búsqueda de la vista actual",
     shortcutQuickOpen: "Abrir rápido (buscar todos los objetos de base de datos)",
+    shortcutNavigateTabHistoryBack: "Volver a la pestaña vista anteriormente",
+    shortcutNavigateTabHistoryForward: "Avanzar a la siguiente pestaña vista",
     shortcutSwitchToPreviousTab: "Cambiar a la pestaña anterior",
     shortcutSwitchToNextTab: "Cambiar a la pestaña siguiente",
     shortcutSwitchToTab1: "Cambiar a la pestaña 1",

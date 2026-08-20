@@ -6005,6 +6005,8 @@ export default withEnglishFallback({
     shortcutCloseTab: "タブを閉じる",
     shortcutFocusSearch: "現在のビューの検索にフォーカス",
     shortcutQuickOpen: "クイックオープン (すべてのデータベースオブジェクトを検索)",
+    shortcutNavigateTabHistoryBack: "前に表示したタブに戻る",
+    shortcutNavigateTabHistoryForward: "次に表示したタブに進む",
     shortcutSwitchToPreviousTab: "前のタブに切り替え",
     shortcutSwitchToNextTab: "次のタブに切り替え",
     shortcutSwitchToTab1: "タブ 1 に切り替え",

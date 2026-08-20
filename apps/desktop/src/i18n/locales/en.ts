@@ -6298,6 +6298,8 @@ export default {
     shortcutCloseTab: "Close tab",
     shortcutFocusSearch: "Focus current view search",
     shortcutQuickOpen: "Quick open (search all database objects)",
+    shortcutNavigateTabHistoryBack: "Go back to the previously viewed tab",
+    shortcutNavigateTabHistoryForward: "Go forward to the next viewed tab",
     shortcutSwitchToPreviousTab: "Switch to previous tab",
     shortcutSwitchToNextTab: "Switch to next tab",
     shortcutSwitchToTab1: "Switch to tab 1",
