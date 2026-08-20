@@ -4115,7 +4115,6 @@ export const useQueryStore = defineStore("query", () => {
     traceId: string;
     elapsed: () => string;
     timeoutSecs: number;
-    maxRows?: number;
   }) {
     const resultRowCount = options.result.rows.length;
     if (resultRowCount <= 0) {
@@ -4158,11 +4157,12 @@ export const useQueryStore = defineStore("query", () => {
           setQueryTotalRowCountIfCurrent(options.tabId, options.executionId, options.result, undefined);
           return;
         }
-        const cappedTotal = capQueryResultTotal(total, options.maxRows);
-        setQueryTotalRowCountIfCurrent(options.tabId, options.executionId, options.result, cappedTotal);
+        // COUNT describes all matching rows; the configured result limit only
+        // constrains how many of them pagination may load and retain.
+        setQueryTotalRowCountIfCurrent(options.tabId, options.executionId, options.result, total);
         queryExecutionLog("info", "count:done", {
           traceId: options.traceId,
-          total: cappedTotal,
+          total,
           elapsed: options.elapsed(),
         });
       } catch (error) {
@@ -5151,7 +5151,6 @@ export const useQueryStore = defineStore("query", () => {
             traceId,
             elapsed,
             timeoutSecs: queryTimeoutSecs,
-            maxRows: queryResultMaxRows,
           });
         }
         queryExecutionLog("info", "result:assigned", {

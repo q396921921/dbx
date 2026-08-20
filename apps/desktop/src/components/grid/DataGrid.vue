@@ -205,7 +205,7 @@ import {
   replaceColumnValueFilterCondition,
 } from "@/lib/dataGrid/dataGridColumnFilter";
 import { normalizeResultPageSize, resultPageSizeMenuOptions } from "@/lib/dataGrid/paginationPageSize";
-import { continuousQueryResultMaxRows } from "@/lib/dataGrid/queryResultRowLimit";
+import { continuousQueryResultMaxRows, effectiveQueryResultMaxRows } from "@/lib/dataGrid/queryResultRowLimit";
 import { allNullColumnIndexes } from "@/lib/dataGrid/dataGridColumnVisibility";
 import { buildDataGridColumnLookupItems, dataGridColumnCommentFor, filterDataGridColumnLookupItems } from "@/lib/dataGrid/dataGridColumnLookup";
 import { uniqueDataGridColumnOrderKeys } from "@/lib/dataGrid/dataGridColumnOrder";
@@ -633,6 +633,8 @@ const dataGridRenderMode = computed(() => settingsStore.editorSettings.dataGridR
 const dataGridSearchMode = computed(() => settingsStore.editorSettings.dataGridSearchMode);
 const compactDataGridToolbar = computed(() => isDataGridToolbarCompact(dataGridTopbarWidth.value, dataGridViewportWidth.value, DATA_GRID_CONDITION_TOOLBAR_MIN_WIDTH));
 const infiniteScrollEnabled = computed(() => props.paginationEnabled && settingsStore.editorSettings.infiniteScroll);
+const queryResultMaxRows = computed(() => effectiveQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows));
+const paginationMaxRows = computed(() => (isResultsContext.value ? queryResultMaxRows.value : undefined));
 const infiniteScrollMaxRows = computed(() => continuousQueryResultMaxRows(settingsStore.editorSettings.queryResultMaxRowsEnabled, settingsStore.editorSettings.queryResultMaxRows));
 const flatteningMultiLineEnabled = computed(() => settingsStore.editorSettings.flatteningMultiLineText);
 const expandedCellEditor = ref<{ rowId: number; col: number } | null>(null);
@@ -3058,6 +3060,7 @@ const paginationTotalRowCount = computed(() =>
     paginationTotalRowCount: props.paginationTotalRowCount,
     serverKnownTotalRowCount: serverKnownTotalRowCount.value,
     totalRowCountIsExact: totalRowCountIsExact.value,
+    maxRows: paginationMaxRows.value,
   }),
 );
 // Only a server-confirmed total drives pagination — an inferred total means
@@ -3335,8 +3338,9 @@ function applyCustomPageSize() {
 }
 
 function jumpToCountedLastPage(total: number) {
-  if (total <= 0) return;
-  const lastPageNum = Math.max(1, Math.ceil(total / pageSize.value));
+  const paginationTotal = resolveDataGridPaginationTotal({ paginationTotalRowCount: total, totalRowCountIsExact: true, maxRows: paginationMaxRows.value });
+  if (paginationTotal === undefined || paginationTotal <= 0) return;
+  const lastPageNum = Math.max(1, Math.ceil(paginationTotal / pageSize.value));
   if (lastPageNum <= currentPage.value) return;
   // Do not bump currentPage before the new page loads — otherwise stale rows
   // briefly render with last-page indexes (e.g. 12001-13000) and flash a fake full page.

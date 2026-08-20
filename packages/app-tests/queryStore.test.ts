@@ -7169,7 +7169,7 @@ for (const resultState of [
   { label: "truncated", result: { truncated: true, has_more: false } },
   { label: "ambiguous exhaustion", result: {} },
 ]) {
-  test(`oracle agent ${resultState.label} short page uses COUNT and caps the configured result total`, async () => {
+  test(`oracle agent ${resultState.label} short page preserves an exact COUNT beyond the result cap`, async () => {
     const restoreStorage = installMemoryStorage();
     setActivePinia(createPinia());
     const connectionStore = useConnectionStore();
@@ -7214,7 +7214,7 @@ for (const resultState of [
       }
       if (url === "/api/query/execute") {
         countRequests += 1;
-        return new Response(JSON.stringify({ columns: ["COUNT(*)"], rows: [[3_357_833]], affected_rows: 0, execution_time_ms: 1 }), { status: 200, headers: { "Content-Type": "application/json" } });
+        return new Response(JSON.stringify({ columns: ["COUNT(*)"], rows: [[175_390]], affected_rows: 0, execution_time_ms: 1 }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       if (url === "/api/query/analyze-editability") {
         return new Response(JSON.stringify({ editable: false, reason: "complex-source" }), {
@@ -7227,11 +7227,11 @@ for (const resultState of [
 
     try {
       await store.executeTabSql(tabId, "SELECT ID FROM LARGE_TABLE");
-      await waitFor(() => tab.resultTotalRowCount === 100_000);
+      await waitFor(() => tab.resultTotalRowCount === 175_390);
 
       assert.equal(countRequests, 1);
       assert.equal(tab.result?.rows.length, 10_000);
-      assert.equal(tab.resultTotalRowCount, 100_000);
+      assert.equal(tab.resultTotalRowCount, 175_390);
     } finally {
       globalThis.fetch = originalFetch;
       restoreStorage();
