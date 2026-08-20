@@ -98,6 +98,13 @@ fn existing_index(name: &str, columns: &[&str], is_unique: bool) -> EditableStru
     index
 }
 
+fn existing_primary_index(name: &str, columns: &[&str]) -> EditableStructureIndex {
+    let mut index = existing_index(name, columns, true);
+    index.is_primary = true;
+    index.original.as_mut().unwrap().is_primary = true;
+    index
+}
+
 fn index_change_options(
     database_type: DatabaseType,
     schema: Option<&str>,
@@ -3070,6 +3077,85 @@ fn builds_postgres_alter_table_add_primary_key() {
 }
 
 #[test]
+fn postgres_replaces_custom_named_primary_key_without_renaming_it() {
+    let mut old_pk = existing_pk_column("id", "integer", true, false);
+    old_pk.id = "old_id".to_string();
+    let mut new_pk = existing_pk_column("asdas", "integer", false, true);
+    new_pk.id = "new_asdas".to_string();
+    let mut options = structure_change_options(DatabaseType::Postgres, Some("public"), "test", vec![old_pk, new_pk]);
+    options.indexes = vec![existing_primary_index("test_pk", &["id"])];
+
+    let result = build_table_structure_change_sql(options);
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"public\".\"test\" DROP CONSTRAINT \"test_pk\";",
+            "ALTER TABLE \"public\".\"test\" ADD CONSTRAINT \"test_pk\" PRIMARY KEY (\"asdas\");",
+        ]
+    );
+}
+
+#[test]
+fn postgres_preserves_quoted_primary_key_name_for_composite_replacement() {
+    let mut old_pk = existing_pk_column("legacy_id", "integer", true, false);
+    old_pk.id = "legacy_id".to_string();
+    let mut tenant_id = existing_pk_column("tenant_id", "integer", false, true);
+    tenant_id.id = "tenant_id".to_string();
+    let mut code = existing_pk_column("code", "text", false, true);
+    code.id = "code".to_string();
+    let mut options =
+        structure_change_options(DatabaseType::Postgres, Some("public"), "memberships", vec![old_pk, tenant_id, code]);
+    options.indexes = vec![existing_primary_index("Mixed Case PK", &["legacy_id"])];
+
+    let result = build_table_structure_change_sql(options);
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"public\".\"memberships\" DROP CONSTRAINT \"Mixed Case PK\";",
+            "ALTER TABLE \"public\".\"memberships\" ADD CONSTRAINT \"Mixed Case PK\" PRIMARY KEY (\"tenant_id\", \"code\");",
+        ]
+    );
+}
+
+#[test]
+fn postgres_rejects_primary_key_change_without_persisted_name_metadata() {
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Postgres,
+        Some("public"),
+        "users",
+        vec![existing_pk_column("id", "integer", true, false)],
+    ));
+
+    assert!(result.statements.is_empty());
+    assert_eq!(result.warnings.len(), 1);
+    assert!(result.warnings[0].contains("primary key constraint name"));
+    assert!(result.warnings[0].contains("Refresh"));
+}
+
+#[test]
+fn postgres_rejects_conflicting_persisted_primary_key_name_metadata() {
+    let mut options = structure_change_options(
+        DatabaseType::Postgres,
+        Some("public"),
+        "users",
+        vec![existing_pk_column("id", "integer", true, false)],
+    );
+    options.indexes =
+        vec![existing_primary_index("users_pk_a", &["id"]), existing_primary_index("users_pk_b", &["id"])];
+
+    let result = build_table_structure_change_sql(options);
+
+    assert!(result.statements.is_empty());
+    assert_eq!(result.warnings.len(), 1);
+    assert!(result.warnings[0].contains("primary key constraint name"));
+    assert!(result.warnings[0].contains("Refresh"));
+}
+
+#[test]
 fn builds_dameng_alter_table_add_primary_key() {
     // DM8: ADD [CONSTRAINT name] PRIMARY KEY — anonymous form matches DBeaver/MySQL-style editors.
     let result = build_table_structure_change_sql(structure_change_options(
@@ -3343,12 +3429,15 @@ fn dameng_does_not_mutate_primary_key_when_active_key_column_is_marked_for_drop(
 
 #[test]
 fn builds_postgres_alter_table_drop_primary_key() {
-    let result = build_table_structure_change_sql(structure_change_options(
+    let mut options = structure_change_options(
         DatabaseType::Postgres,
         Some("public"),
         "users",
         vec![existing_pk_column("id", "integer", true, false)],
-    ));
+    );
+    options.indexes = vec![existing_primary_index("users_pkey", &["id"])];
+
+    let result = build_table_structure_change_sql(options);
 
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(result.statements, vec!["ALTER TABLE \"public\".\"users\" DROP CONSTRAINT \"users_pkey\";"]);
