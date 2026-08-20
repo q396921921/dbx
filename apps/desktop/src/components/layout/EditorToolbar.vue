@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, watchEffect } from "vue";
 import { useI18n } from "vue-i18n";
-import { Play, CirclePlay, Loader2, Square, Database, Check, Table2, AlignLeft, GitBranch, Save, FolderOpen, X, Shield, Download, RotateCcw, AlertTriangle, ClipboardPaste, Minimize2 } from "@lucide/vue";
+import { Play, CirclePlay, Loader2, Square, Database, Check, Table2, AlignLeft, GitBranch, Save, FolderOpen, X, Shield, Download, RotateCcw, AlertTriangle, ClipboardPaste, Minimize2, SpellCheck2 } from "@lucide/vue";
 import { Button } from "@/components/ui/button";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -139,6 +139,17 @@ const explainAnalyzeTooltip = computed(() => {
 const canSaveSql = computed(() => !!props.activeTab.externalSqlPath || !!props.activeTab.sql.trim());
 const keywordCaseIsLower = computed(() => props.sqlKeywordCase === "lower");
 const keywordCaseToggleTooltip = computed(() => (keywordCaseIsLower.value ? t("toolbar.keywordCaseUpper") : t("toolbar.keywordCaseLower")));
+const sqlSemanticDiagnosticsEnabled = computed(() => settingsStore.editorSettings.sqlSemanticDiagnosticsEnabled);
+const sqlSemanticDiagnosticsToggleTooltip = computed(() => (sqlSemanticDiagnosticsEnabled.value ? t("toolbar.sqlSemanticDiagnosticsToggleOn") : t("toolbar.sqlSemanticDiagnosticsToggleOff")));
+const supportsSqlSemanticDiagnosticsToggle = computed(() => {
+  const dbType = props.activeConnection?.db_type;
+  return dbType !== "redis" && dbType !== "victoriametrics";
+});
+function toggleSqlSemanticDiagnostics() {
+  settingsStore.updateEditorSettings({
+    sqlSemanticDiagnosticsMode: sqlSemanticDiagnosticsEnabled.value ? "disabled" : "enabled",
+  });
+}
 const transactionTooltip = computed(() => {
   const isAgent = (props.activeConnection?.db_type as string) === "agent";
   const isManual = props.autoCommit === false;
@@ -360,6 +371,21 @@ async function changeCatalog(selectedCatalog: string) {
           </Button>
         </TooltipTrigger>
         <TooltipContent>{{ keywordCaseToggleTooltip }}</TooltipContent>
+      </Tooltip>
+      <Tooltip v-if="supportsSqlSemanticDiagnosticsToggle">
+        <TooltipTrigger as-child>
+          <Button
+            variant="ghost"
+            size="icon"
+            class="h-6 w-6"
+            :class="sqlSemanticDiagnosticsEnabled ? 'text-emerald-600 bg-emerald-500/10 hover:bg-emerald-500/20 hover:text-emerald-700 dark:text-emerald-300 dark:hover:text-emerald-200' : 'text-muted-foreground/50 hover:bg-muted hover:text-muted-foreground'"
+            :aria-label="sqlSemanticDiagnosticsToggleTooltip"
+            @click="toggleSqlSemanticDiagnostics"
+          >
+            <SpellCheck2 class="h-3.5 w-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{{ sqlSemanticDiagnosticsToggleTooltip }}</TooltipContent>
       </Tooltip>
       <Tooltip v-if="activeConnection?.db_type === 'redis'">
         <TooltipTrigger as-child>
