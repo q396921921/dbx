@@ -347,20 +347,18 @@ pub async fn start_transfer(
         // strip_inline_foreign_key_constraint_lines for why these can't be created
         // inline (a foreign key cycle has no valid CREATE TABLE order at all).
         let mut failed_fk_tables: Vec<String> = Vec::new();
+        let mut failed_fk_count = 0usize;
         for (table, alter_sql) in &pending_fk_alters {
             if let Err(e) = transfer::execute_on_pool(&app, &target_pool_key, alter_sql).await {
                 log::warn!("[transfer] failed to add deferred foreign key constraint for {table}: {e}");
+                failed_fk_count += 1;
                 failed_fk_tables.push(table.clone());
             }
         }
-        if !failed_fk_tables.is_empty() {
+        if failed_fk_count > 0 {
             failed_fk_tables.sort();
             failed_fk_tables.dedup();
-            failed_tables.push(format!(
-                "{} foreign key(s) on: {}",
-                failed_fk_tables.len(),
-                failed_fk_tables.join(", ")
-            ));
+            failed_tables.push(format!("{} foreign key(s) on: {}", failed_fk_count, failed_fk_tables.join(", ")));
         }
 
         // Transfer selected non-table objects (views, procedures, functions,

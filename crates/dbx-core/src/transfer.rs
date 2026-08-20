@@ -1725,6 +1725,10 @@ fn is_mysql_family_target(target_db: &DatabaseType) -> bool {
     )
 }
 
+fn supports_deferred_mysql_foreign_keys(target_db: &DatabaseType) -> bool {
+    is_mysql_family_target(target_db) && crate::table_structure_sql::supports_foreign_keys(*target_db)
+}
+
 /// QuestDB is not included. It only uses the PGWire protocol. SQL DDL syntax is not compatible.
 fn is_postgres_family_target(target_db: &DatabaseType) -> bool {
     matches!(
@@ -7020,7 +7024,7 @@ where
             // Postgres transfers.
             let mut ddl = ddl;
             let mut deferred_fk_alters: Vec<String> = Vec::new();
-            if is_mysql_family_target(target_db_type) {
+            if supports_deferred_mysql_foreign_keys(target_db_type) {
                 // Reuse the FK metadata `sort_tables_by_fk_dependency_with_foreign_keys`
                 // already fetched for the whole batch when the caller provided it;
                 // only fall back to a live query for callers that don't pre-fetch
@@ -8515,6 +8519,14 @@ mod tests {
             );
             let event = mysql_event_ddl("shop", "ev1", "ENABLE", "EVERY 1 DAY", "DELETE FROM logs");
             assert_eq!(event, "CREATE EVENT `ev1` ON SCHEDULE EVERY 1 DAY ENABLE DO DELETE FROM logs");
+        }
+
+        #[test]
+        fn deferred_mysql_foreign_keys_follow_target_ddl_capability() {
+            for target in [DatabaseType::Mysql, DatabaseType::StarRocks, DatabaseType::Goldendb, DatabaseType::Sundb] {
+                assert!(supports_deferred_mysql_foreign_keys(&target), "{target:?}");
+            }
+            assert!(!supports_deferred_mysql_foreign_keys(&DatabaseType::Doris));
         }
 
         #[test]
