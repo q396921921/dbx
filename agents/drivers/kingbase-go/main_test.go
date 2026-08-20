@@ -851,6 +851,21 @@ func TestOpenAndPingDBPreferFallbackUsesOneTimeoutBudget(t *testing.T) {
 	}
 }
 
+func TestOpenAndPingDBPreferFallbackHandlesKingbaseV7TLSFailure(t *testing.T) {
+	state := &connectionAttemptState{pingErrors: map[string]error{
+		"require": errors.New("remote error: tls: handshake failure"),
+	}}
+	db, err := openAndPingDB(connectParams{}, time.Second, state.open)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	attempts, _ := state.snapshot()
+	if strings.Join(attempts, ",") != "require,disable" {
+		t.Fatalf("unexpected KingBase V7 attempts: %v", attempts)
+	}
+}
+
 func TestOpenAndPingDBDoesNotDowngradeUnrelatedErrors(t *testing.T) {
 	authErr := errors.New("authentication failed")
 	state := &connectionAttemptState{pingErrors: map[string]error{"require": authErr}}
@@ -867,6 +882,33 @@ func TestOpenAndPingDBDoesNotDowngradeUnrelatedErrors(t *testing.T) {
 	}
 }
 
+func TestOpenAndPingDBDoesNotDowngradeNetworkErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "timeout", err: context.DeadlineExceeded},
+		{name: "connection refused", err: errors.New("dial tcp 127.0.0.1:54321: connect: connection refused")},
+		{name: "generic handshake", err: errors.New("handshake failure")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := &connectionAttemptState{pingErrors: map[string]error{"require": test.err}}
+			db, err := openAndPingDB(connectParams{}, time.Second, state.open)
+			if db != nil {
+				db.Close()
+			}
+			if !errors.Is(err, test.err) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			attempts, _ := state.snapshot()
+			if strings.Join(attempts, ",") != "require" {
+				t.Fatalf("network errors must not downgrade: %v", attempts)
+			}
+		})
+	}
+}
+
 func TestOpenAndPingDBExplicitModesNeverDowngrade(t *testing.T) {
 	for _, sslMode := range []string{"disable", "require", "verify-ca", "verify-full"} {
 		t.Run(sslMode, func(t *testing.T) {
@@ -876,6 +918,26 @@ func TestOpenAndPingDBExplicitModesNeverDowngrade(t *testing.T) {
 				db.Close()
 			}
 			if !errors.Is(err, gokb.ErrSSLNotSupported) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			attempts, _ := state.snapshot()
+			if len(attempts) != 1 || attempts[0] != sslMode {
+				t.Fatalf("explicit mode must use one attempt: %v", attempts)
+			}
+		})
+	}
+}
+
+func TestOpenAndPingDBExplicitModesNeverDowngradeKingbaseV7TLSFailure(t *testing.T) {
+	tlsErr := errors.New("remote error: tls: handshake failure")
+	for _, sslMode := range []string{"disable", "require", "verify-ca", "verify-full"} {
+		t.Run(sslMode, func(t *testing.T) {
+			state := &connectionAttemptState{pingErrors: map[string]error{sslMode: tlsErr}}
+			db, err := openAndPingDB(connectParams{URLParams: "sslmode=" + sslMode}, time.Second, state.open)
+			if db != nil {
+				db.Close()
+			}
+			if !errors.Is(err, tlsErr) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			attempts, _ := state.snapshot()
