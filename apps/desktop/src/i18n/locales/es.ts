@@ -159,6 +159,8 @@ export default withEnglishFallback({
     compressSql: "Comprimir SQL",
     keywordCaseLower: "Usar palabras clave SQL en minúsculas",
     keywordCaseUpper: "Usar palabras clave SQL en mayúsculas",
+    sqlSemanticDiagnosticsToggleOn: "Diagnóstico semántico de SQL: activado (clic para desactivar)",
+    sqlSemanticDiagnosticsToggleOff: "Diagnóstico semántico de SQL: desactivado (clic para activar)",
     autoCommit: "Auto Commit",
     manualTransaction: "Transacción Manual",
     autoCommitAgent: "Auto Commit (depende del backend del Agente)",
