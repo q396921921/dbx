@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use super::*;
 use crate::models::connection::DatabaseType;
 
@@ -129,6 +131,60 @@ fn quotes_gaussdb_only_reserved_words_not_shared_with_postgres() {
             "GaussDB must not quote `{name}` — confirmed not reserved on a real instance"
         );
     }
+}
+
+#[test]
+fn transfer_identifier_gaussdb_keywords_live_catalog_overrides_static_list() {
+    // t8y2/dbx#6283 follow-up: `maxvalue` is RESERVED_KEYWORD on openGauss
+    // 5.0 (per its kwlist.h) but UNRESERVED_KEYWORD on current/master
+    // openGauss — so a live pg_get_keywords() catalog from each version must
+    // produce different quoting for the exact same word, unlike the static
+    // list this replaces (which permanently quotes `maxvalue` everywhere).
+    let opengauss_5_0: HashSet<String> = ["maxvalue".to_string()].into_iter().collect();
+    assert_eq!(
+        quote_transfer_identifier_with_gaussdb_keywords("maxvalue", &DatabaseType::OpenGauss, Some(&opengauss_5_0)),
+        "\"maxvalue\"",
+        "openGauss 5.0's live catalog reserves maxvalue"
+    );
+
+    // A live catalog from current/master openGauss would not list `maxvalue`
+    // as reserved (some unrelated word stands in for "the rest of the real
+    // catalog" here).
+    let opengauss_current: HashSet<String> = ["compact".to_string()].into_iter().collect();
+    assert_eq!(
+        quote_transfer_identifier_with_gaussdb_keywords(
+            "maxvalue",
+            &DatabaseType::OpenGauss,
+            Some(&opengauss_current)
+        ),
+        "maxvalue",
+        "current openGauss's live catalog does not reserve maxvalue — must stay unquoted"
+    );
+}
+
+#[test]
+fn transfer_identifier_gaussdb_keywords_none_falls_back_to_static_list() {
+    // No live catalog available (probe failed, connection error, or an
+    // engine without pg_get_keywords) — must preserve the existing
+    // static-list behavior unchanged, still quoting `maxvalue`.
+    assert_eq!(
+        quote_transfer_identifier_with_gaussdb_keywords("maxvalue", &DatabaseType::Gaussdb, None),
+        "\"maxvalue\""
+    );
+    assert_eq!(quote_transfer_identifier("maxvalue", &DatabaseType::Gaussdb), "\"maxvalue\"");
+    assert_eq!(quote_transfer_identifier("maxvalue", &DatabaseType::OpenGauss), "\"maxvalue\"");
+}
+
+#[test]
+fn transfer_identifier_gaussdb_keywords_core_postgres_reserved_words_unaffected_by_live_catalog() {
+    // Core Postgres reserved words must stay quoted regardless of what the
+    // live GaussDB-only catalog contains — the live catalog only replaces
+    // `is_gaussdb_only_reserved_identifier`, never `is_postgres_reserved_identifier`.
+    let live_catalog_without_select: HashSet<String> = HashSet::new();
+    assert_eq!(
+        quote_transfer_identifier_with_gaussdb_keywords("select", &DatabaseType::Gaussdb, Some(&live_catalog_without_select)),
+        "\"select\""
+    );
 }
 
 #[test]

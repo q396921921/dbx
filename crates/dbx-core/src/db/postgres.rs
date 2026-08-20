@@ -11,7 +11,7 @@ use rustls::server::ParsedCertificate;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs::File;
 use std::future::Future;
 use std::io::BufReader;
@@ -55,6 +55,59 @@ pub(crate) fn gaussdb_identifier_quote_for_compatibility_mode(compatibility_mode
         "M" | "B" | "MYSQL" => Some("`"),
         "A" | "PG" | "ORA" | "POSTGRESQL" => Some("\""),
         _ => None,
+    }
+}
+
+/// `pg_get_keywords()` catcode `R` (reserved) or `T` (reserved, can be
+/// function or type name) — the same criterion used to hand-derive the
+/// static GaussDB-only reserved-word list this function supersedes with a
+/// live, per-server-version result (t8y2/dbx#6283 follow-up).
+pub(crate) const GAUSSDB_RESERVED_KEYWORDS_SQL: &str =
+    "SELECT word FROM pg_get_keywords() WHERE catcode IN ('R','T')";
+
+/// Outcome of a live `pg_get_keywords()` probe. Distinguishes failures that
+/// are worth caching (the outcome will be identical on retry — e.g. the
+/// server-side query itself failed or came back empty) from failures that
+/// are likely transient (couldn't even check out a connection, or the probe
+/// timed out) and should be retried rather than pinned to "unavailable" for
+/// the rest of the connection's lifetime (t8y2/dbx#6283 follow-up).
+pub enum GaussdbReservedKeywordsProbe {
+    Available(HashSet<String>),
+    /// The query ran and either failed (e.g. permission denied on
+    /// `pg_get_keywords()`, or an engine that doesn't have the function) or
+    /// returned zero rows — a deterministic outcome for this server, safe to
+    /// cache so a multi-table transfer job doesn't re-pay a checkout + query
+    /// round trip per table for a server that will never answer.
+    NotSupported,
+    /// Couldn't check out a connection, or the probe timed out before the
+    /// server responded — likely transient, must NOT be cached.
+    Retryable,
+}
+
+/// Live catalog of GaussDB/openGauss reserved keywords for this exact server,
+/// so identifier quoting reflects the actual target version instead of a
+/// hand-diffed static list that can drift across releases (e.g. `maxvalue` is
+/// reserved on openGauss 5.0 but not on current openGauss).
+pub async fn gaussdb_reserved_keywords(pool: &Pool) -> GaussdbReservedKeywordsProbe {
+    let timeout = super::connection_timeout();
+    let client = match checkout_postgres_client(pool, None, timeout).await {
+        Ok(client) => client,
+        Err(_) => return GaussdbReservedKeywordsProbe::Retryable,
+    };
+    let query_result = match tokio::time::timeout(timeout, client.query(GAUSSDB_RESERVED_KEYWORDS_SQL, &[])).await {
+        Ok(result) => result,
+        Err(_) => return GaussdbReservedKeywordsProbe::Retryable,
+    };
+    let rows = match query_result {
+        Ok(rows) => rows,
+        Err(_) => return GaussdbReservedKeywordsProbe::NotSupported,
+    };
+    let words: HashSet<String> =
+        rows.iter().filter_map(|row| row.try_get::<_, String>(0).ok()).map(|w| w.to_ascii_lowercase()).collect();
+    if words.is_empty() {
+        GaussdbReservedKeywordsProbe::NotSupported
+    } else {
+        GaussdbReservedKeywordsProbe::Available(words)
     }
 }
 

@@ -193,6 +193,15 @@ macro_rules! agent_connection_pool_database_type {
     };
 }
 
+#[derive(Clone)]
+enum GaussdbReservedKeywordsCacheEntry {
+    Available(Arc<HashSet<String>>),
+    /// The probe ran and deterministically found nothing usable (SQL-level
+    /// error, or an empty result) — cached because retrying it produces the
+    /// identical outcome every time for this server.
+    NotSupported,
+}
+
 pub struct AppState {
     pub connections: Arc<RwLock<HashMap<String, PoolKind>>>,
     task_supervisor: TaskSupervisor,
@@ -213,6 +222,13 @@ pub struct AppState {
     /// PostgreSQL TLS cancel context, keyed by pool_key.
     /// Used to reconstruct a TLS connector compatible with the original connection when cancelling.
     postgres_cancel_contexts: Arc<RwLock<HashMap<String, db::postgres::PostgresCancelContext>>>,
+    /// Live GaussDB/openGauss `pg_get_keywords()` reserved-word catalog, keyed
+    /// by pool_key. Populated lazily on first use per target connection
+    /// (t8y2/dbx#6283 follow-up) so identifier quoting during data transfer
+    /// reflects the actual server version instead of a hand-diffed static
+    /// list that can drift across GaussDB/openGauss releases (e.g. `maxvalue`
+    /// is reserved on openGauss 5.0 but not on current openGauss).
+    gaussdb_reserved_keywords_cache: Arc<RwLock<HashMap<String, GaussdbReservedKeywordsCacheEntry>>>,
     pub transaction_sessions: Arc<RwLock<HashMap<String, TransactionSession>>>,
     /// `save_password=false` 连接本次运行期的临时密码（内存，进程退出即丢，
     /// 绝不落盘）。键为 `(owner_scope, connection_id)`：桌面端 owner 为空串，
@@ -301,6 +317,7 @@ struct PoolRoutingControl {
     connections: Arc<RwLock<HashMap<String, PoolKind>>>,
     pool_activity: Arc<RwLock<HashMap<String, PoolActivity>>>,
     postgres_cancel_contexts: Arc<RwLock<HashMap<String, db::postgres::PostgresCancelContext>>>,
+    gaussdb_reserved_keywords_cache: Arc<RwLock<HashMap<String, GaussdbReservedKeywordsCacheEntry>>>,
     task_supervisor: TaskSupervisor,
 }
 
@@ -426,9 +443,11 @@ impl PoolRoutingControl {
         {
             let mut activity = self.pool_activity.write().await;
             let mut cancel_contexts = self.postgres_cancel_contexts.write().await;
+            let mut gaussdb_keywords = self.gaussdb_reserved_keywords_cache.write().await;
             for (key, _) in &removed {
                 activity.remove(key);
                 cancel_contexts.remove(key);
+                gaussdb_keywords.remove(key);
             }
         }
         self.close_removed_in_background(removed);
@@ -962,6 +981,7 @@ impl AppState {
             connections: self.connections.clone(),
             pool_activity: self.pool_activity.clone(),
             postgres_cancel_contexts: self.postgres_cancel_contexts.clone(),
+            gaussdb_reserved_keywords_cache: self.gaussdb_reserved_keywords_cache.clone(),
             task_supervisor: self.task_supervisor.clone(),
         }
     }
@@ -1083,6 +1103,7 @@ impl AppState {
             duckdb_worker_process_isolation: AtomicBool::new(false),
             duckdb_worker_max_processes: AtomicUsize::new(DUCKDB_WORKER_MAX_PROCESSES_DEFAULT),
             postgres_cancel_contexts: Arc::new(RwLock::new(HashMap::new())),
+            gaussdb_reserved_keywords_cache: Arc::new(RwLock::new(HashMap::new())),
             transaction_sessions: Arc::new(RwLock::new(HashMap::new())),
             session_credentials: SessionCredentialStore::new(),
             #[cfg(feature = "mq-admin")]
@@ -3278,6 +3299,7 @@ impl AppState {
         self.stop_keepalive_task(pool_key).await;
         self.pool_activity.write().await.remove(pool_key);
         self.postgres_cancel_contexts.write().await.remove(pool_key);
+        self.gaussdb_reserved_keywords_cache.write().await.remove(pool_key);
         let removed = self.connections.write().await.remove(pool_key);
         if let Some(pool) = removed {
             self.pool_routing_control().close_pool_with_timeout(pool_key.to_string(), pool).await;
@@ -3356,6 +3378,7 @@ impl AppState {
             self.stop_keepalive_task(&pool_key).await;
             self.pool_activity.write().await.remove(&pool_key);
             self.postgres_cancel_contexts.write().await.remove(&pool_key);
+            self.gaussdb_reserved_keywords_cache.write().await.remove(&pool_key);
             let removed = self.connections.write().await.remove(&pool_key);
             if let Some(pool) = removed {
                 self.pool_routing_control().close_pool_with_timeout(pool_key.clone(), pool).await;
@@ -3546,6 +3569,7 @@ impl AppState {
         self.stop_keepalive_task(&pool_key).await;
         self.pool_activity.write().await.remove(&pool_key);
         self.postgres_cancel_contexts.write().await.remove(&pool_key);
+        self.gaussdb_reserved_keywords_cache.write().await.remove(&pool_key);
         let removed = self.connections.write().await.remove(&pool_key);
         Ok(removed.map(|pool| (pool_key, pool)))
     }
@@ -3554,6 +3578,7 @@ impl AppState {
         self.stop_keepalive_task(pool_key).await;
         self.pool_activity.write().await.remove(pool_key);
         self.postgres_cancel_contexts.write().await.remove(pool_key);
+        self.gaussdb_reserved_keywords_cache.write().await.remove(pool_key);
         let removed = self.connections.write().await.remove(pool_key);
         if let Some(pool) = removed {
             self.pool_routing_control().close_pool_with_timeout(pool_key.to_string(), pool).await;
@@ -3622,6 +3647,7 @@ impl AppState {
 
         self.pool_activity.write().await.remove(pool_key);
         self.postgres_cancel_contexts.write().await.remove(pool_key);
+        self.gaussdb_reserved_keywords_cache.write().await.remove(pool_key);
         match close_reclaimed_agent_pool(pool).await {
             Ok(()) => true,
             Err((PoolKind::Agent(client), error)) if should_replace_agent_runtime(&error) => {
@@ -3700,9 +3726,11 @@ impl AppState {
         {
             let mut activity = self.pool_activity.write().await;
             let mut cancel_contexts = self.postgres_cancel_contexts.write().await;
+            let mut gaussdb_keywords = self.gaussdb_reserved_keywords_cache.write().await;
             for key in &keys_to_remove {
                 activity.remove(key);
                 cancel_contexts.remove(key);
+                gaussdb_keywords.remove(key);
             }
         }
         let mut conns = self.connections.write().await;
@@ -3830,6 +3858,55 @@ impl AppState {
                 Ok(response.ok().and_then(|result| gaussdb_identifier_quote_from_query_result(&result)))
             }
             None => Ok(None),
+        }
+    }
+
+    /// Live GaussDB/openGauss reserved-keyword catalog for `pool_key`, queried
+    /// once via `pg_get_keywords()` and cached thereafter (t8y2/dbx#6283
+    /// follow-up), so data-transfer identifier quoting reflects the actual
+    /// target server version instead of a static list that can drift across
+    /// releases. Callers must only invoke this for targets already known to
+    /// be `DatabaseType::Gaussdb | DatabaseType::OpenGauss` — this method
+    /// itself only requires `pool_key` to resolve to `PoolKind::Postgres`
+    /// (the native pg-wire driver those types use); it does not re-check
+    /// db_type. JDBC/Agent/ExternalDriver GaussDB pool kinds are out of scope
+    /// and always fall back to `None` (the caller's static-list fallback).
+    ///
+    /// A deterministic outcome (the query ran and either failed or came back
+    /// empty — e.g. permission denied on `pg_get_keywords()`, or an engine
+    /// that doesn't have it) is cached too, so a multi-table transfer job
+    /// against a server that will never answer doesn't re-pay a connection
+    /// checkout + query round trip per table. A merely transient failure
+    /// (couldn't check out a connection, or the probe timed out) is NOT
+    /// cached and is retried on the next call.
+    pub async fn gaussdb_reserved_keywords(&self, pool_key: &str) -> Option<Arc<HashSet<String>>> {
+        if let Some(entry) = self.gaussdb_reserved_keywords_cache.read().await.get(pool_key) {
+            return match entry {
+                GaussdbReservedKeywordsCacheEntry::Available(words) => Some(words.clone()),
+                GaussdbReservedKeywordsCacheEntry::NotSupported => None,
+            };
+        }
+        let pool = match self.connections.read().await.get(pool_key) {
+            Some(PoolKind::Postgres(pool)) => pool.clone(),
+            _ => return None,
+        };
+        match db::postgres::gaussdb_reserved_keywords(&pool).await {
+            db::postgres::GaussdbReservedKeywordsProbe::Available(words) => {
+                let words = Arc::new(words);
+                self.gaussdb_reserved_keywords_cache
+                    .write()
+                    .await
+                    .insert(pool_key.to_string(), GaussdbReservedKeywordsCacheEntry::Available(words.clone()));
+                Some(words)
+            }
+            db::postgres::GaussdbReservedKeywordsProbe::NotSupported => {
+                self.gaussdb_reserved_keywords_cache
+                    .write()
+                    .await
+                    .insert(pool_key.to_string(), GaussdbReservedKeywordsCacheEntry::NotSupported);
+                None
+            }
+            db::postgres::GaussdbReservedKeywordsProbe::Retryable => None,
         }
     }
 
@@ -4267,6 +4344,7 @@ impl AppState {
         self.pool_activity.write().await.clear();
         self.session_credentials.clear_pool_owners();
         self.postgres_cancel_contexts.write().await.clear();
+        self.gaussdb_reserved_keywords_cache.write().await.clear();
         self.draining_pools.lock().unwrap_or_else(|error| error.into_inner()).clear();
         self.connections.write().await.drain().collect()
     }
@@ -4299,9 +4377,11 @@ impl AppState {
         {
             let mut activity = self.pool_activity.write().await;
             let mut cancel_contexts = self.postgres_cancel_contexts.write().await;
+            let mut gaussdb_keywords = self.gaussdb_reserved_keywords_cache.write().await;
             for key in &keys_to_remove {
                 activity.remove(key);
                 cancel_contexts.remove(key);
+                gaussdb_keywords.remove(key);
             }
         }
         self.session_credentials.remove_pool_owners(&keys_to_remove);
@@ -4332,9 +4412,11 @@ impl AppState {
         {
             let mut activity = self.pool_activity.write().await;
             let mut cancel_contexts = self.postgres_cancel_contexts.write().await;
+            let mut gaussdb_keywords = self.gaussdb_reserved_keywords_cache.write().await;
             for key in &keys_to_remove {
                 activity.remove(key);
                 cancel_contexts.remove(key);
+                gaussdb_keywords.remove(key);
             }
         }
         let mut conns = self.connections.write().await;

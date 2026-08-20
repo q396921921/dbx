@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::models::connection::DatabaseType;
 use percent_encoding::percent_decode_str;
 
@@ -434,6 +436,24 @@ pub fn normalize_where_input(where_input: Option<&str>) -> String {
 }
 
 pub(crate) fn quote_transfer_identifier(name: &str, database_type: &DatabaseType) -> String {
+    quote_transfer_identifier_with_gaussdb_keywords(name, database_type, None)
+}
+
+/// Like [`quote_transfer_identifier`], but for GaussDB/OpenGauss targets
+/// accepts a live, server-version-specific reserved-keyword catalog
+/// (queried once per connection via `pg_get_keywords()`, see
+/// `AppState::gaussdb_reserved_keywords`) to use INSTEAD of the static
+/// [`is_gaussdb_only_reserved_identifier`] list — never unioned with it,
+/// since the whole point is that the live catalog is authoritative for that
+/// exact server and must not force-quote a word (e.g. `maxvalue`) that isn't
+/// actually reserved on this version (t8y2/dbx#6283 follow-up). When `None`
+/// (no live probe available), falls back to the static list unchanged.
+/// `is_postgres_reserved_identifier` always applies regardless.
+pub(crate) fn quote_transfer_identifier_with_gaussdb_keywords(
+    name: &str,
+    database_type: &DatabaseType,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
     match database_type {
         DatabaseType::Mysql
         | DatabaseType::ClickHouse
@@ -446,9 +466,11 @@ pub(crate) fn quote_transfer_identifier(name: &str, database_type: &DatabaseType
         | DatabaseType::Questdb => format!("`{}`", name.replace('`', "``")),
         DatabaseType::SqlServer => format!("[{}]", name.replace(']', "]]")),
         _ if needs_conditional_quoting_for_gaussdb_family(database_type) => {
-            if is_simple_lower_identifier(name)
-                && !is_postgres_reserved_identifier(name)
-                && !is_gaussdb_only_reserved_identifier(name)
+            let is_target_only_reserved = match gaussdb_keywords {
+                Some(live) => live.contains(name),
+                None => is_gaussdb_only_reserved_identifier(name),
+            };
+            if is_simple_lower_identifier(name) && !is_postgres_reserved_identifier(name) && !is_target_only_reserved
             {
                 name.to_string()
             } else {
@@ -488,12 +510,25 @@ pub(crate) fn qualified_transfer_table(
     database_type: &DatabaseType,
     catalog: Option<&str>,
 ) -> String {
-    let table = quote_transfer_identifier(table_name, database_type);
+    qualified_transfer_table_with_gaussdb_keywords(table_name, schema, database_type, catalog, None)
+}
+
+/// Like [`qualified_transfer_table`], but threads a live GaussDB/OpenGauss
+/// reserved-keyword catalog through to [`quote_transfer_identifier_with_gaussdb_keywords`]
+/// for each part of the qualified name (t8y2/dbx#6283 follow-up).
+pub(crate) fn qualified_transfer_table_with_gaussdb_keywords(
+    table_name: &str,
+    schema: &str,
+    database_type: &DatabaseType,
+    catalog: Option<&str>,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
+    let table = quote_transfer_identifier_with_gaussdb_keywords(table_name, database_type, gaussdb_keywords);
     if let Some(catalog) = catalog {
         format!(
             "{}.{}.{}",
-            quote_transfer_identifier(catalog, database_type),
-            quote_transfer_identifier(schema, database_type),
+            quote_transfer_identifier_with_gaussdb_keywords(catalog, database_type, gaussdb_keywords),
+            quote_transfer_identifier_with_gaussdb_keywords(schema, database_type, gaussdb_keywords),
             table
         )
     } else if schema.is_empty()
@@ -501,6 +536,6 @@ pub(crate) fn qualified_transfer_table(
     {
         table
     } else {
-        format!("{}.{}", quote_transfer_identifier(schema, database_type), table)
+        format!("{}.{}", quote_transfer_identifier_with_gaussdb_keywords(schema, database_type, gaussdb_keywords), table)
     }
 }

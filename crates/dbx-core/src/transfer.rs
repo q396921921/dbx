@@ -13,7 +13,10 @@ use crate::query::{
     agent_execute_query_params, pool_error_action, PoolErrorAction, QueryExecutionOptions, AGENT_PROTOCOL_MAX_ROWS,
 };
 use crate::sql::{split_sql_statements, split_sql_statements_for_database};
-use crate::sql_dialect::{qualified_transfer_table, quote_transfer_identifier};
+use crate::sql_dialect::{
+    qualified_transfer_table, qualified_transfer_table_with_gaussdb_keywords, quote_transfer_identifier,
+    quote_transfer_identifier_with_gaussdb_keywords,
+};
 
 static CANCELLED: std::sync::LazyLock<RwLock<HashSet<String>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashSet::new()));
@@ -235,6 +238,14 @@ pub fn quote_identifier(name: &str, db_type: &DatabaseType) -> String {
     quote_transfer_identifier(name, db_type)
 }
 
+pub(crate) fn quote_identifier_with_gaussdb_keywords(
+    name: &str,
+    db_type: &DatabaseType,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
+    quote_transfer_identifier_with_gaussdb_keywords(name, db_type, gaussdb_keywords)
+}
+
 fn quote_identifier_with_identifier_quote(
     name: &str,
     db_type: &DatabaseType,
@@ -315,6 +326,44 @@ pub fn qualified_table(table: &str, schema: &str, db_type: &DatabaseType, catalo
     // Only use 3-part catalog-qualified names for Doris/StarRocks external catalogs.
     let effective_catalog = resolve_external_transfer_catalog(catalog, db_type);
     qualified_transfer_table(table, schema, db_type, effective_catalog)
+}
+
+pub(crate) fn qualified_table_with_gaussdb_keywords(
+    table: &str,
+    schema: &str,
+    db_type: &DatabaseType,
+    catalog: Option<&str>,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
+    let effective_catalog = resolve_external_transfer_catalog(catalog, db_type);
+    qualified_transfer_table_with_gaussdb_keywords(table, schema, db_type, effective_catalog, gaussdb_keywords)
+}
+
+/// SQL to clear the target table before an `Overwrite`-mode transfer,
+/// shared by the SQL-source (`transfer_table`) and MongoDB-source
+/// (`transfer_mongodb_table`) write paths. Must use the `_with_gaussdb_keywords`
+/// variant of `qualified_table` — using the plain static-list version here
+/// while CREATE TABLE uses the live catalog would let the two statements
+/// disagree on whether to quote the same table name, reintroducing the
+/// case-locking bug this PR fixes (t8y2/dbx#6283 follow-up).
+fn transfer_overwrite_clear_sql(
+    target_table: &str,
+    target_schema: &str,
+    target_db_type: &DatabaseType,
+    target_catalog: Option<&str>,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
+    let full_table = qualified_table_with_gaussdb_keywords(
+        target_table,
+        target_schema,
+        target_db_type,
+        target_catalog,
+        gaussdb_keywords,
+    );
+    match target_db_type {
+        DatabaseType::Sqlite | DatabaseType::CloudflareD1 | DatabaseType::DuckDb => format!("DELETE FROM {full_table}"),
+        _ => format!("TRUNCATE TABLE {full_table}"),
+    }
 }
 
 fn qualified_table_with_identifier_quote(
@@ -2829,6 +2878,7 @@ fn parse_mysql_row_error(error: &str) -> Option<u64> {
     at_row.trim().parse::<u64>().ok()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn generate_create_table_ddl(
     columns: &[db::ColumnInfo],
     table: &str,
@@ -2839,7 +2889,32 @@ pub fn generate_create_table_ddl(
     table_comment: Option<&str>,
     catalog: Option<&str>,
 ) -> String {
-    let full_table = qualified_table(table, schema, target_db, catalog);
+    generate_create_table_ddl_with_gaussdb_keywords(
+        columns,
+        table,
+        source_schema,
+        schema,
+        target_db,
+        source_db,
+        table_comment,
+        catalog,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn generate_create_table_ddl_with_gaussdb_keywords(
+    columns: &[db::ColumnInfo],
+    table: &str,
+    source_schema: &str,
+    schema: &str,
+    target_db: &DatabaseType,
+    source_db: &DatabaseType,
+    table_comment: Option<&str>,
+    catalog: Option<&str>,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
+    let full_table = qualified_table_with_gaussdb_keywords(table, schema, target_db, catalog, gaussdb_keywords);
 
     let is_mysql_family = matches!(
         target_db,
@@ -2854,7 +2929,8 @@ pub fn generate_create_table_ddl(
     for c in columns {
         col_lines.push({
             let mapped_type = postgres_column_type_sql(c, source_schema, schema, source_db, target_db);
-            let mut line = format!("  {} {}", quote_identifier(&c.name, target_db), mapped_type);
+            let mut line =
+                format!("  {} {}", quote_identifier_with_gaussdb_keywords(&c.name, target_db, gaussdb_keywords), mapped_type);
             if let Some(default_clause) = column_default_clause(c, source_schema, schema, source_db, target_db) {
                 line.push(' ');
                 line.push_str(&default_clause);
@@ -2886,7 +2962,7 @@ pub fn generate_create_table_ddl(
     if !matches!(target_db, DatabaseType::Hive | DatabaseType::Kyuubi | DatabaseType::Impala) {
         for c in columns {
             if c.is_primary_key {
-                let qname = quote_identifier(&c.name, target_db);
+                let qname = quote_identifier_with_gaussdb_keywords(&c.name, target_db, gaussdb_keywords);
                 if is_mysql_family {
                     let mapped = map_column_type(&c.data_type, source_db, target_db);
                     if mysql_type_needs_key_prefix(&mapped) {
@@ -3039,8 +3115,25 @@ impl InsertSqlTemplate {
         catalog: Option<&str>,
         overrides_postgres_system_values: bool,
     ) -> Self {
-        let full_table = qualified_table(table, schema, db_type, catalog);
-        let col_list = columns.iter().map(|column| quote_identifier(column, db_type)).collect::<Vec<_>>().join(", ");
+        Self::new_with_gaussdb_keywords(columns, table, schema, db_type, catalog, overrides_postgres_system_values, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_gaussdb_keywords(
+        columns: &[String],
+        table: &str,
+        schema: &str,
+        db_type: &DatabaseType,
+        catalog: Option<&str>,
+        overrides_postgres_system_values: bool,
+        gaussdb_keywords: Option<&HashSet<String>>,
+    ) -> Self {
+        let full_table = qualified_table_with_gaussdb_keywords(table, schema, db_type, catalog, gaussdb_keywords);
+        let col_list = columns
+            .iter()
+            .map(|column| quote_identifier_with_gaussdb_keywords(column, db_type, gaussdb_keywords))
+            .collect::<Vec<_>>()
+            .join(", ");
         let overriding = if overrides_postgres_system_values && matches!(db_type, DatabaseType::Postgres) {
             " OVERRIDING SYSTEM VALUE"
         } else {
@@ -3170,12 +3263,45 @@ fn generate_upsert_typed_for_transfer(
     overrides_postgres_system_values: bool,
     mysql_spatial_markers: bool,
 ) -> String {
+    generate_upsert_typed_for_transfer_with_gaussdb_keywords(
+        columns,
+        column_types,
+        rows,
+        table,
+        schema,
+        db_type,
+        pk_columns,
+        catalog,
+        overrides_postgres_system_values,
+        mysql_spatial_markers,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_upsert_typed_for_transfer_with_gaussdb_keywords(
+    columns: &[String],
+    column_types: &[Option<String>],
+    rows: &[Vec<serde_json::Value>],
+    table: &str,
+    schema: &str,
+    db_type: &DatabaseType,
+    pk_columns: &[String],
+    catalog: Option<&str>,
+    overrides_postgres_system_values: bool,
+    mysql_spatial_markers: bool,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> String {
     if rows.is_empty() || pk_columns.is_empty() {
         return String::new();
     }
 
-    let full_table = qualified_table(table, schema, db_type, catalog);
-    let col_list = columns.iter().map(|c| quote_identifier(c, db_type)).collect::<Vec<_>>().join(", ");
+    let full_table = qualified_table_with_gaussdb_keywords(table, schema, db_type, catalog, gaussdb_keywords);
+    let col_list = columns
+        .iter()
+        .map(|c| quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords))
+        .collect::<Vec<_>>()
+        .join(", ");
 
     let value_rows = value_rows_sql(rows, column_types, db_type, mysql_spatial_markers);
 
@@ -3191,7 +3317,11 @@ fn generate_upsert_typed_for_transfer(
             if is_postgres_transfer_dialect(db_type)
                 || matches!(db_type, DatabaseType::Sqlite | DatabaseType::CloudflareD1 | DatabaseType::DuckDb) =>
         {
-            let pk_list = pk_columns.iter().map(|c| quote_identifier(c, db_type)).collect::<Vec<_>>().join(", ");
+            let pk_list = pk_columns
+                .iter()
+                .map(|c| quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords))
+                .collect::<Vec<_>>()
+                .join(", ");
             let overriding = if overrides_postgres_system_values && matches!(db_type, DatabaseType::Postgres) {
                 " OVERRIDING SYSTEM VALUE"
             } else {
@@ -3205,7 +3335,7 @@ fn generate_upsert_typed_for_transfer(
                 let update_set = non_pk_columns
                     .iter()
                     .map(|c| {
-                        let qc = quote_identifier(c, db_type);
+                        let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                         format!("{qc} = EXCLUDED.{qc}")
                     })
                     .collect::<Vec<_>>()
@@ -3218,13 +3348,13 @@ fn generate_upsert_typed_for_transfer(
             let mut sql = format!("INSERT INTO {full_table} ({col_list}) VALUES\n{}", value_rows.join(",\n"));
             if non_pk_columns.is_empty() {
                 sql.push_str("\nON DUPLICATE KEY UPDATE ");
-                let first_pk = quote_identifier(&pk_columns[0], db_type);
+                let first_pk = quote_identifier_with_gaussdb_keywords(&pk_columns[0], db_type, gaussdb_keywords);
                 sql.push_str(&format!("{first_pk} = {first_pk}"));
             } else {
                 let update_set = non_pk_columns
                     .iter()
                     .map(|c| {
-                        let qc = quote_identifier(c, db_type);
+                        let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                         format!("{qc} = VALUES({qc})")
                     })
                     .collect::<Vec<_>>()
@@ -3234,11 +3364,15 @@ fn generate_upsert_typed_for_transfer(
             sql
         }
         DatabaseType::SqlServer => {
-            let src_col_list = columns.iter().map(|c| quote_identifier(c, db_type)).collect::<Vec<_>>().join(", ");
+            let src_col_list = columns
+                .iter()
+                .map(|c| quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords))
+                .collect::<Vec<_>>()
+                .join(", ");
             let on_clause = pk_columns
                 .iter()
                 .map(|c| {
-                    let qc = quote_identifier(c, db_type);
+                    let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                     format!("target.{qc} = src.{qc}")
                 })
                 .collect::<Vec<_>>()
@@ -3253,7 +3387,7 @@ fn generate_upsert_typed_for_transfer(
                 let update_set = non_pk_columns
                     .iter()
                     .map(|c| {
-                        let qc = quote_identifier(c, db_type);
+                        let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                         format!("target.{qc} = src.{qc}")
                     })
                     .collect::<Vec<_>>()
@@ -3261,9 +3395,16 @@ fn generate_upsert_typed_for_transfer(
                 sql.push_str(&format!("\nWHEN MATCHED THEN UPDATE SET {update_set}"));
             }
 
-            let insert_cols = columns.iter().map(|c| quote_identifier(c, db_type)).collect::<Vec<_>>().join(", ");
-            let insert_vals =
-                columns.iter().map(|c| format!("src.{}", quote_identifier(c, db_type))).collect::<Vec<_>>().join(", ");
+            let insert_cols = columns
+                .iter()
+                .map(|c| quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_vals = columns
+                .iter()
+                .map(|c| format!("src.{}", quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords)))
+                .collect::<Vec<_>>()
+                .join(", ");
             sql.push_str(&format!("\nWHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals});"));
             sql
         }
@@ -3275,7 +3416,7 @@ fn generate_upsert_typed_for_transfer(
                     vals.push(format!(
                         "{} AS {}",
                         escape_value_typed(v, db_type, column_types.get(index).and_then(|value| value.as_deref())),
-                        quote_identifier(c, db_type)
+                        quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords)
                     ));
                 }
                 using_rows.push(format!("SELECT {} FROM dual", vals.join(", ")));
@@ -3284,7 +3425,7 @@ fn generate_upsert_typed_for_transfer(
             let on_clause = pk_columns
                 .iter()
                 .map(|c| {
-                    let qc = quote_identifier(c, db_type);
+                    let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                     format!("t.{qc} = s.{qc}")
                 })
                 .collect::<Vec<_>>()
@@ -3297,7 +3438,7 @@ fn generate_upsert_typed_for_transfer(
                 let update_set = non_pk_columns
                     .iter()
                     .map(|c| {
-                        let qc = quote_identifier(c, db_type);
+                        let qc = quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords);
                         format!("t.{qc} = s.{qc}")
                     })
                     .collect::<Vec<_>>()
@@ -3305,14 +3446,22 @@ fn generate_upsert_typed_for_transfer(
                 sql.push_str(&format!("\nWHEN MATCHED THEN UPDATE SET {update_set}"));
             }
 
-            let insert_cols = columns.iter().map(|c| quote_identifier(c, db_type)).collect::<Vec<_>>().join(", ");
-            let insert_vals =
-                columns.iter().map(|c| format!("s.{}", quote_identifier(c, db_type))).collect::<Vec<_>>().join(", ");
+            let insert_cols = columns
+                .iter()
+                .map(|c| quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let insert_vals = columns
+                .iter()
+                .map(|c| format!("s.{}", quote_identifier_with_gaussdb_keywords(c, db_type, gaussdb_keywords)))
+                .collect::<Vec<_>>()
+                .join(", ");
             sql.push_str(&format!("\nWHEN NOT MATCHED THEN INSERT ({insert_cols}) VALUES ({insert_vals})"));
             sql
         }
         _ => {
-            let template = InsertSqlTemplate::new(columns, table, schema, db_type, catalog, false);
+            let template =
+                InsertSqlTemplate::new_with_gaussdb_keywords(columns, table, schema, db_type, catalog, false, gaussdb_keywords);
             template.build(&value_rows_sql(rows, column_types, db_type, mysql_spatial_markers))
         }
     }
@@ -3442,9 +3591,10 @@ fn generate_transfer_write_sql(
     catalog: Option<&str>,
     overrides_postgres_system_values: bool,
     mysql_spatial_markers: bool,
+    gaussdb_keywords: Option<&HashSet<String>>,
 ) -> String {
     match mode {
-        TransferMode::Upsert => generate_upsert_typed_for_transfer(
+        TransferMode::Upsert => generate_upsert_typed_for_transfer_with_gaussdb_keywords(
             columns,
             column_types,
             rows,
@@ -3455,13 +3605,21 @@ fn generate_transfer_write_sql(
             catalog,
             overrides_postgres_system_values,
             mysql_spatial_markers,
+            gaussdb_keywords,
         ),
         _ => {
             if rows.is_empty() {
                 return String::new();
             }
-            let template =
-                InsertSqlTemplate::new(columns, table, schema, db_type, catalog, overrides_postgres_system_values);
+            let template = InsertSqlTemplate::new_with_gaussdb_keywords(
+                columns,
+                table,
+                schema,
+                db_type,
+                catalog,
+                overrides_postgres_system_values,
+                gaussdb_keywords,
+            );
             template.build(&value_rows_sql(rows, column_types, db_type, mysql_spatial_markers))
         }
     }
@@ -3505,6 +3663,35 @@ fn generate_insert_typed_sql_batches_for_transfer(
     overrides_postgres_system_values: bool,
     mysql_spatial_markers: bool,
 ) -> Result<Vec<(String, usize)>, String> {
+    generate_insert_typed_sql_batches_for_transfer_with_gaussdb_keywords(
+        columns,
+        column_types,
+        rows,
+        table,
+        schema,
+        db_type,
+        catalog,
+        limits,
+        overrides_postgres_system_values,
+        mysql_spatial_markers,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn generate_insert_typed_sql_batches_for_transfer_with_gaussdb_keywords(
+    columns: &[String],
+    column_types: &[Option<String>],
+    rows: &[Vec<serde_json::Value>],
+    table: &str,
+    schema: &str,
+    db_type: &DatabaseType,
+    catalog: Option<&str>,
+    limits: SqlBatchLimits,
+    overrides_postgres_system_values: bool,
+    mysql_spatial_markers: bool,
+    gaussdb_keywords: Option<&HashSet<String>>,
+) -> Result<Vec<(String, usize)>, String> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -3516,7 +3703,15 @@ fn generate_insert_typed_sql_batches_for_transfer(
     });
     let target_sql_bytes = limits.target_sql_bytes.max(1);
     let batch_sql_bytes = limits.hard_sql_bytes.map_or(target_sql_bytes, |hard| target_sql_bytes.min(hard));
-    let template = InsertSqlTemplate::new(columns, table, schema, db_type, catalog, overrides_postgres_system_values);
+    let template = InsertSqlTemplate::new_with_gaussdb_keywords(
+        columns,
+        table,
+        schema,
+        db_type,
+        catalog,
+        overrides_postgres_system_values,
+        gaussdb_keywords,
+    );
     let value_rows = value_rows_sql(rows, column_types, db_type, mysql_spatial_markers);
     let value_row_bytes = value_rows.iter().map(|row| sql_text_bytes(row, db_type)).collect::<Vec<_>>();
     let mut statements = Vec::new();
@@ -3567,13 +3762,14 @@ fn generate_transfer_write_sql_batches(
     catalog: Option<&str>,
     overrides_postgres_system_values: bool,
     mysql_spatial_markers: bool,
+    gaussdb_keywords: Option<&HashSet<String>>,
 ) -> Result<Vec<String>, String> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
 
     if matches!(mode, TransferMode::Append | TransferMode::Overwrite) {
-        return Ok(generate_insert_typed_sql_batches_for_transfer(
+        return Ok(generate_insert_typed_sql_batches_for_transfer_with_gaussdb_keywords(
             columns,
             column_types,
             rows,
@@ -3584,6 +3780,7 @@ fn generate_transfer_write_sql_batches(
             SqlBatchLimits::for_database(db_type, max_transfer_write_rows(db_type, mode)),
             overrides_postgres_system_values,
             mysql_spatial_markers,
+            gaussdb_keywords,
         )?
         .into_iter()
         .map(|(sql, _)| sql)
@@ -3612,6 +3809,7 @@ fn generate_transfer_write_sql_batches(
             catalog,
             overrides_postgres_system_values,
             mysql_spatial_markers,
+            gaussdb_keywords,
         );
 
         while end < rows.len() && end - start < max_rows {
@@ -3627,6 +3825,7 @@ fn generate_transfer_write_sql_batches(
                 catalog,
                 overrides_postgres_system_values,
                 mysql_spatial_markers,
+                gaussdb_keywords,
             );
             if candidate.len() > max_sql_bytes && !accepted.is_empty() {
                 break;
@@ -6088,6 +6287,11 @@ where
             request.target_catalog.as_deref(),
         )
         .await;
+    let gaussdb_keywords = if matches!(target_db_type, DatabaseType::Gaussdb | DatabaseType::OpenGauss) {
+        state.gaussdb_reserved_keywords(target_pool_key).await
+    } else {
+        None
+    };
     let batch_size = if request.batch_size == 0 { 1000 } else { request.batch_size };
     let mut offset: u64 = 0;
     let mut total_transferred: u64 = 0;
@@ -6219,7 +6423,7 @@ where
 
                 if request.create_table {
                     if !target_table_preexisting {
-                        let ddl = generate_create_table_ddl(
+                        let ddl = generate_create_table_ddl_with_gaussdb_keywords(
                             &sql_target_columns,
                             &target_table,
                             &request.source_schema,
@@ -6228,6 +6432,7 @@ where
                             source_db_type,
                             None,
                             request.target_catalog.as_deref(),
+                            gaussdb_keywords.as_deref(),
                         );
                         let target_table_created = transfer_create_table_created(
                             execute_on_pool(state, target_pool_key, &ddl).await.map(|_| ()),
@@ -6259,18 +6464,13 @@ where
                 }
 
                 if request.mode == TransferMode::Overwrite {
-                    let full_table = qualified_table(
+                    let truncate_sql = transfer_overwrite_clear_sql(
                         &target_table,
                         &request.target_schema,
                         target_db_type,
                         request.target_catalog.as_deref(),
+                        gaussdb_keywords.as_deref(),
                     );
-                    let truncate_sql = match target_db_type {
-                        DatabaseType::Sqlite | DatabaseType::CloudflareD1 | DatabaseType::DuckDb => {
-                            format!("DELETE FROM {full_table}")
-                        }
-                        _ => format!("TRUNCATE TABLE {full_table}"),
-                    };
                     execute_on_pool(state, target_pool_key, &truncate_sql)
                         .await
                         .map_err(|e| format!("Failed to truncate MongoDB transfer target table: {e}"))?;
@@ -6296,6 +6496,7 @@ where
                 request.target_catalog.as_deref(),
                 false,
                 false,
+                gaussdb_keywords.as_deref(),
             )?;
             for (statement_index, batch_sql) in write_statements.iter().enumerate() {
                 execute_on_pool(state, target_pool_key, batch_sql).await.map_err(|e| {
@@ -6463,6 +6664,11 @@ where
         )
         .await;
     let preserves_target_table_name = target_table == table;
+    let gaussdb_keywords = if matches!(target_db_type, DatabaseType::Gaussdb | DatabaseType::OpenGauss) {
+        state.gaussdb_reserved_keywords(target_pool_key).await
+    } else {
+        None
+    };
 
     // Get source columns (deduplicate by name)
     let columns = {
@@ -6640,7 +6846,7 @@ where
                         Err(err) => {
                             log::warn!("[transfer] catalog DDL read failed for {table} in catalog '{catalog}': {err}; falling back to generated DDL");
                             (
-                                generate_create_table_ddl(
+                                generate_create_table_ddl_with_gaussdb_keywords(
                                     &columns,
                                     &target_table,
                                     &request.source_schema,
@@ -6649,6 +6855,7 @@ where
                                     source_db_type,
                                     table_comment.as_deref(),
                                     request.target_catalog.as_deref(),
+                                    gaussdb_keywords.as_deref(),
                                 ),
                                 false,
                             )
@@ -6667,7 +6874,7 @@ where
                     {
                         Ok(ddl) => (ddl, true),
                         Err(_) => (
-                            generate_create_table_ddl(
+                            generate_create_table_ddl_with_gaussdb_keywords(
                                 &columns,
                                 &target_table,
                                 &request.source_schema,
@@ -6676,6 +6883,7 @@ where
                                 source_db_type,
                                 table_comment.as_deref(),
                                 request.target_catalog.as_deref(),
+                                gaussdb_keywords.as_deref(),
                             ),
                             false,
                         ),
@@ -6684,7 +6892,7 @@ where
                 if contains_oceanbase_mysql_table_options(&source_ddl)
                     && !db::oceanbase_mysql::is_profile(target_db_type, target_driver_profile.as_deref())
                 {
-                    generate_create_table_ddl(
+                    generate_create_table_ddl_with_gaussdb_keywords(
                         &columns,
                         &target_table,
                         &request.source_schema,
@@ -6693,6 +6901,7 @@ where
                         source_db_type,
                         table_comment.as_deref(),
                         request.target_catalog.as_deref(),
+                        gaussdb_keywords.as_deref(),
                     )
                 } else {
                     reused_source_ddl = source_ddl_was_read;
@@ -6705,7 +6914,7 @@ where
                     )
                 }
             } else {
-                generate_create_table_ddl(
+                generate_create_table_ddl_with_gaussdb_keywords(
                     &columns,
                     &target_table,
                     &request.source_schema,
@@ -6714,6 +6923,7 @@ where
                     source_db_type,
                     table_comment.as_deref(),
                     request.target_catalog.as_deref(),
+                    gaussdb_keywords.as_deref(),
                 )
             };
             log::info!("[transfer] creating target table: {}", ddl.chars().take(200).collect::<String>());
@@ -6765,14 +6975,13 @@ where
 
     // Truncate target if overwrite mode
     if request.mode == TransferMode::Overwrite {
-        let full_table =
-            qualified_table(&target_table, &request.target_schema, target_db_type, request.target_catalog.as_deref());
-        let truncate_sql = match target_db_type {
-            DatabaseType::Sqlite | DatabaseType::CloudflareD1 | DatabaseType::DuckDb => {
-                format!("DELETE FROM {full_table}")
-            }
-            _ => format!("TRUNCATE TABLE {full_table}"),
-        };
+        let truncate_sql = transfer_overwrite_clear_sql(
+            &target_table,
+            &request.target_schema,
+            target_db_type,
+            request.target_catalog.as_deref(),
+            gaussdb_keywords.as_deref(),
+        );
         execute_on_pool(state, target_pool_key, &truncate_sql).await.map_err(|e| format!("Failed to truncate: {e}"))?;
     }
 
@@ -6897,6 +7106,7 @@ where
                 request.target_catalog.as_deref(),
                 overrides_postgres_system_values,
                 mysql_spatial_markers,
+                gaussdb_keywords.as_deref(),
             )?;
             for (statement_index, batch_sql) in write_statements.iter().enumerate() {
                 execute_transfer_write_statement(
@@ -8982,6 +9192,155 @@ mod tests {
     }
 
     #[test]
+    fn gaussdb_create_table_maxvalue_quoting_is_version_dependent() {
+        // t8y2/dbx#6283 follow-up: `maxvalue` is RESERVED_KEYWORD on openGauss
+        // 5.0.0 (the instance the static list was hand-diffed against) but
+        // UNRESERVED_KEYWORD on current/master openGauss (see the kwlist.h
+        // diff linked in the PR review). A static per-word list can only be
+        // right for one of these — the live pg_get_keywords() catalog fixes
+        // that by being authoritative for whatever server is actually
+        // connected, per-connection, instead of baking in one snapshot.
+        let cols = vec![test_column("maxvalue", "int")];
+
+        let opengauss_5_0: HashSet<String> = ["maxvalue".to_string()].into_iter().collect();
+        let ddl_5_0 = generate_create_table_ddl_with_gaussdb_keywords(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::OpenGauss,
+            &DatabaseType::Mysql,
+            None,
+            None,
+            Some(&opengauss_5_0),
+        );
+        assert!(ddl_5_0.contains("\"maxvalue\""), "openGauss 5.0's live catalog reserves maxvalue, ddl: {ddl_5_0}");
+
+        let opengauss_current: HashSet<String> = HashSet::new();
+        let ddl_current = generate_create_table_ddl_with_gaussdb_keywords(
+            &cols,
+            "t",
+            "",
+            "public",
+            &DatabaseType::OpenGauss,
+            &DatabaseType::Mysql,
+            None,
+            None,
+            Some(&opengauss_current),
+        );
+        assert!(
+            !ddl_current.contains('"'),
+            "current openGauss's live catalog does not reserve maxvalue, must stay unquoted, ddl: {ddl_current}"
+        );
+
+        // No live catalog available (probe failed/unavailable): falls back to
+        // the static list unchanged, which still classifies maxvalue as
+        // GaussDB-only reserved.
+        let ddl_fallback =
+            generate_create_table_ddl(&cols, "t", "", "public", &DatabaseType::OpenGauss, &DatabaseType::Mysql, None, None);
+        assert!(
+            ddl_fallback.contains("\"maxvalue\""),
+            "fallback path (no live catalog) must preserve existing static-list behavior, ddl: {ddl_fallback}"
+        );
+    }
+
+    #[test]
+    fn gaussdb_insert_maxvalue_quoting_is_version_dependent() {
+        // Same version-dependence as the CREATE TABLE test above, but for the
+        // actual production write path used by TransferMode::Append/Overwrite
+        // (generate_transfer_write_sql_batches -> generate_insert_typed_sql_batches_for_transfer),
+        // not just the generic dispatcher.
+        let columns = vec!["maxvalue".to_string()];
+        let rows = vec![vec![serde_json::Value::from(1)]];
+
+        let opengauss_5_0: HashSet<String> = ["maxvalue".to_string()].into_iter().collect();
+        let statements_5_0 = generate_transfer_write_sql_batches(
+            &TransferMode::Append,
+            &columns,
+            &vec![None; columns.len()],
+            &rows,
+            "t",
+            "public",
+            &DatabaseType::OpenGauss,
+            &[],
+            None,
+            false,
+            false,
+            Some(&opengauss_5_0),
+        )
+        .unwrap();
+        assert!(
+            statements_5_0[0].contains("\"maxvalue\""),
+            "openGauss 5.0's live catalog reserves maxvalue in INSERT, sql: {}",
+            statements_5_0[0]
+        );
+
+        let opengauss_current: HashSet<String> = HashSet::new();
+        let statements_current = generate_transfer_write_sql_batches(
+            &TransferMode::Append,
+            &columns,
+            &vec![None; columns.len()],
+            &rows,
+            "t",
+            "public",
+            &DatabaseType::OpenGauss,
+            &[],
+            None,
+            false,
+            false,
+            Some(&opengauss_current),
+        )
+        .unwrap();
+        assert!(
+            !statements_current[0].contains('"'),
+            "current openGauss's live catalog does not reserve maxvalue in INSERT, sql: {}",
+            statements_current[0]
+        );
+    }
+
+    #[test]
+    fn gaussdb_overwrite_truncate_maxvalue_quoting_matches_create_table() {
+        // Regression test for a code-review finding on this PR: the
+        // Overwrite-mode TRUNCATE/DELETE statement (transfer_overwrite_clear_sql)
+        // must make the SAME quoting decision as generate_create_table_ddl_with_gaussdb_keywords
+        // for the same table name — otherwise CREATE TABLE and TRUNCATE TABLE
+        // disagree on quoting a reserved-vs-not word like `maxvalue`, which
+        // reintroduces the exact case-locking bug this PR fixes, just inside
+        // the Overwrite-mode clear step instead of column DDL.
+        let opengauss_5_0: HashSet<String> = ["maxvalue".to_string()].into_iter().collect();
+        let sql_5_0 =
+            transfer_overwrite_clear_sql("maxvalue", "public", &DatabaseType::OpenGauss, None, Some(&opengauss_5_0));
+        assert_eq!(sql_5_0, "TRUNCATE TABLE public.\"maxvalue\"", "openGauss 5.0 must quote reserved maxvalue");
+
+        let opengauss_current: HashSet<String> = HashSet::new();
+        let sql_current = transfer_overwrite_clear_sql(
+            "maxvalue",
+            "public",
+            &DatabaseType::OpenGauss,
+            None,
+            Some(&opengauss_current),
+        );
+        assert_eq!(
+            sql_current, "TRUNCATE TABLE public.maxvalue",
+            "current openGauss must not quote unreserved maxvalue"
+        );
+
+        // No live catalog available: falls back to the static list, which
+        // still classifies maxvalue as GaussDB-only reserved (unchanged
+        // existing behavior, same as the CREATE TABLE fallback).
+        let sql_fallback = transfer_overwrite_clear_sql("maxvalue", "public", &DatabaseType::OpenGauss, None, None);
+        assert_eq!(sql_fallback, "TRUNCATE TABLE public.\"maxvalue\"");
+
+        // Sanity-check DuckDb/Sqlite/CloudflareD1 still use DELETE, unaffected
+        // by the gaussdb_keywords plumbing (Sqlite isn't Gaussdb/OpenGauss, so
+        // it keeps unconditionally quoting, same as before this PR).
+        assert_eq!(
+            transfer_overwrite_clear_sql("t", "", &DatabaseType::Sqlite, None, None),
+            "DELETE FROM \"t\""
+        );
+    }
+
+    #[test]
     fn postgres_create_table_still_quotes_simple_lowercase_identifiers() {
         // Unlike GaussDB, plain Postgres has no reported case-folding quirk, so
         // the fix is deliberately scoped to Gaussdb/OpenGauss only — Postgres
@@ -9593,6 +9952,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         )
         .unwrap();
         assert_eq!(statements, vec!["INSERT INTO `warehouse`.`events` (`id`, `binary_payload`) VALUES\n(1, '0x00ff')"]);
@@ -10824,6 +11184,7 @@ SELECT 1 FROM dual"#
             None,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -10848,6 +11209,7 @@ SELECT 1 FROM dual"#
             None,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -10955,6 +11317,7 @@ SELECT 1 FROM dual"#
             None,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -10981,6 +11344,7 @@ SELECT 1 FROM dual"#
                 None,
                 false,
                 true,
+                None,
             )
             .unwrap();
 
@@ -11008,6 +11372,7 @@ SELECT 1 FROM dual"#
             None,
             false,
             true,
+            None,
         )
         .unwrap();
         let public = generate_insert_typed(
@@ -11081,6 +11446,7 @@ SELECT 1 FROM dual"#
                 None,
                 true,
                 false,
+                None,
             )
             .unwrap();
 
@@ -11106,6 +11472,7 @@ SELECT 1 FROM dual"#
             None,
             true,
             false,
+            None,
         )
         .unwrap();
 
@@ -11130,6 +11497,7 @@ SELECT 1 FROM dual"#
             None,
             false,
             false,
+            None,
         )
         .unwrap();
 
@@ -11150,6 +11518,7 @@ SELECT 1 FROM dual"#
             None,
             true,
             false,
+            None,
         )
         .unwrap();
 
