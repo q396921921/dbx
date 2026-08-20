@@ -730,7 +730,7 @@ export default withEnglishFallback({
     mqRabbitmqAddresses: "주소",
     mqRabbitmqAddressesPlaceholder: "127.0.0.1:5672",
     mqRabbitmqAddressesRequired: "RabbitMQ 주소는 필수입니다",
-    mqRabbitmqAddressesInvalid: "RabbitMQ 주소가 잘못되었습니다",
+    mqRabbitmqAddressesInvalid: "RabbitMQ 주소를 host:port 형식(예: 127.0.0.1:5672)으로 입력하고 amqp://는 포함하지 마세요",
     mqVirtualHost: "가상 호스트",
     mqVirtualHostPlaceholder: "/",
     mqRabbitmqAdminUrl: "관리 URL",

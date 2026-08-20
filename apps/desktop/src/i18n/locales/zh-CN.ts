@@ -664,7 +664,7 @@ export default withEnglishFallback({
     mqRabbitmqAddresses: "地址",
     mqRabbitmqAddressesPlaceholder: "127.0.0.1:5672",
     mqRabbitmqAddressesRequired: "RabbitMQ 地址不能为空",
-    mqRabbitmqAddressesInvalid: "RabbitMQ 地址无效",
+    mqRabbitmqAddressesInvalid: "RabbitMQ 地址无效，请填写 host:port（例如 127.0.0.1:5672），不要包含 amqp://",
     mqVirtualHost: "虚拟主机",
     mqVirtualHostPlaceholder: "/",
     mqRabbitmqAdminUrl: "Management URL",

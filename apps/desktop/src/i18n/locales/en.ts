@@ -740,7 +740,7 @@ export default {
     mqRabbitmqAddresses: "Addresses",
     mqRabbitmqAddressesPlaceholder: "127.0.0.1:5672",
     mqRabbitmqAddressesRequired: "RabbitMQ addresses are required",
-    mqRabbitmqAddressesInvalid: "RabbitMQ addresses are invalid",
+    mqRabbitmqAddressesInvalid: "Enter RabbitMQ addresses as host:port (for example, 127.0.0.1:5672), without amqp://",
     mqVirtualHost: "Virtual Host",
     mqVirtualHostPlaceholder: "/",
     mqRabbitmqAdminUrl: "Management URL",
