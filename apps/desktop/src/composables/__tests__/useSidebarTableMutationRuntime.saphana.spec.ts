@@ -291,6 +291,10 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
 
     // Bounded retry, not a single silently-ignored attempt.
     expect(mocks.cancelQuery.mock.calls.length).toBeGreaterThan(1);
+    // The cancel handler itself surfaces feedback the moment its own
+    // confirmation window gives up (before the underlying operation later
+    // settles and reports tableOperationCancelUnconfirmed).
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelPending", 6000);
     expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelUnconfirmed", 8000);
     expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationCancelled", 3000);
     expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationFailed", 5000);
@@ -340,10 +344,20 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
       vi.useRealTimers();
     }
 
+    // A single hung attempt must not block the remaining retries — each
+    // attempt gets its own bounded slice of the overall retry budget.
+    expect(mocks.cancelQuery.mock.calls.length).toBeGreaterThan(1);
     // The closure above must have settled instead of hanging — a stuck
     // cancel handle would otherwise permanently disable the shared
     // sidebarDangerDialogCancelling state for every future danger dialog.
     expect(mocks.toast).not.toHaveBeenCalledWith("contextMenu.tableOperationCancelled", 3000);
+    // Settling silently is not enough on its own: the user must be told the
+    // cancel could not be confirmed instead of the button just going quiet.
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelPending", 6000);
+    // The operation may genuinely still be running server-side, so the
+    // running-execution state must not be torn down just because the
+    // confirmation window elapsed.
+    expect(sidebarDangerRunningExecutionId.value).not.toBe("");
   });
 
   it.each(actions)("does not report a false success for $action when the user declines the production-safety confirmation", async ({ action }) => {

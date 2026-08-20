@@ -241,6 +241,8 @@ export function resetSidebarTreeDialogState() {
   sidebarTreeDialogOwner.value = null;
   sidebarDangerTarget.value = null;
   sidebarFormTarget.value = null;
+  sidebarDangerRunningExecutionId.value = "";
+  sidebarDangerRunningCancel.value = null;
   connectionDeleteTargetSnapshot.value = [];
   connectionGroupDeleteTargetSnapshot.value = [];
   deleteConnectionsWithGroup.value = false;

@@ -74,15 +74,8 @@ pub async fn execute_query(
     )
     .await;
 
-    if matches!(result, Err(dbx_core::query::QueryExecutionError::Timeout(_))) {
-        // We're giving up on waiting, not cancelling: the statement may
-        // still be executing server-side. Keep the registration (and any
-        // KILL-QUERY-style interrupt registered against it) reachable so a
-        // later explicit cancel_query call can still reach it, instead of
-        // losing that capability the instant this command returns.
-        if let Some(registered_query) = registered_query {
-            registered_query.detach();
-        }
+    if let Some(registered_query) = registered_query {
+        registered_query.finish(&result);
     }
 
     result.map_err(dbx_core::query::QueryExecutionError::into_backend_error)
@@ -194,6 +187,11 @@ pub async fn execute_multi(
             error
         ),
     }
+
+    if let Some(registered_query) = registered_query {
+        registered_query.finish(&result);
+    }
+
     result.map_err(dbx_core::query::QueryExecutionError::into_backend_error)
 }
 
