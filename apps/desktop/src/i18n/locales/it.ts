@@ -2628,6 +2628,7 @@ export default withEnglishFallback({
     duplicateConnection: "Duplica Connessione",
     duplicateSelectedConnections: "Duplica {count} connessioni selezionate",
     newQuery: "Nuova Query",
+    addToAi: "Aggiungi all'IA",
     instanceInfo: "Informazioni Istanza",
     newSql: "Nuovo SQL",
     generateSql: "Genera SQL",
