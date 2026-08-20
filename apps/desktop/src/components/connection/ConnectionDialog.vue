@@ -65,7 +65,7 @@ import { buildMqKafkaConnectionExtra, mqKafkaConnectionTarget, resolveMqKafkaCon
 import { assertCompleteDatabaseCategories, databaseSelectionForCategory } from "@/lib/connection/databaseCategoryOptions";
 import { loadConnectionPickerView, saveConnectionPickerView, type DbPickerView } from "@/lib/connection/connectionPickerViewPreference";
 import { normalizeRocketmqNamesrvAddr } from "@/lib/connection/rocketmqNamesrv";
-import { normalizeRabbitmqAddresses } from "@/lib/connection/rabbitmqAddresses";
+import { normalizeRabbitmqAddresses, parseRabbitmqAddress } from "@/lib/connection/rabbitmqAddresses";
 import { detectMqUiAuthKind, isMqAuthKindAllowedForSystem, type MqUiAuthKind } from "@/lib/connection/mqAuth";
 import { driverInstallProgressChannel, driverInstallProgressPercent, isDriverInstallProgressForOperation, requestAgentInstallCancellation, resolveAgentInstallOutcome, type DriverInstallProgress } from "@/lib/connection/driverInstallProgressUi";
 import { requiresSqlServerLegacyCompatibilityComponent, setSqlServerLegacyCompatibilityConfig, sqlServerUsesLegacyCompatibility, SQLSERVER_LEGACY_COMPATIBILITY_DRIVER_KEY } from "@/lib/connection/sqlServerLegacyCompatibility";
@@ -1744,7 +1744,12 @@ function buildMqAdminConfig(): MqAdminConfig {
   }
 
   if (systemKind === "rabbitmq") {
-    const addresses = normalizeRabbitmqAddresses(mqRabbitmqAddresses.value);
+    let addresses: string;
+    try {
+      addresses = normalizeRabbitmqAddresses(mqRabbitmqAddresses.value);
+    } catch {
+      throw new Error(t(mqRabbitmqAddresses.value.trim() ? "connection.mqRabbitmqAddressesInvalid" : "connection.mqRabbitmqAddressesRequired"));
+    }
     const extra: Record<string, unknown> = {
       addresses,
       virtualHost: mqRabbitmqVirtualHost.value.trim() || "/",
@@ -2287,14 +2292,9 @@ function applyMqKafkaConnectionTarget(config: LegacyConnectionConfig, extra: Rec
 function applyMqRabbitmqAddresses(config: LegacyConnectionConfig, addresses: string) {
   const first = normalizeRabbitmqAddresses(addresses).split(",")[0];
   if (!first) throw new Error(t("connection.mqRabbitmqAddressesRequired"));
-  let parsed: URL;
-  try {
-    parsed = new URL(`amqp://${first}`);
-  } catch {
-    throw new Error(t("connection.mqRabbitmqAddressesInvalid"));
-  }
-  config.host = parsed.hostname;
-  config.port = Number(parsed.port) || 5672;
+  const parsed = parseRabbitmqAddress(first);
+  config.host = parsed.host;
+  config.port = parsed.port;
   config.ssl = false;
 }
 

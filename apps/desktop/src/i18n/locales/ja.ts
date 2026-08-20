@@ -936,7 +936,7 @@ export default withEnglishFallback({
     mqRabbitmqAddresses: "アドレス",
     mqRabbitmqAddressesPlaceholder: "127.0.0.1:5672",
     mqRabbitmqAddressesRequired: "RabbitMQ アドレスは必須です",
-    mqRabbitmqAddressesInvalid: "RabbitMQ アドレスが無効です",
+    mqRabbitmqAddressesInvalid: "RabbitMQ アドレスは host:port 形式（例: 127.0.0.1:5672）で入力し、amqp:// は含めないでください",
     mqVirtualHost: "仮想ホスト",
     mqVirtualHostPlaceholder: "/",
     mqRabbitmqAdminUrl: "Management URL",

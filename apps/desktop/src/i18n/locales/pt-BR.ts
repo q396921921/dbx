@@ -937,7 +937,7 @@ export default withEnglishFallback({
     mqRabbitmqAddresses: "Endereços",
     mqRabbitmqAddressesPlaceholder: "127.0.0.1:5672",
     mqRabbitmqAddressesRequired: "Os endereços do RabbitMQ são obrigatórios",
-    mqRabbitmqAddressesInvalid: "Os endereços do RabbitMQ são inválidos",
+    mqRabbitmqAddressesInvalid: "Informe os endereços do RabbitMQ como host:porta (por exemplo, 127.0.0.1:5672), sem amqp://",
     mqVirtualHost: "Host virtual",
     mqVirtualHostPlaceholder: "/",
     mqRabbitmqAdminUrl: "Management URL",
