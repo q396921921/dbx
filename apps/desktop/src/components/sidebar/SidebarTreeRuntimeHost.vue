@@ -593,6 +593,7 @@ const groupTypes: Set<TreeNodeType> = new Set([
   "group-indexes",
   "group-fkeys",
   "group-triggers",
+  "group-events",
   "group-constraints",
   "group-table-partitions",
   "group-table-subpartitions",
@@ -825,8 +826,13 @@ async function toggle(requestId = beginNavigationRequest()) {
       await connectionStore.loadTableGroups(node.connectionId, node.database, node.label, node.schema, node.id);
     } else if (node.type === "elasticsearch-index" && node.connectionId) {
       await connectionStore.ensureConnected(node.connectionId);
-      const tab = queryStore.createTab(node.connectionId, node.database || "default", node.label, "mongo");
-      queryStore.updateSql(tab, node.label);
+      if (connectionStore.getConfig(node.connectionId)?.db_type === "meilisearch") {
+        const tab = queryStore.createTab(node.connectionId, node.database || "default", node.label, "meilisearch");
+        queryStore.updateSql(tab, node.label);
+      } else {
+        const tab = queryStore.createTab(node.connectionId, node.database || "default", node.label, "mongo");
+        queryStore.updateSql(tab, node.label);
+      }
     } else if (node.type === "vector-collection" && node.connectionId) {
       await connectionStore.ensureConnected(node.connectionId);
       const collectionRef = (node.meta as { collectionId?: string } | undefined)?.collectionId ?? node.label;
@@ -5252,7 +5258,7 @@ function buildObjectSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     return true;
   }
 
-  if (node.type === "sequence") {
+  if (node.type === "sequence" || node.type === "event") {
     items.push({ label: t("contextMenu.viewSource"), action: () => openObjectSourceDialog(false), icon: Code2 });
     items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
     items.push({ label: t("contextMenu.changeOpenMode"), action: () => emit("open-settings", "navigation"), icon: Settings2 });

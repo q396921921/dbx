@@ -354,6 +354,20 @@ export function moveConnectionToGroup(layout: SidebarLayout, connectionId: strin
 
 export type DropPosition = "before" | "after" | "inside";
 
+export interface ReorderEntriesOptions {
+  preserveSameGroupOrder?: boolean;
+}
+
+function findEntryParentGroupId(entries: SidebarOrderEntry[], entryId: string, parentGroupId: string | null = null): string | null | undefined {
+  for (const entry of entries) {
+    if (entry.id === entryId) return parentGroupId;
+    if (entry.type !== "group") continue;
+    const found = findEntryParentGroupId(entryChildren(entry), entryId, entry.id);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
 export function reorderEntry(layout: SidebarLayout, draggedId: string, targetId: string, position: DropPosition): SidebarLayout {
   if (draggedId === targetId) return layout;
 
@@ -385,6 +399,16 @@ export function reorderEntry(layout: SidebarLayout, draggedId: string, targetId:
 
   if (!insertNear(order)) order.push(dragged);
   return { ...layout, order };
+}
+
+export function reorderEntries(layout: SidebarLayout, draggedIds: string[], targetId: string, position: DropPosition, options: ReorderEntriesOptions = {}): SidebarLayout {
+  let nextLayout = layout;
+  for (const draggedId of draggedIds) {
+    if (draggedId === targetId) continue;
+    if (position === "inside" && options.preserveSameGroupOrder && findEntryParentGroupId(nextLayout.order, draggedId) === targetId) continue;
+    nextLayout = reorderEntry(nextLayout, draggedId, targetId, position);
+  }
+  return nextLayout;
 }
 
 export function createGroup(layout: SidebarLayout, name: string, parentGroupId?: string | null): { layout: SidebarLayout; groupId: string } {
@@ -447,6 +471,42 @@ export function connectionIdsInGroups(layout: SidebarLayout, groupIds: Iterable<
   };
   visit(layout.order);
   return connectionIds;
+}
+
+/** 收集单个分组下的所有连接 ID（含嵌套子分组），供分组勾选框级联选中连接使用。 */
+export function connectionIdsUnderGroup(layout: SidebarLayout, groupId: string): string[] {
+  return connectionIdsInGroups(layout, [groupId]);
+}
+
+/** 收集分组自身及其下属所有含连接的子分组 ID，供级联选中时自动展开使用。 */
+export function connectionBearingGroupIdsUnder(layout: SidebarLayout, groupId: string): string[] {
+  const entry = findGroupEntry(layout.order, groupId);
+  if (!entry) return [];
+  const ids: string[] = [];
+  const visit = (groupEntry: Extract<SidebarOrderEntry, { type: "group" }>): boolean => {
+    let hasConnection = false;
+    for (const child of entryChildren(groupEntry)) {
+      if (child.type === "connection") hasConnection = true;
+      else if (visit(child)) hasConnection = true;
+    }
+    if (hasConnection) ids.push(groupEntry.id);
+    return hasConnection;
+  };
+  visit(entry);
+  return ids;
+}
+
+/** 批量展开指定分组（collapsed 置为 false），无变化时返回原布局。 */
+export function expandGroups(layout: SidebarLayout, groupIds: Iterable<string>): SidebarLayout {
+  const targets = new Set(groupIds);
+  if (!targets.size) return layout;
+  let changed = false;
+  const groups = layout.groups.map((group) => {
+    if (!targets.has(group.id) || !group.collapsed) return group;
+    changed = true;
+    return { ...group, collapsed: false };
+  });
+  return changed ? { ...layout, groups } : layout;
 }
 
 export function deleteGroups(layout: SidebarLayout, groupIds: Iterable<string>): SidebarLayout {

@@ -317,9 +317,9 @@ watch([deferredSearchQuery, regexMode], ([newQuery, isRegexMode], [oldQuery, was
     });
 });
 
-const searchableObjectGroupTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
+const searchableObjectGroupTypes = new Set<TreeNodeType>(["group-tables", "group-dolt-system-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-triggers", "group-events", "group-sequences", "group-synonyms", "group-packages", "group-types"]);
 const simpleObjectParentTypes = new Set<TreeNodeType>(["database", "schema", "linked-server-schema"]);
-const simpleObjectChildTypes = new Set<TreeNodeType>(["table", "view", "materialized_view", "procedure", "function", "trigger", "sequence", "synonym", "package", "package-body", "type", "type-body", "load-more"]);
+const simpleObjectChildTypes = new Set<TreeNodeType>(["table", "view", "materialized_view", "procedure", "function", "trigger", "event", "sequence", "synonym", "package", "package-body", "type", "type-body", "load-more"]);
 
 function isSimpleObjectSearchParent(node: TreeNode): boolean {
   return settingsStore.editorSettings.sidebarObjectDisplay === "simple" && simpleObjectParentTypes.has(node.type) && node.isExpanded === true && (!!node.children?.some((child) => simpleObjectChildTypes.has(child.type)) || !!store.sidebarTableSearchQueries[node.id]?.trim());
@@ -668,6 +668,19 @@ const filteredNodes = computed(() => {
   return nodes;
 });
 
+const projectedConnectionIds = computed<ReadonlySet<string> | null>(() => {
+  if (!isRootListPartial.value && !deferredSearchQuery.value) return null;
+  const connectionIds = new Set<string>();
+  const visit = (nodes: readonly TreeNode[]) => {
+    for (const node of nodes) {
+      if (node.type === "connection" && node.connectionId) connectionIds.add(node.connectionId);
+      if (node.children?.length) visit(node.children);
+    }
+  };
+  visit(filteredNodes.value);
+  return connectionIds;
+});
+
 const flatNodes = computed<FlatTreeNode[]>(() =>
   insertSidebarTableSearchControls(flattenTree(filteredNodes.value), {
     enabled: settingsStore.editorSettings.sidebarTableSearchEnabled && !isTreeSearchFiltering.value,
@@ -942,7 +955,7 @@ const stickyHeaderStyle = computed<CSSProperties>(() => {
 
 // Reset tracking when the tree rebuilds (connect/disconnect/collapse) so a
 // stale scrollTop doesn't keep the overlay mounted after a structural change.
-watch(flatNodes, (nodes) => {
+watch(flatNodes, (nodes, previousNodes) => {
   const contextMenuTarget = sidebarContextMenuTarget.value;
   if (contextMenuTarget) {
     const visibleContextMenuTarget = nodes.find(({ node }) => matchesSidebarActionTarget(node, contextMenuTarget))?.node;
@@ -954,6 +967,25 @@ watch(flatNodes, (nodes) => {
   }
   stickyScrollTop.value = 0;
   void nextTick(scheduleSidebarScrollMetricsUpdate);
+  // After a structural change (list grew/shrunk, e.g. a Dameng connection
+  // expands or collapses) reconcile the virtual scroller with the browser's
+  // scroll position. The recycle pool is rebuilt from the live scrollTop, but
+  // scrollTop is only clamped on the next layout, so right after a shrink the
+  // pool can still target a window beyond the new content — the viewport then
+  // lands inside the end spacer and shows a blank region until the next scroll
+  // event. Reading scrollHeight forces that layout (applying the clamp), then
+  // one explicit pool refresh keeps the rendered window aligned. Only needed
+  // when the item count changed; reorders are already rebuilt by the library.
+  if (nodes.length === (previousNodes?.length ?? -1)) return;
+  void nextTick(() => {
+    const scroller = treeScrollerRef.value;
+    if (!scroller || !useVirtualTree.value) return;
+    const el = scroller.$el as HTMLElement | undefined;
+    if (!el) return;
+    const maxScrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    if (el.scrollTop > maxScrollTop) el.scrollTop = maxScrollTop;
+    scroller.updateVisibleItems(true);
+  });
 });
 
 const sidebarTreeOverflowClass = computed(() => (settingsStore.editorSettings.sidebarAllowHorizontalScroll ? "overflow-x-auto sidebar-tree-horizontal-scroll" : "overflow-x-hidden"));
@@ -1124,6 +1156,7 @@ const pasteHandlerRegistry = createSidebarPasteHandlerRegistry();
 provide(sidebarTreeContextKey, {
   getVisibleNodes: () => selectableVisibleNodes.value,
   getVisibleNodeIndex: (id: string) => selectableVisibleNodeIndexById.value.get(id) ?? -1,
+  getProjectedConnectionIds: () => projectedConnectionIds.value,
   // Cover both sides of the input debounce: the immediate query prevents a
   // collapse while a projection is about to start, and the deferred query
   // keeps the currently rendered projection alive while clearing settles.
@@ -2213,7 +2246,8 @@ defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
             <TreeItem
               :node="item.node"
               :depth="item.depth"
-              :reorder-disabled="isRootListPartial || isConnectionListAlphabeticallySorted"
+              :reorder-disabled="isRootListPartial"
+              :move-to-group-only="isConnectionListAlphabeticallySorted"
               :pending-rename="pendingRenameNodeId === item.node.id"
               :highlighted="highlightedNodeId === item.node.id"
               :comment-label-width="sidebarCommentLabelWidths.get(item.node.id)"
@@ -2260,7 +2294,8 @@ defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
               :key="item.id"
               :node="item.node"
               :depth="item.depth"
-              :reorder-disabled="isRootListPartial || isConnectionListAlphabeticallySorted"
+              :reorder-disabled="isRootListPartial"
+              :move-to-group-only="isConnectionListAlphabeticallySorted"
               :pending-rename="pendingRenameNodeId === item.node.id"
               :highlighted="highlightedNodeId === item.id"
               :comment-label-width="sidebarCommentLabelWidths.get(item.node.id)"

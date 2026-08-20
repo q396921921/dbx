@@ -72,6 +72,7 @@ import {
   isExecuteSqlShortcut,
   isFocusSearchShortcut,
   isModRShortcut,
+  handleTabHistoryNavigationShortcut,
   isNewQueryShortcut,
   isObjectSourceSaveShortcutTarget,
   isOpenSettingsShortcut,
@@ -88,6 +89,7 @@ import {
   switchToTabIndexFromShortcut,
 } from "@/lib/editor/keyboardShortcuts";
 import { isPreviewTab } from "@/lib/tabs/tabPresentation";
+import { createTabNavigationHistory, moveInTabNavigationHistory, recordTabVisit } from "@/lib/tabs/tabNavigationHistory";
 import { supportsSqlFileExecution } from "@/lib/database/databaseCapabilities";
 import { classifyAiSqlExecution } from "@/lib/ai/aiSqlExecutionPolicy";
 import { buildAppendedEditorSql } from "@/lib/ai/aiSqlAppend";
@@ -287,6 +289,8 @@ const pendingAppCloseAction = ref<AppCloseAction | null>(null);
 const pendingCloseActionChoice = ref(false);
 
 const activeTab = computed(() => queryStore.tabs.find((t) => t.id === queryStore.activeTabId));
+const tabNavigationHistory = ref(createTabNavigationHistory());
+let pendingTabHistoryNavigationId: string | null = null;
 
 const externalSqlFileChanges = useExternalSqlFileChanges({
   activeTab,
@@ -724,6 +728,15 @@ watch(
           detail: { tabId: id, fromTabId: previousId },
         }),
       );
+    }
+    if (id) {
+      if (pendingTabHistoryNavigationId === id) pendingTabHistoryNavigationId = null;
+      else {
+        pendingTabHistoryNavigationId = null;
+        tabNavigationHistory.value = recordTabVisit(tabNavigationHistory.value, id);
+      }
+    } else {
+      pendingTabHistoryNavigationId = null;
     }
     if (id) newQueryContextSource.value = "tab";
     if (id && driverStoreActive.value) driverStoreActive.value = false;
@@ -2161,12 +2174,13 @@ async function handleQuickOpenSelect(item: any) {
       tableName: item.objectName || item.tableName,
       tableType: item.type === "view" ? "VIEW" : item.type === "materialized_view" ? "MATERIALIZED_VIEW" : "TABLE",
     });
-  } else if (item.type === "procedure" || item.type === "function" || item.type === "trigger" || item.type === "sequence" || item.type === "package" || item.type === "package-body" || item.type === "type" || item.type === "type-body") {
+  } else if (item.type === "procedure" || item.type === "function" || item.type === "trigger" || item.type === "event" || item.type === "sequence" || item.type === "package" || item.type === "package-body" || item.type === "type" || item.type === "type-body") {
     // Open the object source in a source tab
     const objectTypeMap: Record<string, ObjectSourceKind> = {
       procedure: "PROCEDURE",
       function: "FUNCTION",
       trigger: "TRIGGER",
+      event: "EVENT",
       sequence: "SEQUENCE",
       package: "PACKAGE",
       "package-body": "PACKAGE_BODY",
@@ -2193,7 +2207,7 @@ async function handleQuickOpenSelect(item: any) {
       });
       const tabId = queryStore.createTab(item.connectionId, item.database, `Source - ${objectName}`);
       queryStore.updateSql(tabId, editableSource);
-      if (item.type !== "sequence" && item.type !== "trigger" && item.type !== "type" && item.type !== "type-body") {
+      if (item.type !== "sequence" && item.type !== "trigger" && item.type !== "event" && item.type !== "type" && item.type !== "type-body") {
         queryStore.setObjectSource(tabId, {
           schema,
           name: objectName,
@@ -2233,6 +2247,20 @@ function activateAdjacentTab(direction: -1 | 1): boolean {
   const currentIndex = queryStore.tabs.findIndex((tab) => tab.id === queryStore.activeTabId);
   const nextIndex = currentIndex < 0 ? (direction > 0 ? 0 : count - 1) : (currentIndex + direction + count) % count;
   return activateTabByIndex(nextIndex);
+}
+
+function activateTabFromHistory(direction: -1 | 1): boolean {
+  const move = moveInTabNavigationHistory(tabNavigationHistory.value, direction, new Set(queryStore.tabs.map((tab) => tab.id)), queryStore.activeTabId);
+  if (!move) return false;
+
+  const previousHistory = tabNavigationHistory.value;
+  tabNavigationHistory.value = move.history;
+  pendingTabHistoryNavigationId = move.tabId;
+  if (activateQueryTab(move.tabId)) return true;
+
+  tabNavigationHistory.value = previousHistory;
+  pendingTabHistoryNavigationId = null;
+  return false;
 }
 
 function handleNativeSelectAll(e: KeyboardEvent) {
@@ -2288,6 +2316,11 @@ async function handleKeydown(e: KeyboardEvent) {
       e.preventDefault();
       e.stopPropagation();
     }
+    return;
+  }
+  if (handleTabHistoryNavigationShortcut(e, shortcuts, activateTabFromHistory)) {
+    e.preventDefault();
+    e.stopPropagation();
     return;
   }
   if (isSwitchToPreviousTabShortcut(e, shortcuts)) {
