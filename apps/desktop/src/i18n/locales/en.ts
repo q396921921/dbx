@@ -6660,6 +6660,7 @@ export default {
     updating: "Updating",
     update: "Update",
     localInstall: "Local install",
+    localInstallHint: "For air-gapped machines: on another computer with internet access, download the official dbx-jdbc-plugin-*.zip from the DBX GitHub Releases page, transfer it here, and select it — no network access is needed on this machine.",
     runtimeDrivers: "Runtime",
     storageTab: "Storage",
     runtimeTitle: "Driver runtime",

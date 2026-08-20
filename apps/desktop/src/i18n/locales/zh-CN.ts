@@ -6645,6 +6645,7 @@ export default withEnglishFallback({
     updating: "更新中",
     update: "更新",
     localInstall: "本地安装",
+    localInstallHint: "适用于完全内网环境：在另一台可联网的电脑上，从 DBX 的 GitHub Releases 页面下载官方 dbx-jdbc-plugin-*.zip 安装包，拷贝到本机后在此选择该文件——本机无需联网即可完成安装。",
     runtimeDrivers: "运行时",
     storageTab: "存储",
     runtimeTitle: "驱动运行时",

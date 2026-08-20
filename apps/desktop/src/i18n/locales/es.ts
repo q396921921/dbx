@@ -6371,6 +6371,7 @@ export default withEnglishFallback({
     updating: "Actualizando",
     update: "Actualizar",
     localInstall: "Instalación local",
+    localInstallHint: "Para entornos sin acceso a internet: en otro equipo con conexión, descarga el dbx-jdbc-plugin-*.zip oficial desde la página de Releases de DBX en GitHub, transfiérelo a esta máquina y selecciónalo; no se necesita acceso a la red en este equipo.",
     runtimeDrivers: "Runtime",
     storageTab: "Almacenamiento",
     runtimeTitle: "Runtime de drivers",

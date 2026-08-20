@@ -6065,6 +6065,7 @@ export default withEnglishFallback({
     updating: "업데이트 중",
     update: "업데이트",
     localInstall: "로컬 설치",
+    localInstallHint: "완전한 폐쇄망 환경의 경우: 인터넷에 연결된 다른 컴퓨터에서 DBX GitHub Releases 페이지의 공식 dbx-jdbc-plugin-*.zip을 다운로드한 뒤 이 기기로 옮겨 선택하세요. 이 기기는 네트워크에 연결할 필요가 없습니다.",
     runtimeDrivers: "런타임",
     storageTab: "저장 공간",
     runtimeTitle: "드라이버 런타임",

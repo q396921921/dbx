@@ -5683,6 +5683,7 @@ export default withEnglishFallback({
     updating: "更新中",
     update: "更新",
     localInstall: "本機安裝",
+    localInstallHint: "適用於完全內網環境：在另一台可連網的電腦上，從 DBX 的 GitHub Releases 頁面下載官方 dbx-jdbc-plugin-*.zip 安裝包，傳輸到本機後在此選取該檔案——本機不需要連網即可完成安裝。",
     runtimeDrivers: "執行環境",
     storageTab: "儲存",
     runtimeTitle: "驅動程式執行環境",
