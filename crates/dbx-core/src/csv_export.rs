@@ -423,7 +423,7 @@ mod tests {
 
         let mut csv = String::new();
         super::push_query_result_csv_row(&mut csv, &row);
-        assert_eq!(csv, super::format_query_result_csv_rows(&[row.clone()]));
+        assert_eq!(csv, super::format_query_result_csv_rows(std::slice::from_ref(&row)));
 
         let mut table_csv = String::new();
         super::push_table_csv_row(&mut table_csv, &row);
