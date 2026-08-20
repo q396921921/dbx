@@ -391,10 +391,11 @@ pub async fn execute_query(
             ..Default::default()
         },
     )
-    .await
-    .map_err(|error| AppError::from(error.into_backend_error()))?;
+    .await;
 
-    drop(registered);
+    registered.finish(&result);
+
+    let result = result.map_err(|error| AppError::from(error.into_backend_error()))?;
     Ok(Json(result))
 }
 
@@ -442,11 +443,12 @@ pub async fn execute_multi(
             execution_mode: req.execution_mode.unwrap_or_default(),
         },
     )
-    .await
-    .map_err(|error| AppError::from(error.into_backend_error()))?;
+    .await;
     let core_ms = core_started_at.elapsed().as_millis();
 
-    drop(registered);
+    registered.finish(&result);
+
+    let result = result.map_err(|error| AppError::from(error.into_backend_error()))?;
     execute_multi_response(result, core_ms)
 }
 

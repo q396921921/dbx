@@ -104,8 +104,10 @@ impl RunningQueries {
     }
 
     pub fn cancel(&self, execution_id: &str) -> bool {
-        let token =
-            self.inner.lock().unwrap_or_else(|e| e.into_inner()).get(execution_id).map(|task| task.token.clone());
+        let token = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.remove(execution_id).map(|task| task.token)
+        };
         let interrupt = self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).remove(execution_id);
 
         if let Some(interrupt) = interrupt {
@@ -267,6 +269,17 @@ impl RegisteredQuery {
             running_queries.remove(&execution_id, registration_id);
         });
     }
+
+    /// Detaches on a client-observed timeout (server-side execution may
+    /// still be running and reachable for a later explicit cancel);
+    /// otherwise drops normally. Centralizes the branch duplicated across
+    /// every HTTP/Tauri query-execution entry point.
+    pub fn finish<T>(self, result: &Result<T, crate::query::QueryExecutionError>) {
+        if matches!(result, Err(crate::query::QueryExecutionError::Timeout(_))) {
+            self.detach();
+        }
+        // else: falls out of scope here and Drop removes the registration.
+    }
 }
 
 impl Drop for RegisteredQuery {
@@ -322,6 +335,7 @@ mod tests {
         let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = interrupted.clone();
         let registered = running.register("exec-timeout".to_string());
+        running.set_pool_key("exec-timeout", "pool-1");
         running.register_interrupt("exec-timeout", move || {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
         });
@@ -330,11 +344,17 @@ mod tests {
         // timeout) while the statement may still be running server-side.
         registered.detach();
         assert!(running.has("exec-timeout"));
+        assert!(running.is_pool_active("pool-1"));
 
         // A later explicit cancel must still reach the (still registered)
         // KILL-QUERY-style interrupt.
         assert!(running.cancel("exec-timeout"));
         assert!(interrupted.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Cancelling a detached, timed-out query must free it immediately —
+        // not after the 30-minute detach grace period.
+        assert!(!running.has("exec-timeout"));
+        assert!(!running.is_pool_active("pool-1"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -354,6 +374,19 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(!running.has("exec-timeout"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finish_detaches_on_timeout_and_drops_otherwise() {
+        let running = RunningQueries::default();
+
+        let registered = running.register("exec-timeout".to_string());
+        registered.finish(&Result::<(), _>::Err(crate::query::QueryExecutionError::Timeout("t".into())));
+        assert!(running.has("exec-timeout"));
+
+        let registered = running.register("exec-ok".to_string());
+        registered.finish(&Result::<(), _>::Ok(()));
+        assert!(!running.has("exec-ok"));
     }
 
     #[test]
