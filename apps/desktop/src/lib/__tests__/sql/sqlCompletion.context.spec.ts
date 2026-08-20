@@ -755,10 +755,34 @@ describe("sqlCompletion scoped context classification", () => {
     expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
   });
 
-  it("still recognizes a double-quoted table name in FROM position (mysql)", () => {
+  it("does not treat a double-quoted FROM target as a table name under MySQL's default (non-ANSI_QUOTES) sql_mode", () => {
+    // Without ANSI_QUOTES, MySQL parses "orders" as a string literal (same as 'orders'), not a
+    // quoted identifier -- `FROM "orders"` isn't valid MySQL syntax under the default sql_mode, so
+    // this must not surface a phantom "orders" table.
     const sql = 'SELECT * FROM "orders" WHERE ';
     const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
-    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders", nameQuoted: true })]));
+    expect(context.referencedTables.some((t) => t.name === "orders")).toBe(false);
+  });
+
+  it("masks a double-quoted string used as a function argument from being read as a table reference (mysql)", () => {
+    const sql = 'SELECT CONCAT("from ghost_table", name) FROM real_table WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "ghost_table")).toBe(false);
+  });
+
+  it("masks a double-quoted CASE branch value from being read as a table reference (mysql)", () => {
+    const sql = 'SELECT CASE WHEN enabled THEN "from ghost_case" ELSE "ok" END FROM real_table WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "ghost_case")).toBe(false);
+  });
+
+  it("masks a double-quoted string nested inside a parenthesized expression from being read as a table reference (mysql)", () => {
+    const sql = 'SELECT * FROM real_table WHERE (status = "open" AND note = CONCAT("from ghost_nested", 1)) AND ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.referencedTables.some((t) => t.name === "ghost_nested")).toBe(false);
   });
 
   it("masks a double-quoted value right after an operator from being read as a table reference (postgres)", () => {
@@ -813,8 +837,14 @@ describe("sqlCompletion scoped context classification", () => {
     expect(context.referencedTables.some((t) => t.name === "用户表")).toBe(false);
   });
 
-  it("does not let a special character inside a double-quoted qualified table name desync the scan", () => {
+  it("does not let a special character inside a double-quoted qualified table name desync the scan (postgres)", () => {
     const sql = 'SELECT * FROM "mydb"."orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "postgres" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ schema: "mydb", name: "orders" })]));
+  });
+
+  it("does not let a special character inside a backtick-quoted qualified table name desync the scan (mysql)", () => {
+    const sql = "SELECT * FROM `mydb`.`orders` WHERE ";
     const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
     expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ schema: "mydb", name: "orders" })]));
   });

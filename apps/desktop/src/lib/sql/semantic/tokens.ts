@@ -81,18 +81,26 @@ export function matchDollarQuoteTag(input: string, index: number): string | unde
  * unconditional default is unsafe): only dialects confirmed to actually use backslash escaping by
  * convention (MySQL and its close wire-protocol/grammar clones) should opt in.
  *
- * "..." is always identifier quoting (never a string literal) regardless of either option --
- * MySQL's own dialect adapter (see semantic/dialect.ts) already lists '"' as one of its valid
- * identifierQuotes, and whether a given "..." occurrence is *actually* a string literal in MySQL
- * depends on the runtime `sql_mode` (ANSI_QUOTES) and on syntactic position, neither of which this
- * dialect-level tokenizer can see -- that disambiguation belongs at the caller/semantic layer (see
- * maskSqlLiteralsAndComments' operator-adjacency check in sqlCompletion.ts), not baked into a
- * single global per-dialect flag here.
+ * By default "..." is always identifier quoting (never a string literal), matching MySQL's own
+ * dialect adapter (see semantic/dialect.ts), which lists '"' as one of its valid identifierQuotes
+ * -- this is correct for every dialect where "..." unconditionally means identifier (Postgres,
+ * SQL Server's ANSI mode, MySQL running with the ANSI_QUOTES sql_mode) and is what every existing
+ * caller other than sqlCompletion.ts's literal-masking layer wants.
+ *
+ * options.mysqlDoubleQuoteIsString flips that for MySQL's actual default sql_mode (ANSI_QUOTES
+ * *disabled*, which is the overwhelming majority of real MySQL/MySQL-protocol installs): under
+ * that mode "..." is a string literal with exactly the same escaping rules as '...' (doubled-quote
+ * and, per mysqlBackslashEscape, backslash escaping), unconditionally -- not just after an
+ * operator. Whether ANSI_QUOTES is actually enabled on the connected server is runtime state this
+ * tokenizer can't see, so callers opt into this only when they want the common-case default
+ * (sqlCompletion.ts's maskSqlLiteralsAndComments); leaving it off keeps modeling the ANSI_QUOTES
+ * (identifier) interpretation.
  */
-export function tokenizeSqlSemantic(input: string, dialectId = "mysql", options?: { mysqlDashCommentRequiresWhitespace?: boolean; mysqlBackslashEscape?: boolean }): SqlSemanticToken[] {
+export function tokenizeSqlSemantic(input: string, dialectId = "mysql", options?: { mysqlDashCommentRequiresWhitespace?: boolean; mysqlBackslashEscape?: boolean; mysqlDoubleQuoteIsString?: boolean }): SqlSemanticToken[] {
   const tokens: SqlSemanticToken[] = [];
   const mysqlDashCommentRequiresWhitespace = !!options?.mysqlDashCommentRequiresWhitespace;
   const mysqlBackslashEscape = !!options?.mysqlBackslashEscape;
+  const mysqlDoubleQuoteIsString = !!options?.mysqlDoubleQuoteIsString;
   let index = 0;
   let depth = 0;
 
@@ -151,8 +159,13 @@ export function tokenizeSqlSemantic(input: string, dialectId = "mysql", options?
     }
 
     if (ch === '"') {
-      index = readQuoted(input, start, '"', '"');
-      tokens.push(token("quoted_identifier", input.slice(start, index), start, index, depth, '"'));
+      if (mysqlDoubleQuoteIsString) {
+        index = readQuotedString(input, start, '"', mysqlBackslashEscape);
+        tokens.push(token("string", input.slice(start, index), start, index, depth, '"'));
+      } else {
+        index = readQuoted(input, start, '"', '"');
+        tokens.push(token("quoted_identifier", input.slice(start, index), start, index, depth, '"'));
+      }
       continue;
     }
 
