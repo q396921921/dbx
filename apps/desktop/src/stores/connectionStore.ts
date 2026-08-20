@@ -6119,6 +6119,11 @@ export const useConnectionStore = defineStore("connection", () => {
       await loadTables(node.connectionId, node.database, node.schema, options);
     } else if ((node.type === "table" || node.type === "view" || node.type === "materialized_view") && node.connectionId && hasTreeNodeDatabaseContext(node)) {
       await loadTableGroups(node.connectionId, node.database, node.label, node.schema, node.id, node.catalog);
+    } else if (node.type === "type" && isXuguTypeMemberContainer(node, getConfig(node.connectionId || "")?.db_type)) {
+      // Xugu object types expose attributes and methods through the scoped
+      // completion endpoint. Do not route them through the generic custom-type
+      // loader, which treats the type name as a table and issues getColumns.
+      await loadXuguTypeMembers(node, options);
     } else if (node.type === "type") {
       await loadCustomTypeChildren(node, options);
     } else if (node.type === "group-columns" && node.connectionId && hasTreeNodeDatabaseContext(node) && node.tableName) {
@@ -6447,17 +6452,17 @@ export const useConnectionStore = defineStore("connection", () => {
     }
   }
 
-  async function loadXuguTypeMembers(node: TreeNode, options?: Pick<LoadTreeOptions, "preserveCollapsedChildren">): Promise<void> {
+  async function loadXuguTypeMembers(node: TreeNode, options?: Pick<LoadTreeOptions, "force" | "preserveCollapsedChildren">): Promise<void> {
     if (!isXuguTypeMemberContainer(node, getConfig(node.connectionId || "")?.db_type)) return;
     const connectionId = node.connectionId;
     const database = node.database;
     if (!connectionId || !database) return;
-    if (node.isExpanded) {
+    if (node.isExpanded && !options?.force) {
       node.isExpanded = false;
       if (!sidebarSearchQuery.value && !options?.preserveCollapsedChildren) releaseCollapsedTreeNodeChildren(node.id);
       return;
     }
-    if (node.children && node.children.length > 0) {
+    if (!options?.force && node.children && node.children.length > 0) {
       node.isExpanded = true;
       return;
     }
