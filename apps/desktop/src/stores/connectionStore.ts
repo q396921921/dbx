@@ -1038,6 +1038,9 @@ export const useConnectionStore = defineStore("connection", () => {
     clearConnectionHealthCheck(connectionId);
     if (activeConnectionId.value === connectionId) activeConnectionId.value = null;
     recordConnectionError(connectionId, error);
+    // 被动断链同样是元数据生命周期边界：查询/健康检查发现连接已失效后，
+    // 不得继续把旧 tableMeta 当作当前代次的 warm cache（PR #6640 blocker 3）。
+    invalidateConnectionMetadataLifetime(connectionId);
   }
 
   function recordConnectionLostError(connectionId: string, error: unknown): boolean {
@@ -1750,6 +1753,47 @@ export const useConnectionStore = defineStore("connection", () => {
     };
   }
 
+  // 连接元数据代次（connection generation）：disconnect / 关闭数据库 / 后端死池
+  // 重连等生命周期边界会递增代次。数据标签页记录其 tableMeta 写入时的代次
+  // （QueryTab.tableMetaGeneration），代次失配视同冷缓存——即使位于 30s TTL
+  // 窗口内也必须重新拉取结构，且失效前启动的 in-flight 元数据请求不得把旧
+  // 结果写回 tab（issue #6623 / PR #6640 review blocker 1）。
+  // 语义：连接级代次影响该连接全部数据库；数据库级代次只影响单个数据库。
+  // 查询代次时取两者较新者，disconnect 只 bump 连接级、closeDatabaseConnection
+  // 只 bump 数据库级，因此作用域天然隔离。
+  let metadataGenerationCounter = 0;
+  const metadataGenerationByConnection = new Map<string, number>();
+  const metadataGenerationByDatabase = new Map<string, number>();
+
+  function metadataGenerationFor(connectionId: string, database?: string): number {
+    const connectionGeneration = metadataGenerationByConnection.get(connectionId) ?? 0;
+    if (database == null) return connectionGeneration;
+    return Math.max(connectionGeneration, metadataGenerationByDatabase.get(`${connectionId}\x00${database}`) ?? 0);
+  }
+
+  function bumpMetadataGeneration(connectionId: string, database?: string) {
+    metadataGenerationCounter += 1;
+    if (database == null) {
+      metadataGenerationByConnection.set(connectionId, metadataGenerationCounter);
+    } else {
+      metadataGenerationByDatabase.set(`${connectionId}\x00${database}`, metadataGenerationCounter);
+    }
+  }
+
+  /**
+   * 连接/数据库生命周期失效：shared metadata cache + 单调代次必须同步完成，
+   * 这样紧随其后的 toolbar reload 立刻看到 generation mismatch，不会把旧
+   * tableMeta 当成 warm。data-tab freshness 清戳经动态 import，避免与
+   * queryStore 循环依赖；generation 已变时 freshness 稍晚清除也安全。
+   */
+  function invalidateConnectionMetadataLifetime(connectionId: string, database?: string) {
+    invalidateMetadataCaches({ connectionId, database });
+    bumpMetadataGeneration(connectionId, database);
+    void import("@/stores/queryStore").then(({ useQueryStore }) => {
+      useQueryStore().staleConnectionDataTabMetadata(connectionId, database);
+    });
+  }
+
   function invalidateMetadataCaches(match: MetadataCacheInvalidation): number {
     return metadataListPageCache.invalidate(match) + invalidateTableMetadataCache(match) + invalidateObjectBrowserRowsCache(match);
   }
@@ -1852,7 +1896,7 @@ export const useConnectionStore = defineStore("connection", () => {
   function mergeLocatedTreeChildren(parent: TreeNode, currentChildren: TreeNode[], pageChildren: TreeNode[], connectionId: string, database: string): TreeNode[] {
     const tableChildren = pageChildren.filter((child) => child.type === "table");
     const nonTableChildren = pageChildren.filter((child) => child.type !== "table");
-    let merged = tableChildren.length ? mergeTableTreePageChildren(currentChildren, tableChildren, connectionId, database) : [...currentChildren];
+    const merged = tableChildren.length ? mergeTableTreePageChildren(currentChildren, tableChildren, connectionId, database) : [...currentChildren];
     const existing = new Map(merged.map((node) => [treeNodeObjectIdentity(node), node]));
     for (const child of nonTableChildren) {
       const key = treeNodeObjectIdentity(child);
@@ -3410,6 +3454,11 @@ export const useConnectionStore = defineStore("connection", () => {
     invalidateObjectBrowserRowsCache({ connectionId });
     const { useQueryStore } = await import("@/stores/queryStore");
     const queryStore = useQueryStore();
+    // 断开连接是明确的元数据新鲜度边界：数据标签页保留展示/编辑状态，但
+    // 其 tableMeta 不得再被视为 warm cache（issue #6623——reconnect 后重开
+    // 同表必须重新拉取结构）。completion/object-browser 缓存上面已清；
+    // 这里再走统一 helper，bump 连接代次并清 data-tab freshness。
+    invalidateConnectionMetadataLifetime(connectionId);
     switch (settingsStore.editorSettings.disconnectTabHandlingMode) {
       case "close-tabs":
         queryStore.closeConnectionTabs(connectionId);
@@ -3467,6 +3516,10 @@ export const useConnectionStore = defineStore("connection", () => {
     }
     invalidateCompletionCache(connectionId, database);
     invalidateObjectBrowserRowsCache({ connectionId, database });
+    // 数据库级生命周期边界：与连接级断开一致，数据标签页的元数据 freshness
+    // 戳必须作废，重开/刷新时重新拉取结构（issue #6623）。bump 数据库级代次
+    // 只影响该库的在途回写与 reload 判定，不影响本连接其它库。
+    invalidateConnectionMetadataLifetime(connectionId, database);
   }
 
   async function ensureConnected(connectionId: string, options: { activate?: boolean; verifyHealth?: boolean } = {}) {
@@ -3482,7 +3535,10 @@ export const useConnectionStore = defineStore("connection", () => {
         markConnectionHealthChecked(connectionId);
         return;
       } catch {
-        // Backend pool is dead — remove from connectedIds and reconnect
+        // Backend pool is dead — remove from connectedIds and reconnect.
+        // 死池重连同样跨越了连接生命周期：shared 表元数据缓存与数据标签页的
+        // 元数据 freshness 都必须作废，否则自动重连后仍可能复用断链前的旧
+        // 字段结构（issue #6623）。
         cancelObjectDdlLoadsForConnection(connectionId);
         cancelObjectMetadataLoadsForConnection(connectionId);
         clearMetadataRuntimeCacheForConnection(connectionId);
@@ -3490,6 +3546,7 @@ export const useConnectionStore = defineStore("connection", () => {
         clearPrimaryVisibleObjectNames(connectionId);
         clearConnectionHealthCheck(connectionId);
         if (activeConnectionId.value === connectionId) activeConnectionId.value = null;
+        invalidateConnectionMetadataLifetime(connectionId);
       }
     }
     let config = getConfig(connectionId);
@@ -6657,7 +6714,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const text = table.name.toLowerCase();
     const schema = table.schema?.toLowerCase();
     const normalized = filter.trim().toLowerCase();
-    let score = schema && preferredSchema && schema === preferredSchema.toLowerCase() ? 10_000 : 0;
+    const score = schema && preferredSchema && schema === preferredSchema.toLowerCase() ? 10_000 : 0;
     if (!normalized) return score;
     if (text === normalized) return score + 9_000 - text.length;
     if (text.startsWith(normalized)) return score + 7_500 - text.length;
@@ -8199,6 +8256,7 @@ export const useConnectionStore = defineStore("connection", () => {
     connect,
     cancelConnecting,
     disconnect,
+    metadataGenerationFor,
     disconnectAndForgetConnectionPassword,
     hasSessionCredential,
     closeDatabaseConnection,
