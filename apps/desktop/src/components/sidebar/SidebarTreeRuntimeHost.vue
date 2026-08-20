@@ -254,6 +254,8 @@ import {
   editNacosNamespaceName,
   editNacosNamespaceDesc,
   editNacosNamespaceLoading,
+  showDeleteNacosNamespaceConfirm,
+  deleteNacosNamespaceLoading,
   createDatabaseCharsetOptions,
   createDatabaseCollationsByCharset,
   createDatabaseCharsetLoading,
@@ -497,6 +499,8 @@ const {
   confirmCreateNacosNamespace,
   openEditNacosNamespaceDialog,
   confirmEditNacosNamespace,
+  openDeleteNacosNamespaceConfirm,
+  confirmDeleteNacosNamespace,
   dropMongoCollection,
   dropMilvusCollection,
   dropMongoIndex,
@@ -2898,6 +2902,8 @@ const canEditNacosNamespace = computed(() => {
   return config?.db_type === "nacos" && !config.read_only;
 });
 
+const canDeleteNacosNamespace = computed(() => canEditNacosNamespace.value);
+
 const isDuckDbConnection = computed(() => {
   const config = activeNode.value.connectionId ? connectionStore.getConfig(activeNode.value.connectionId) : undefined;
   return activeNode.value.type === "connection" && config?.db_type === "duckdb" && connectionNamespaceCreationTarget(config) === "attach";
@@ -4450,6 +4456,9 @@ function databaseSpecificDialogCapabilities() {
     editNacosNamespaceDesc,
     editNacosNamespaceLoading,
     confirmEditNacosNamespace,
+    showDeleteNacosNamespaceConfirm,
+    deleteNacosNamespaceLoading,
+    confirmDeleteNacosNamespace,
     showRenameMongoCollectionDialog,
     renameMongoCollectionName,
     renameMongoCollectionError,
@@ -5114,6 +5123,16 @@ function buildSpecialSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     });
     items.push({ label: "", separator: true });
     items.push({ label: t("contextMenu.copyName"), action: copyName, icon: Copy, shortcut: shortcutCopyName.value });
+    if (canDeleteNacosNamespace.value) {
+      items.push({ label: "", separator: true });
+      items.push({
+        label: t("nacos.deleteNamespace"),
+        action: openDeleteNacosNamespaceConfirm,
+        icon: Trash2,
+        shortcut: shortcutDelete,
+        variant: "destructive" as const,
+      });
+    }
     return true;
   }
 
