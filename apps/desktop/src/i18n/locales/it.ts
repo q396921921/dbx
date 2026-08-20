@@ -2807,6 +2807,7 @@ export default withEnglishFallback({
     tableOperationFailed: "Operazione non riuscita: {message}",
     tableOperationTimedOut: 'L\'operazione su "{name}" sta impiegando più tempo del previsto e non è stata annullata: potrebbe essere ancora in esecuzione sul database. Controlla il risultato più tardi oppure fai clic su Annulla per interromperla. ({message})',
     tableOperationCancelled: 'Operazione su "{name}" annullata',
+    tableOperationCancelUnconfirmed: 'La richiesta di annullamento per "{name}" non è stata confermata dal database: l\'operazione potrebbe essere già terminata o essere ancora in esecuzione. Verifica il risultato effettivo. ({message})',
     objectDropRefreshFailed: "Gli oggetti sono stati eliminati, ma l'aggiornamento della barra laterale non è riuscito: {message}",
     duplicateNameTitle: "Clona as Nuova Tabella",
     duplicateNamePlaceholder: "Nuovo nome tabella",
