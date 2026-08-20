@@ -1016,6 +1016,7 @@ export default withEnglishFallback({
         mixed: "Mixto",
       },
     },
+    igniteVersion: "Versión de Ignite",
     elasticsearchDirectMode: "Conexión directa",
     elasticsearchKibanaProxyMode: "proxy de Kibana",
     elasticsearchKibanaHost: "host de Kibana",

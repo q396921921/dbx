@@ -414,6 +414,7 @@ export default withEnglishFallback({
     oracleTnsAliasRequired: "Oracle TNS 模式需要填写网络别名。",
     oracleTnsAdminRequired: "Oracle TNS 模式需要填写包含 tnsnames.ora 的 TNS_ADMIN 目录。",
     oracleTnsTransportUnsupported: "Oracle TNS 连接不能与 SSH、代理或 HTTP 隧道组合使用。请移除传输层，或改用服务名/SID 模式。",
+    igniteVersion: "Ignite 版本",
     elasticsearchDirectMode: "直连",
     elasticsearchKibanaProxyMode: "Kibana 代理",
     elasticsearchKibanaHost: "Kibana 主机",

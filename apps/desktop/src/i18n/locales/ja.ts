@@ -1014,6 +1014,7 @@ export default withEnglishFallback({
         mixed: "大文字小文字混在",
       },
     },
+    igniteVersion: "Ignite バージョン",
     elasticsearchDirectMode: "直接接続",
     elasticsearchKibanaProxyMode: "Kibana プロキシ",
     elasticsearchKibanaHost: "Kibana ホスト",

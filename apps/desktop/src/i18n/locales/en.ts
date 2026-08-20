@@ -489,6 +489,7 @@ export default {
     oracleTnsAliasRequired: "Oracle TNS mode requires a network alias.",
     oracleTnsAdminRequired: "Oracle TNS mode requires the TNS_ADMIN directory containing tnsnames.ora.",
     oracleTnsTransportUnsupported: "Oracle TNS connections cannot use SSH, proxy, or HTTP tunnel layers. Remove the transport layer or use Service Name/SID mode.",
+    igniteVersion: "Ignite version",
     elasticsearchDirectMode: "Direct",
     elasticsearchKibanaProxyMode: "Kibana Proxy",
     elasticsearchKibanaHost: "Kibana Host",

@@ -483,6 +483,7 @@ export default withEnglishFallback({
     oracleTnsAliasRequired: "Oracle TNS 모드에는 네트워크 별칭이 필요합니다.",
     oracleTnsAdminRequired: "Oracle TNS 모드에는 tnsnames.ora가 포함된 TNS_ADMIN 디렉터리가 필요합니다.",
     oracleTnsTransportUnsupported: "Oracle TNS 연결은 SSH, 프록시 또는 HTTP 터널 계층을 사용할 수 없습니다. 전송 계층을 제거하거나 서비스 이름/SID 모드를 사용하세요.",
+    igniteVersion: "Ignite 버전",
     elasticsearchDirectMode: "직접",
     elasticsearchKibanaProxyMode: "Kibana 프록시",
     elasticsearchKibanaHost: "Kibana 호스트",
