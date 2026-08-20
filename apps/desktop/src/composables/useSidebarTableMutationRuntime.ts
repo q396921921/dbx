@@ -265,20 +265,50 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
   const CANCEL_QUERY_PER_ATTEMPT_TIMEOUT_MS = Math.floor(CANCEL_QUERY_OVERALL_TIMEOUT_MS / CANCEL_QUERY_MAX_ATTEMPTS);
 
   async function confirmCancelWithRetry(executionId: string): Promise<boolean> {
-    for (let attempt = 0; attempt < CANCEL_QUERY_MAX_ATTEMPTS; attempt++) {
-      let confirmed = false;
-      try {
-        let timeoutId: ReturnType<typeof setTimeout>;
-        const attemptTimeout = new Promise<boolean>((resolve) => {
-          timeoutId = setTimeout(() => resolve(false), CANCEL_QUERY_PER_ATTEMPT_TIMEOUT_MS);
-        });
-        confirmed = await Promise.race([api.cancelQuery(executionId), attemptTimeout]).finally(() => clearTimeout(timeoutId));
-      } catch {
-        confirmed = false;
-      }
-      if (confirmed) return true;
+    // Once an attempt's own per-attempt timeout elapses, the loop below
+    // moves on to firing the next attempt without waiting for it — but it
+    // must keep observing that attempt's eventual result instead of just
+    // dropping the promise. A retry fired after the timeout hits the
+    // backend *after* it already removed the execution id on a first
+    // attempt that merely answered late, so every subsequent retry can only
+    // ever return false; discarding the first attempt's own (eventually
+    // `true`) result would make the whole call report an unconfirmed
+    // cancel even though the backend did cancel it.
+    let confirmed = false;
+    let settledAttempts = 0;
+    let totalAttempts = 0;
+    let notifyNextSettle: (() => void) | undefined;
+
+    function trackAttempt(attemptPromise: Promise<boolean>) {
+      totalAttempts += 1;
+      void attemptPromise.then((result) => {
+        settledAttempts += 1;
+        if (result) confirmed = true;
+        notifyNextSettle?.();
+      });
     }
-    return false;
+
+    for (let attempt = 0; attempt < CANCEL_QUERY_MAX_ATTEMPTS && !confirmed; attempt++) {
+      trackAttempt(api.cancelQuery(executionId).catch(() => false));
+      await new Promise<void>((resolve) => {
+        const timeoutId = setTimeout(resolve, CANCEL_QUERY_PER_ATTEMPT_TIMEOUT_MS);
+        notifyNextSettle = () => {
+          clearTimeout(timeoutId);
+          resolve();
+        };
+      });
+    }
+
+    // All attempts have been fired; wait for any still-outstanding ones so
+    // a slow-but-successful cancel is not lost just because it settled
+    // after its own attempt's pacing timeout.
+    while (!confirmed && settledAttempts < totalAttempts) {
+      await new Promise<void>((resolve) => {
+        notifyNextSettle = resolve;
+      });
+    }
+
+    return confirmed;
   }
 
   // Races the retry loop against a UI-facing deadline, but also returns the

@@ -360,6 +360,45 @@ describe("useSidebarTableMutationRuntime SAP HANA schema-scoped actions", () => 
     expect(sidebarDangerRunningExecutionId.value).not.toBe("");
   });
 
+  it("confirms the cancel when the first backend response arrives after its own per-attempt timeout", async () => {
+    const { feature } = runtime("");
+    mocks.executeWithProductionGuard.mockImplementationOnce(async (_node: unknown, _sql: unknown, options: { markDispatched: () => void }) => {
+      options.markDispatched();
+      throw new Error("Query timed out after 60 seconds");
+    });
+
+    await feature.confirmEmptyTable();
+    mocks.toast.mockClear();
+
+    vi.useFakeTimers();
+    try {
+      let resolveFirstAttempt: (confirmed: boolean) => void = () => {};
+      const firstAttempt = new Promise<boolean>((resolve) => {
+        resolveFirstAttempt = resolve;
+      });
+      mocks.cancelQuery.mockImplementationOnce(() => firstAttempt);
+      // By the time a retry is fired, the backend has already removed the
+      // execution id (the first attempt is the one that actually cancelled
+      // it), so any further attempt can only ever answer false.
+      mocks.cancelQuery.mockResolvedValue(false);
+
+      const cancelPromise = sidebarDangerRunningCancel.value?.();
+      // Let the first attempt's own 2s per-attempt timeout elapse without an
+      // answer, so the loop moves on to firing a retry.
+      await vi.advanceTimersByTimeAsync(2_000);
+      // The first attempt now succeeds, 0.5s after its own timeout fired —
+      // it must still be observed instead of being discarded.
+      resolveFirstAttempt(true);
+      await vi.advanceTimersByTimeAsync(500);
+      await cancelPromise;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(mocks.toast).toHaveBeenCalledWith("contextMenu.tableOperationCancelled", 3000);
+    expect(sidebarDangerRunningExecutionId.value).toBe("");
+  });
+
   it.each(actions)("does not report a false success for $action when the user declines the production-safety confirmation", async ({ action }) => {
     const { feature } = runtime("");
     mocks.executeWithProductionGuard.mockResolvedValueOnce(undefined);
