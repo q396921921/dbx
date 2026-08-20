@@ -2882,6 +2882,8 @@ export default withEnglishFallback({
     tableOperationTimedOut: "「{name}」の操作に予想より時間がかかっており、まだキャンセルされていません。データベース側では実行が続いている可能性があります。後で結果を確認するか、キャンセルをクリックして停止してください。（{message}）",
     tableOperationCancelled: "「{name}」の操作をキャンセルしました",
     tableOperationCancelUnconfirmed: "「{name}」のキャンセル要求はデータベース側で確認されませんでした。操作はすでに完了しているか、まだ実行中の可能性があります。実際の結果をご確認ください。（{message}）",
+    tableOperationCancelPending: "「{name}」のキャンセル要求はまだ確認されていません。データベース側でまだ実行中の可能性があります。もう一度キャンセルを試すか、しばらくしてから確認してください。",
+    dangerOperationAlreadyRunning: "別の危険な操作がまだ実行中です。完了を待つか、キャンセルしてから新しい操作を開始してください。",
     objectDropRefreshFailed: "オブジェクトは削除されましたが、サイドバーの更新に失敗しました: {message}",
     duplicateNameTitle: "新しいテーブルとして複製",
     duplicateNamePlaceholder: "新しいテーブル名",

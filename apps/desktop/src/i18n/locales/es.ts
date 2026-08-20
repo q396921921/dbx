@@ -2861,6 +2861,8 @@ export default withEnglishFallback({
     tableOperationTimedOut: 'La operación en "{name}" está tardando más de lo esperado y no se ha cancelado; es posible que siga ejecutándose en la base de datos. Compruebe el resultado más tarde o haga clic en Cancelar para detenerla. ({message})',
     tableOperationCancelled: 'Operación en "{name}" cancelada',
     tableOperationCancelUnconfirmed: 'La solicitud de cancelación de "{name}" no fue confirmada por la base de datos; la operación puede haber terminado o seguir en ejecución. Compruebe el resultado real. ({message})',
+    tableOperationCancelPending: 'La solicitud de cancelación de "{name}" aún no ha sido confirmada; puede que la operación siga en ejecución en la base de datos. Puedes intentar cancelar de nuevo o comprobarlo en unos instantes.',
+    dangerOperationAlreadyRunning: "Otra operación peligrosa sigue en ejecución. Espera a que finalice o cancélala antes de iniciar una nueva.",
     objectDropRefreshFailed: "Los objetos se eliminaron, pero no se pudo actualizar la barra lateral: {message}",
     duplicateNameTitle: "Clonar como tabla nueva",
     duplicateNamePlaceholder: "Nombre de la nueva tabla",

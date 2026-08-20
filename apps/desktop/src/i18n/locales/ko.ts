@@ -2778,6 +2778,8 @@ export default withEnglishFallback({
     tableOperationTimedOut: '"{name}"에 대한 작업이 예상보다 오래 걸리고 있으며 취소되지 않았습니다. 데이터베이스에서 계속 실행 중일 수 있습니다. 나중에 결과를 확인하거나 취소를 클릭하여 중지하세요. ({message})',
     tableOperationCancelled: '"{name}" 작업이 취소되었습니다',
     tableOperationCancelUnconfirmed: '"{name}"에 대한 취소 요청이 데이터베이스에서 확인되지 않았습니다. 작업이 이미 완료되었거나 계속 실행 중일 수 있습니다. 실제 결과를 확인하세요. ({message})',
+    tableOperationCancelPending: '"{name}"에 대한 취소 요청이 아직 확인되지 않았습니다. 데이터베이스에서 계속 실행 중일 수 있습니다. 다시 취소를 시도하거나 잠시 후 확인해 보세요.',
+    dangerOperationAlreadyRunning: "다른 위험한 작업이 아직 실행 중입니다. 완료되기를 기다리거나 취소한 후 새 작업을 시작하세요.",
     objectDropRefreshFailed: "개체는 삭제되었지만 사이드바 새로 고침에 실패했습니다: {message}",
     duplicateNameTitle: "새 테이블로 복제",
     duplicateNamePlaceholder: "새 테이블 이름",

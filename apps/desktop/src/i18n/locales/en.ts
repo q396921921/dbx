@@ -2958,6 +2958,8 @@ export default {
     tableOperationTimedOut: 'The operation on "{name}" is taking longer than expected and has not been cancelled — it may still be running on the database. Check the result later, or click Cancel to stop it. ({message})',
     tableOperationCancelled: 'Operation on "{name}" cancelled',
     tableOperationCancelUnconfirmed: 'The cancel request for "{name}" was not confirmed by the database — the operation may have already finished or may still be running. Check the result to be sure. ({message})',
+    tableOperationCancelPending: 'The cancel request for "{name}" has not been confirmed yet — it may still be running on the database. You can try Cancel again, or check back shortly.',
+    dangerOperationAlreadyRunning: "Another dangerous operation is still running. Wait for it to finish or cancel it before starting a new one.",
     objectDropRefreshFailed: "Objects were deleted, but refreshing the sidebar failed: {message}",
     duplicateNameTitle: "Clone as New Table",
     duplicateNamePlaceholder: "New table name",

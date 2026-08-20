@@ -356,7 +356,9 @@ pub async fn execute_query(
     let allow_database_switch = req.client_session_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &req.database, &req.sql, allow_database_switch)
         .await?;
-    let execution_id = req.execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let requested_execution_id = req.execution_id.filter(|id| !id.trim().is_empty());
+    let keep_timeout_reachable = requested_execution_id.is_some();
+    let execution_id = requested_execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let registered = state.app.running_queries.register_task(
         execution_id.clone(),
@@ -391,10 +393,11 @@ pub async fn execute_query(
             ..Default::default()
         },
     )
-    .await
-    .map_err(|error| AppError::from(error.into_backend_error()))?;
+    .await;
 
-    drop(registered);
+    registered.finish_with_late_cancel(&result, keep_timeout_reachable);
+
+    let result = result.map_err(|error| AppError::from(error.into_backend_error()))?;
     Ok(Json(result))
 }
 
@@ -406,7 +409,9 @@ pub async fn execute_multi(
     let allow_database_switch = req.client_session_id.as_deref().is_some_and(|id| !id.trim().is_empty());
     super::mcp_policy::ensure_sql(&state, &headers, &req.connection_id, &req.database, &req.sql, allow_database_switch)
         .await?;
-    let execution_id = req.execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let requested_execution_id = req.execution_id.filter(|id| !id.trim().is_empty());
+    let keep_timeout_reachable = requested_execution_id.is_some();
+    let execution_id = requested_execution_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     let registered = state.app.running_queries.register_task(
         execution_id.clone(),
@@ -442,11 +447,12 @@ pub async fn execute_multi(
             execution_mode: req.execution_mode.unwrap_or_default(),
         },
     )
-    .await
-    .map_err(|error| AppError::from(error.into_backend_error()))?;
+    .await;
     let core_ms = core_started_at.elapsed().as_millis();
 
-    drop(registered);
+    registered.finish_with_late_cancel(&result, keep_timeout_reachable);
+
+    let result = result.map_err(|error| AppError::from(error.into_backend_error()))?;
     execute_multi_response(result, core_ms)
 }
 

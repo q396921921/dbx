@@ -70,7 +70,6 @@ import { useDatabaseOptions } from "@/composables/useDatabaseOptions";
 import type { ColumnInfo, DatabaseType, TreeNode, TreeNodeType } from "@/types/database";
 import * as api from "@/lib/backend/api";
 import { queryTimeoutSecsForConnection } from "@/lib/sql/queryTimeout";
-import { uuid } from "@/lib/common/utils";
 import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
 import { connectionUsesVisibleSchemaFilter } from "@/lib/database/visibleDatabases";
 import { canTreeNodePin, canTreeNodeShowExpander } from "@/lib/sidebar/sidebarTreeItemLayout";
@@ -2524,13 +2523,25 @@ function openRenameObjectDialog() {
 async function executeTreeNodeSqlWithProductionGuard(
   node: Pick<TreeNode, "connectionId" | "database" | "schema">,
   sql: string,
-  options: { database?: string; schema?: string; executeAsScript?: boolean; executionId?: string; isCancelledBeforeDispatch?: () => boolean; markDispatched?: () => void } = {},
+  options: {
+    database?: string;
+    schema?: string;
+    executeAsScript?: boolean;
+    executionId?: string;
+    isCancelledBeforeDispatch?: () => boolean;
+    markDispatched?: () => void;
+  } = {},
 ) {
   if (!node.connectionId) return undefined;
   const database = options.database ?? node.database ?? "";
   const config = connectionStore.getConfig(node.connectionId);
+  // Always resolve the connection's configured timeout the same way the
+  // main editor does — independent of whether this call also wires up
+  // Cancel-button UI. Gating this behind an opt-in flag previously left
+  // every non-danger-dialog caller falling back to the backend's hardcoded
+  // 30s default instead of the user's configured (or unlimited) timeout.
   const timeoutSecs = queryTimeoutSecsForConnection(config, settingsStore.editorSettings.globalQueryTimeoutSecs);
-  const executionId = options.executionId ?? uuid();
+  const executionId = options.executionId;
   return executeWithProductionSqlGuard({
     connection: config,
     database,

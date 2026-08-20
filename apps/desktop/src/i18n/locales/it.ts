@@ -2859,6 +2859,8 @@ export default withEnglishFallback({
     tableOperationTimedOut: 'L\'operazione su "{name}" sta impiegando più tempo del previsto e non è stata annullata: potrebbe essere ancora in esecuzione sul database. Controlla il risultato più tardi oppure fai clic su Annulla per interromperla. ({message})',
     tableOperationCancelled: 'Operazione su "{name}" annullata',
     tableOperationCancelUnconfirmed: 'La richiesta di annullamento per "{name}" non è stata confermata dal database: l\'operazione potrebbe essere già terminata o essere ancora in esecuzione. Verifica il risultato effettivo. ({message})',
+    tableOperationCancelPending: 'La richiesta di annullamento per "{name}" non è stata ancora confermata: l\'operazione potrebbe essere ancora in esecuzione sul database. Puoi riprovare ad annullare oppure controllare tra poco.',
+    dangerOperationAlreadyRunning: "Un'altra operazione pericolosa è ancora in esecuzione. Attendi che finisca o annullala prima di iniziarne una nuova.",
     objectDropRefreshFailed: "Gli oggetti sono stati eliminati, ma l'aggiornamento della barra laterale non è riuscito: {message}",
     duplicateNameTitle: "Clona as Nuova Tabella",
     duplicateNamePlaceholder: "Nuovo nome tabella",

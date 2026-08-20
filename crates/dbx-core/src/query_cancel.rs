@@ -62,18 +62,24 @@ impl RunningTaskMetadata {
     }
 }
 
-#[derive(Clone)]
 struct RunningTask {
     registration_id: u64,
     token: CancellationToken,
     metadata: RunningTaskMetadata,
     pool_key: Option<String>,
+    interrupt: Option<InterruptFn>,
 }
 
 #[derive(Clone, Default)]
 pub struct RunningQueries {
+    // Interrupt closures live inside `RunningTask` rather than a second map
+    // so that a task's presence and its interrupt handle always change
+    // together under one lock acquisition. Splitting them across two
+    // mutexes previously left a window where `cancel()` could remove the
+    // task while a driver's `register_interrupt()` — running concurrently,
+    // before its interrupt handle was ready — inserted a closure keyed to
+    // an execution id nothing would ever look at again, leaking it forever.
     inner: Arc<Mutex<HashMap<String, RunningTask>>>,
-    interrupts: Arc<Mutex<HashMap<String, InterruptFn>>>,
     next_registration_id: Arc<AtomicU64>,
 }
 
@@ -87,11 +93,11 @@ impl RunningQueries {
         let registration_id = self.next_registration_id.fetch_add(1, Ordering::Relaxed) + 1;
         let previous = self.inner.lock().unwrap_or_else(|e| e.into_inner()).insert(
             execution_id.clone(),
-            RunningTask { registration_id, token: token.clone(), metadata, pool_key: None },
+            RunningTask { registration_id, token: token.clone(), metadata, pool_key: None, interrupt: None },
         );
         if let Some(previous) = previous {
             previous.token.cancel();
-            if let Some(interrupt) = self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).remove(&execution_id) {
+            if let Some(interrupt) = previous.interrupt {
                 interrupt();
             }
         }
@@ -99,23 +105,39 @@ impl RunningQueries {
         RegisteredQuery { execution_id, registration_id, token, running_queries: self.clone(), detached: false }
     }
 
+    /// Hands over the driver-specific interrupt handle (e.g. a MySQL
+    /// `KILL QUERY` or a DuckDB worker cancel) once it becomes available,
+    /// which is necessarily *after* the task itself was registered.
+    ///
+    /// If a `cancel()` already ran for this execution id by the time this
+    /// arrives, the task is already gone and nothing will ever call
+    /// `cancel()` again for it — so the interrupt runs immediately instead
+    /// of being stored, which would otherwise leak it forever (nothing ever
+    /// visits an interrupt for a task that no longer exists).
     pub fn register_interrupt(&self, execution_id: &str, interrupt: impl Fn() + Send + 'static) {
-        self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).insert(execution_id.to_string(), Box::new(interrupt));
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(task) = inner.get_mut(execution_id) {
+            task.interrupt = Some(Box::new(interrupt));
+            return;
+        }
+        drop(inner);
+        interrupt();
     }
 
     pub fn cancel(&self, execution_id: &str) -> bool {
-        let token =
-            self.inner.lock().unwrap_or_else(|e| e.into_inner()).get(execution_id).map(|task| task.token.clone());
-        let interrupt = self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).remove(execution_id);
-
-        if let Some(interrupt) = interrupt {
-            interrupt();
-        }
-        if let Some(token) = token {
-            token.cancel();
-            true
-        } else {
-            false
+        let task = {
+            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.remove(execution_id)
+        };
+        match task {
+            Some(task) => {
+                if let Some(interrupt) = task.interrupt {
+                    interrupt();
+                }
+                task.token.cancel();
+                true
+            }
+            None => false,
         }
     }
 
@@ -140,17 +162,16 @@ impl RunningQueries {
         let mut active_execution_ids = inner.keys().cloned().collect::<Vec<_>>();
         active_execution_ids.sort();
         let mut active_by_connection = HashMap::new();
+        let mut interrupt_registrations = 0;
         for task in inner.values() {
             if let Some(connection_id) = &task.metadata.connection_id {
                 *active_by_connection.entry(connection_id.clone()).or_insert(0) += 1;
             }
+            if task.interrupt.is_some() {
+                interrupt_registrations += 1;
+            }
         }
-        drop(inner);
-        RunningQueryDiagnostics {
-            active_execution_ids,
-            active_by_connection,
-            interrupt_registrations: self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).len(),
-        }
+        RunningQueryDiagnostics { active_execution_ids, active_by_connection, interrupt_registrations }
     }
 
     fn cancel_matching(&self, predicate: impl Fn(&RunningTask) -> bool) -> usize {
@@ -190,24 +211,16 @@ impl RunningQueries {
 
     #[cfg(test)]
     pub fn registration_counts(&self) -> (usize, usize) {
-        (
-            self.inner.lock().unwrap_or_else(|e| e.into_inner()).len(),
-            self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).len(),
-        )
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let tasks = inner.len();
+        let interrupts = inner.values().filter(|task| task.interrupt.is_some()).count();
+        (tasks, interrupts)
     }
 
     fn remove(&self, execution_id: &str, registration_id: u64) {
-        let removed = {
-            let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            if inner.get(execution_id).is_some_and(|task| task.registration_id == registration_id) {
-                inner.remove(execution_id);
-                true
-            } else {
-                false
-            }
-        };
-        if removed {
-            self.interrupts.lock().unwrap_or_else(|e| e.into_inner()).remove(execution_id);
+        let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.get(execution_id).is_some_and(|task| task.registration_id == registration_id) {
+            inner.remove(execution_id);
         }
     }
 }
@@ -267,6 +280,27 @@ impl RegisteredQuery {
             running_queries.remove(&execution_id, registration_id);
         });
     }
+
+    /// Detaches on a client-observed timeout (server-side execution may
+    /// still be running and reachable for a later explicit cancel);
+    /// otherwise drops normally. Centralizes the branch duplicated across
+    /// every HTTP/Tauri query-execution entry point.
+    pub fn finish<T>(self, result: &Result<T, crate::query::QueryExecutionError>) {
+        self.finish_with_late_cancel(result, true);
+    }
+
+    /// Finishes a registration while preserving timed-out work only when the
+    /// caller has an execution id it can use for a later explicit cancel.
+    pub fn finish_with_late_cancel<T>(
+        self,
+        result: &Result<T, crate::query::QueryExecutionError>,
+        keep_timeout_reachable: bool,
+    ) {
+        if keep_timeout_reachable && matches!(result, Err(crate::query::QueryExecutionError::Timeout(_))) {
+            self.detach();
+        }
+        // else: falls out of scope here and Drop removes the registration.
+    }
 }
 
 impl Drop for RegisteredQuery {
@@ -322,6 +356,7 @@ mod tests {
         let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let flag = interrupted.clone();
         let registered = running.register("exec-timeout".to_string());
+        running.set_pool_key("exec-timeout", "pool-1");
         running.register_interrupt("exec-timeout", move || {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
         });
@@ -330,11 +365,17 @@ mod tests {
         // timeout) while the statement may still be running server-side.
         registered.detach();
         assert!(running.has("exec-timeout"));
+        assert!(running.is_pool_active("pool-1"));
 
         // A later explicit cancel must still reach the (still registered)
         // KILL-QUERY-style interrupt.
         assert!(running.cancel("exec-timeout"));
         assert!(interrupted.load(std::sync::atomic::Ordering::SeqCst));
+
+        // Cancelling a detached, timed-out query must free it immediately —
+        // not after the 30-minute detach grace period.
+        assert!(!running.has("exec-timeout"));
+        assert!(!running.is_pool_active("pool-1"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -354,6 +395,34 @@ mod tests {
         tokio::task::yield_now().await;
 
         assert!(!running.has("exec-timeout"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finish_detaches_on_timeout_and_drops_otherwise() {
+        let running = RunningQueries::default();
+
+        let registered = running.register("exec-timeout".to_string());
+        registered.finish(&Result::<(), _>::Err(crate::query::QueryExecutionError::Timeout("t".into())));
+        assert!(running.has("exec-timeout"));
+
+        let registered = running.register("exec-ok".to_string());
+        registered.finish(&Result::<(), _>::Ok(()));
+        assert!(!running.has("exec-ok"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finish_only_keeps_timed_out_registration_when_late_cancel_is_reachable() {
+        let running = RunningQueries::default();
+        let timeout = Result::<(), _>::Err(crate::query::QueryExecutionError::Timeout("t".into()));
+
+        let registered = running.register("exec-internal".to_string());
+        registered.finish_with_late_cancel(&timeout, false);
+        assert!(!running.has("exec-internal"));
+
+        let registered = running.register("exec-client".to_string());
+        registered.finish_with_late_cancel(&timeout, true);
+        assert!(running.has("exec-client"));
+        assert!(running.cancel("exec-client"));
     }
 
     #[test]
@@ -438,6 +507,31 @@ mod tests {
         }));
 
         assert!(result.is_err());
+        assert_eq!(running.registration_counts(), (0, 0));
+    }
+
+    #[test]
+    fn late_interrupt_registration_after_cancel_runs_immediately_and_does_not_leak() {
+        let running = RunningQueries::default();
+        let registered = running.register("exec-1".to_string());
+
+        // The user cancels before the driver has a chance to hand over its
+        // interrupt handle (e.g. it is still establishing the connection it
+        // would issue a KILL QUERY against).
+        assert!(running.cancel("exec-1"));
+
+        let interrupted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = interrupted.clone();
+        running.register_interrupt("exec-1", move || {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        // Nobody will ever call cancel() again for this execution id, so the
+        // late registration must run immediately instead of being stored.
+        assert!(interrupted.load(std::sync::atomic::Ordering::SeqCst));
+
+        drop(registered);
+
         assert_eq!(running.registration_counts(), (0, 0));
     }
 
