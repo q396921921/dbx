@@ -705,6 +705,9 @@ export const useQueryStore = defineStore("query", () => {
   const activeTabId = ref<string | null>(null);
   const isOpenTabsLoaded = ref(false);
   const activeTabHistory = ref<string[]>([]);
+  // Most-recently-activated tab ids, oldest first. Read-only view for the
+  // Ctrl+Tab switcher, which renders them in reverse.
+  const recentTabIds = computed(() => activeTabHistory.value);
   const showCloseConfirm = ref(false);
   const pendingCloseTabId = ref<string | null>(null);
   const pendingBatchCloseTabIds = ref<string[] | null>(null);
@@ -6263,6 +6266,7 @@ export const useQueryStore = defineStore("query", () => {
     tabs,
     activeTabId,
     isOpenTabsLoaded,
+    recentTabIds,
     initOpenTabs,
     showCloseConfirm,
     pendingCloseTabId,
