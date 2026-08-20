@@ -29,6 +29,33 @@ function readQuoted(input: string, start: number, open: string, close: string): 
   return input.length;
 }
 
+// Same doubled-quote escaping as readQuoted, plus (when allowBackslashEscape) MySQL-style `\x`
+// escaping inside '...' strings. Backslash-escape recognition is NOT safe to apply
+// unconditionally: a string that merely *ends* in a literal backslash right before the closing
+// quote (e.g. a Windows path literal `'C:\Program Files\'` under Postgres, whose default
+// standard_conforming_strings=on gives backslash no special meaning) would have its real closing
+// quote misread as escaped, swallowing the rest of the query as a phantom string. So this is
+// gated per-dialect by the caller (see tokenizeSqlSemantic's `mysqlBackslashEscape` option) rather
+// than applied everywhere.
+function readQuotedString(input: string, start: number, quote: string, allowBackslashEscape: boolean): number {
+  let index = start + 1;
+  while (index < input.length) {
+    if (allowBackslashEscape && input[index] === "\\" && index + 1 < input.length) {
+      index += 2;
+      continue;
+    }
+    if (input[index] === quote) {
+      if (input[index + 1] === quote) {
+        index += 2;
+        continue;
+      }
+      return index + 1;
+    }
+    index += 1;
+  }
+  return input.length;
+}
+
 const DOLLAR_QUOTE_TAG_PATTERN = /\$[A-Za-z_0-9]*\$/y;
 
 /**
@@ -42,8 +69,30 @@ export function matchDollarQuoteTag(input: string, index: number): string | unde
   return DOLLAR_QUOTE_TAG_PATTERN.exec(input)?.[0];
 }
 
-export function tokenizeSqlSemantic(input: string, dialectId = "mysql"): SqlSemanticToken[] {
+/**
+ * options.mysqlDashCommentRequiresWhitespace opts into MySQL's rule that a bare "--" only starts
+ * a line comment when followed by whitespace/EOL, since MySQL reserves unspaced "--" for
+ * double-negation (e.g. `SELECT 1--1`). Defaults to false so every existing caller keeps today's
+ * dialect-generic "-- always starts a comment" behavior; only callers targeting a confirmed
+ * MySQL-family grammar should opt in.
+ *
+ * options.mysqlBackslashEscape opts into MySQL-style `\x` escaping inside '...' strings. Also
+ * dialect-gated (not a global default -- see readQuotedString's doc comment for why an
+ * unconditional default is unsafe): only dialects confirmed to actually use backslash escaping by
+ * convention (MySQL and its close wire-protocol/grammar clones) should opt in.
+ *
+ * "..." is always identifier quoting (never a string literal) regardless of either option --
+ * MySQL's own dialect adapter (see semantic/dialect.ts) already lists '"' as one of its valid
+ * identifierQuotes, and whether a given "..." occurrence is *actually* a string literal in MySQL
+ * depends on the runtime `sql_mode` (ANSI_QUOTES) and on syntactic position, neither of which this
+ * dialect-level tokenizer can see -- that disambiguation belongs at the caller/semantic layer (see
+ * maskSqlLiteralsAndComments' operator-adjacency check in sqlCompletion.ts), not baked into a
+ * single global per-dialect flag here.
+ */
+export function tokenizeSqlSemantic(input: string, dialectId = "mysql", options?: { mysqlDashCommentRequiresWhitespace?: boolean; mysqlBackslashEscape?: boolean }): SqlSemanticToken[] {
   const tokens: SqlSemanticToken[] = [];
+  const mysqlDashCommentRequiresWhitespace = !!options?.mysqlDashCommentRequiresWhitespace;
+  const mysqlBackslashEscape = !!options?.mysqlBackslashEscape;
   let index = 0;
   let depth = 0;
 
@@ -57,7 +106,7 @@ export function tokenizeSqlSemantic(input: string, dialectId = "mysql"): SqlSema
       continue;
     }
 
-    if (ch === "-" && next === "-") {
+    if (ch === "-" && next === "-" && (!mysqlDashCommentRequiresWhitespace || index + 2 >= input.length || /\s/.test(input[index + 2] ?? ""))) {
       index += 2;
       while (index < input.length && input[index] !== "\n" && input[index] !== "\r") index += 1;
       tokens.push(token("comment", input.slice(start, index), start, index, depth));
@@ -86,7 +135,7 @@ export function tokenizeSqlSemantic(input: string, dialectId = "mysql"): SqlSema
     }
 
     if (ch === "'") {
-      index = readQuoted(input, start, "'", "'");
+      index = readQuotedString(input, start, "'", mysqlBackslashEscape);
       tokens.push(token("string", input.slice(start, index), start, index, depth, "'"));
       continue;
     }
