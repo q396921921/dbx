@@ -2856,6 +2856,9 @@ export default withEnglishFallback({
     truncateTableSuccess: "テーブル「{name}」をトランケートしました",
     duplicateStructureSuccess: "テーブルを「{name}」として複製しました",
     tableOperationFailed: "操作に失敗しました: {message}",
+    tableOperationTimedOut: "「{name}」の操作に予想より時間がかかっており、まだキャンセルされていません。データベース側では実行が続いている可能性があります。後で結果を確認するか、キャンセルをクリックして停止してください。（{message}）",
+    tableOperationCancelled: "「{name}」の操作をキャンセルしました",
+    tableOperationCancelUnconfirmed: "「{name}」のキャンセル要求はデータベース側で確認されませんでした。操作はすでに完了しているか、まだ実行中の可能性があります。実際の結果をご確認ください。（{message}）",
     objectDropRefreshFailed: "オブジェクトは削除されましたが、サイドバーの更新に失敗しました: {message}",
     duplicateNameTitle: "新しいテーブルとして複製",
     duplicateNamePlaceholder: "新しいテーブル名",
@@ -4686,6 +4689,7 @@ export default withEnglishFallback({
     mongoFieldDetails: "フィールド: {field}",
     mongoArrayItemDetails: "配列アイテムインデックス: {index}",
     cancel: "キャンセル",
+    cancelRunning: "クエリをキャンセル",
     confirm: "実行",
   },
   sqlParameters: {

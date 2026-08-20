@@ -2834,6 +2834,9 @@ export default withEnglishFallback({
     truncateTableSuccess: "資料表「{name}」已截斷",
     duplicateStructureSuccess: "已克隆為新資料表「{name}」",
     tableOperationFailed: "操作失敗：{message}",
+    tableOperationTimedOut: "「{name}」的操作耗時較長，尚未被取消，可能仍在資料庫端繼續執行。請稍後自行確認執行結果，或點擊「取消」手動終止。（{message}）",
+    tableOperationCancelled: "「{name}」的操作已取消",
+    tableOperationCancelUnconfirmed: "「{name}」的取消請求未被資料庫確認，該操作可能已經完成，也可能仍在繼續執行，請自行核實實際結果。（{message}）",
     objectDropRefreshFailed: "物件已刪除，但側邊欄重新整理失敗：{message}",
     duplicateNameTitle: "克隆為新資料表",
     duplicateNamePlaceholder: "新資料表名稱",
@@ -3985,6 +3988,7 @@ export default withEnglishFallback({
     mongoFieldDetails: "欄位：{field}",
     mongoArrayItemDetails: "陣列項索引：{index}",
     cancel: "取消",
+    cancelRunning: "取消查詢",
     confirm: "執行",
   },
   sqlParameters: {

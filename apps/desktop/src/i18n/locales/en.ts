@@ -2918,6 +2918,9 @@ export default {
     truncateTableSuccess: 'Table "{name}" truncated',
     duplicateStructureSuccess: 'Table cloned as "{name}"',
     tableOperationFailed: "Operation failed: {message}",
+    tableOperationTimedOut: 'The operation on "{name}" is taking longer than expected and has not been cancelled — it may still be running on the database. Check the result later, or click Cancel to stop it. ({message})',
+    tableOperationCancelled: 'Operation on "{name}" cancelled',
+    tableOperationCancelUnconfirmed: 'The cancel request for "{name}" was not confirmed by the database — the operation may have already finished or may still be running. Check the result to be sure. ({message})',
     objectDropRefreshFailed: "Objects were deleted, but refreshing the sidebar failed: {message}",
     duplicateNameTitle: "Clone as New Table",
     duplicateNamePlaceholder: "New table name",
@@ -4816,6 +4819,7 @@ export default {
     mongoFieldDetails: "Field: {field}",
     mongoArrayItemDetails: "Array item index: {index}",
     cancel: "Cancel",
+    cancelRunning: "Cancel Query",
     confirm: "Execute",
   },
   production: {
