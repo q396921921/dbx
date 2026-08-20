@@ -77,6 +77,9 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
       databaseType: currentDatabaseType(),
       schema: activeNode.value.schema,
       tableName: activeNode.value.label,
+      // Cloud Spanner's two dialects quote differently, so admin SQL needs the quote the connected
+      // agent reported rather than the static per-type mapping.
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(activeNode.value.connectionId),
     };
     if (optionsOverride?.cascade) result.cascade = true;
     return result;
@@ -87,6 +90,7 @@ export function useSidebarTableMutationRuntime(options: SidebarTableMutationRunt
       databaseType: databaseTypeForNode(node),
       schema: node.schema,
       tableName: node.label,
+      identifierQuote: connectionStore.connectionIdentifierQuote?.(node.connectionId),
     };
     if (optionsOverride?.cascade) result.cascade = true;
     return result;

@@ -25,6 +25,7 @@
   "oceanbase-oracle": "0.1.44",
   "oracle": "0.1.52",
   "snowflake": "0.1.47",
+  "spanner": "0.1.0",
   "saphana": "0.1.42",
   "sundb": "0.1.47",
   "teradata": "0.1.42",
