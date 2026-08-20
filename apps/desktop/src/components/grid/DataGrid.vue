@@ -146,7 +146,7 @@ import {
 } from "@/lib/dataGrid/binaryCellDownload";
 import { buildBinaryHexViewRows } from "@/lib/dataGrid/binaryHexViewer";
 import { canFormatCellDetailJson, cellDetailEditorText, compactJsonText, defaultCellDetailTab, formatJsonText, isGeometryColumnType, linkedCellDetailTarget, looksLikeJsonContainerText, valueEditorActions, visibleCellDetailTabs, type CellDetailTab } from "@/lib/dataGrid/cellDetailPresentation";
-import { buildDataGridCellDetail, buildDataGridColumnDetail, buildDataGridRowDetail, CELL_DETAIL_VALUE_PREVIEW_MAX_LENGTH, dataGridColumnDetailJson, dataGridColumnDetailTsv, dataGridRowDetailJson, dataGridRowDetailTsv, type DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
+import { buildDataGridCellDetail, buildDataGridColumnDetail, buildDataGridRowDetail, buildDeleteRowConfirmDetails, CELL_DETAIL_VALUE_PREVIEW_MAX_LENGTH, dataGridColumnDetailJson, dataGridColumnDetailTsv, dataGridRowDetailJson, dataGridRowDetailTsv, type DataGridCellDetail } from "@/lib/dataGrid/dataGridDetail";
 import {
   applyColumnFormatter,
   buildColumnFormatterKey,
@@ -4623,7 +4623,16 @@ const exportContextCell = computed(() => {
   return { ...contextCell.value, col: visibleCol };
 });
 
-const deleteRowDetails = computed(() => (props.tableMeta?.tableName ? t("dangerDialog.deleteRowDetails", { table: props.tableMeta.tableName }) : t("dangerDialog.deleteRowDetailsNoTable")));
+const deleteRowDetails = computed(() => {
+  const header = props.tableMeta?.tableName ? t("dangerDialog.deleteRowDetails", { table: props.tableMeta.tableName }) : t("dangerDialog.deleteRowDetailsNoTable");
+  return buildDeleteRowConfirmDetails({
+    header,
+    rowIds: pendingDeleteRowIds.value,
+    columns: resultSourceColumns.value,
+    getRow: getRowItem,
+    formatCell: (item, columnIndex) => formatGridItemCell(item, columnIndex),
+  });
+});
 
 const hasVisibleRows = computed(() => displayRowCount.value > 0);
 const hasActiveFilter = computed(() => (dataGridSearchMode.value === "filter" && !!deferredClientSearchText.value) || rowStatusFilter.value !== "all" || hasLocalColumnFilters.value || hasServerColumnFilters.value);
@@ -12531,6 +12540,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
       "
       :details="deleteRowDetails"
       :confirm-label="pendingDeleteRowIds.length > 1 ? t('grid.deleteRows', { count: pendingDeleteRowIds.length }) : t('grid.deleteRow')"
+      :close-on-confirm="false"
       @confirm="confirmDeleteRow"
     />
     <DangerConfirmDialog
