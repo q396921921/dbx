@@ -2921,26 +2921,34 @@ const TABLE_REF_PATTERN_UNICODE_SQLSERVER = buildTableRefPattern(TABLE_REF_UNQUO
  * context detection elsewhere in this file) rather than a hand-rolled lexer, so backtick- and
  * bracket-quoted identifier spans are skipped correctly for free.
  *
- * `"..."` is always tokenized as a quoted identifier (see tokenizeSqlSemantic), never as a
- * string, because whether it's *actually* a string in MySQL depends on the runtime `sql_mode`
- * (ANSI_QUOTES) that this code doesn't track, plus syntactic position -- neither of which a
- * global per-dialect flag can resolve without trading one false positive for another (confirmed:
- * masking "..." as a string broke `FROM "orders"` table-name completion; not masking it let
- * `WHERE note = "from ghost"` misdetect a table).
+ * `"..."` is dialect-ambiguous: Postgres/SQL Server/generic always treat it as identifier
+ * quoting, while MySQL's own dialect adapter (see semantic/dialect.ts) also lists '"' as a valid
+ * identifierQuotes entry -- but only because MySQL *can* be run with the ANSI_QUOTES sql_mode.
+ * MySQL's actual default sql_mode does NOT enable ANSI_QUOTES, so on the overwhelming majority of
+ * real MySQL/MySQL-wire-protocol connections `"..."` is a plain string literal -- with the exact
+ * same rules as `'...'` -- everywhere in a statement, not just after an operator: inside function
+ * arguments (`CONCAT("from ghost_table", name)`), CASE branches (`WHEN x THEN "from ghost_case"`),
+ * nested expressions, anywhere. A syntactic-position heuristic (masking only right after an
+ * operator) covers the `col = "literal"` shape but leaves those other value positions
+ * unmasked -- confirmed to misdetect `ghost_table`/`ghost_case` as referenced tables.
  *
- * Instead, a `"..."` span is masked (treated like a string value) only when it immediately follows an
- * operator token (`=`, `<`, `<>`, `!=`, ...) -- an unambiguous value/expression position, e.g.
- * `col = "literal"`. Every other position -- right after FROM/JOIN, right after a `.` qualifier,
- * or anywhere else -- leaves it unmasked as a potential identifier. This is deliberately narrow
- * (not e.g. right after `(` or a word-keyword like LIKE/IN): `(` also introduces legitimate
- * identifier positions (function args, qualified names -- masking there would risk the same
- * "..." table-name regression this helper exists to avoid), and while walking the un-fixed
- * grammar of an in-progress edit (the user hasn't finished typing yet, e.g. `od."User|` with the
- * closing quote not typed), an unrelated *later* `"..."` span can get its own boundaries
- * mis-detected -- a false POSITIVE here (masking real SQL, confirmed to silently drop an entire
- * FROM clause) is a worse failure than a false NEGATIVE (leaving some non-`=`-shaped double-quoted
- * value unmasked); the real-world bug reports that motivated this were all `= '...'`/`= "..."`
- * shaped.
+ * There's no way for this code to observe the connected server's *actual* runtime sql_mode (it
+ * could have ANSI_QUOTES enabled), so this always models the common-case default: `"..."` is a
+ * string for dialects in MYSQL_DASH_COMMENT_DIALECTS (MySQL itself plus confirmed sql_mode-parity
+ * wire-protocol clones -- the same scope already used above for MySQL's other sql_mode-governed
+ * lexical quirks), and stays identifier quoting (unmasked) for every other dialect, matching
+ * ANSI_QUOTES-mode MySQL and every dialect where "..." unconditionally means identifier (Postgres,
+ * SQL Server's ANSI mode, generic). This is a real behavior tradeoff for the rare ANSI_QUOTES-
+ * enabled MySQL connection (`FROM "orders"` would no longer resolve `orders` as a table there),
+ * accepted because it matches MySQL's actual default and eliminates a whole class of false-
+ * positive ghost-table misdetections that affect every default-sql_mode MySQL user.
+ *
+ * For those unconditional-identifier dialects, a `"..."` span right after an operator token (`=`,
+ * `<`, `<>`, `!=`, ...) is still masked as if it were a value: that position is unambiguous
+ * regardless of dialect (`col = "literal"` is never a quoted identifier there), so leaving it
+ * unmasked would misdetect e.g. Postgres's `WHERE note = "from ghost"` as a table reference. Every
+ * other position (right after FROM/JOIN, a `.` qualifier, a function's `(`, etc.) is left unmasked
+ * as a potential identifier for these dialects, same as before.
  *
  * The masked replacement doesn't need to preserve length or map back to offsets in `sql` --
  * callers only read captured regex groups (or do their own keyword search) off the masked copy.
@@ -2961,18 +2969,22 @@ function maskSqlLiteralsAndComments(sql: string, databaseType?: DatabaseType): s
   const dialectId = resolveSqlDialectId({ databaseType });
   const mysqlDashCommentRequiresWhitespace = !!databaseType && MYSQL_DASH_COMMENT_DIALECTS.has(databaseType);
   const mysqlBackslashEscape = !!databaseType && BACKSLASH_ESCAPE_STRING_DIALECTS.has(databaseType);
-  const tokens = tokenizeSqlSemantic(sql, dialectId, { mysqlDashCommentRequiresWhitespace, mysqlBackslashEscape });
+  // Same scope as mysqlDashCommentRequiresWhitespace: MySQL's actual default sql_mode (ANSI_QUOTES
+  // disabled) is what this models -- see this function's doc comment above.
+  const mysqlDoubleQuoteIsString = mysqlDashCommentRequiresWhitespace;
+  const tokens = tokenizeSqlSemantic(sql, dialectId, { mysqlDashCommentRequiresWhitespace, mysqlBackslashEscape, mysqlDoubleQuoteIsString });
 
   let out = "";
   let cursor = 0;
-  // Tracks "the previous non-comment token was an operator" -- a comment sitting between an
-  // operator and its value (e.g. `= /* x */ "from ghost"`) must not reset this, or the value
-  // right after the comment escapes masking.
+  // Tracks "the previous non-comment token was an operator" for the unconditional-identifier
+  // dialects' operator-adjacency fallback below -- a comment sitting between an operator and its
+  // value (e.g. `= /* x */ "from ghost"`) must not reset this, or the value right after the
+  // comment escapes masking.
   let afterValueOperator = false;
   for (const t of tokens) {
     out += sql.slice(cursor, t.span.start);
-    const isDoubleQuoted = t.kind === "quoted_identifier" && t.quote === '"';
-    const maskAsValue = t.kind === "string" || (isDoubleQuoted && afterValueOperator);
+    const isDoubleQuotedIdentifier = t.kind === "quoted_identifier" && t.quote === '"';
+    const maskAsValue = t.kind === "string" || (isDoubleQuotedIdentifier && afterValueOperator);
     if (t.kind === "comment") {
       out += " ";
     } else if (maskAsValue) {
