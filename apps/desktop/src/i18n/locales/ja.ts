@@ -6412,6 +6412,7 @@ export default withEnglishFallback({
     updating: "更新中",
     update: "更新",
     localInstall: "ローカルインストール",
+    localInstallHint: "完全に隔離されたネットワーク環境の場合：インターネットに接続できる別のコンピューターで DBX の GitHub Releases ページから公式の dbx-jdbc-plugin-*.zip をダウンロードし、このマシンに転送して選択してください。このマシンはネットワークに接続する必要はありません。",
     runtimeDrivers: "ランタイム",
     storageTab: "ストレージ",
     runtimeTitle: "ドライバーランタイム",
