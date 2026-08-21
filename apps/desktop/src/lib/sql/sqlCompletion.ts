@@ -2924,31 +2924,31 @@ const TABLE_REF_PATTERN_UNICODE_SQLSERVER = buildTableRefPattern(TABLE_REF_UNQUO
  * `"..."` is dialect-ambiguous: Postgres/SQL Server/generic always treat it as identifier
  * quoting, while MySQL's own dialect adapter (see semantic/dialect.ts) also lists '"' as a valid
  * identifierQuotes entry -- but only because MySQL *can* be run with the ANSI_QUOTES sql_mode.
- * MySQL's actual default sql_mode does NOT enable ANSI_QUOTES, so on the overwhelming majority of
- * real MySQL/MySQL-wire-protocol connections `"..."` is a plain string literal -- with the exact
- * same rules as `'...'` -- everywhere in a statement, not just after an operator: inside function
- * arguments (`CONCAT("from ghost_table", name)`), CASE branches (`WHEN x THEN "from ghost_case"`),
- * nested expressions, anywhere. A syntactic-position heuristic (masking only right after an
- * operator) covers the `col = "literal"` shape but leaves those other value positions
- * unmasked -- confirmed to misdetect `ghost_table`/`ghost_case` as referenced tables.
+ * Under MySQL's actual default sql_mode (ANSI_QUOTES disabled) it's a plain string literal instead,
+ * with the exact same rules as `'...'`, everywhere in a statement: inside function arguments
+ * (`CONCAT("from ghost_table", name)`), CASE branches (`WHEN x THEN "from ghost_case"`), nested
+ * expressions, anywhere. There's no way for this code to observe the connected server's *actual*
+ * runtime sql_mode, so rather than guessing a dialect-wide default (and being wrong for whichever
+ * sql_mode isn't guessed), this resolves the ambiguity by *position* instead, for dialects in
+ * MYSQL_DASH_COMMENT_DIALECTS (MySQL itself plus confirmed sql_mode-parity wire-protocol clones --
+ * the same scope already used above for MySQL's other sql_mode-governed lexical quirks): a `"..."`
+ * span immediately in table-reference position -- right after one of
+ * TABLE_REF_INTRODUCER_KEYWORDS (`from`/`join`/`straight_join`/`update`/`apply`, exactly what
+ * extractReferencedTables's own regex looks for below), or a `.`-qualified continuation of one
+ * (`"db"."orders"`) -- is left unmasked as a potential identifier, matching ANSI_QUOTES-enabled
+ * MySQL. Every other `"..."` position (function args, CASE branches, operator-adjacent values, and
+ * everywhere else) is masked as a value, matching MySQL's actual default sql_mode. This is correct
+ * under *both* sql_modes at once: a real ANSI_QUOTES table name in `FROM "orders"` still resolves,
+ * while the ghost-table false positives this function exists to fix (`CONCAT("from ghost_table",
+ * ...)`, `CASE ... THEN "from ghost_case"`) stay masked regardless of the connected sql_mode.
  *
- * There's no way for this code to observe the connected server's *actual* runtime sql_mode (it
- * could have ANSI_QUOTES enabled), so this always models the common-case default: `"..."` is a
- * string for dialects in MYSQL_DASH_COMMENT_DIALECTS (MySQL itself plus confirmed sql_mode-parity
- * wire-protocol clones -- the same scope already used above for MySQL's other sql_mode-governed
- * lexical quirks), and stays identifier quoting (unmasked) for every other dialect, matching
- * ANSI_QUOTES-mode MySQL and every dialect where "..." unconditionally means identifier (Postgres,
- * SQL Server's ANSI mode, generic). This is a real behavior tradeoff for the rare ANSI_QUOTES-
- * enabled MySQL connection (`FROM "orders"` would no longer resolve `orders` as a table there),
- * accepted because it matches MySQL's actual default and eliminates a whole class of false-
- * positive ghost-table misdetections that affect every default-sql_mode MySQL user.
- *
- * For those unconditional-identifier dialects, a `"..."` span right after an operator token (`=`,
- * `<`, `<>`, `!=`, ...) is still masked as if it were a value: that position is unambiguous
- * regardless of dialect (`col = "literal"` is never a quoted identifier there), so leaving it
- * unmasked would misdetect e.g. Postgres's `WHERE note = "from ghost"` as a table reference. Every
- * other position (right after FROM/JOIN, a `.` qualifier, a function's `(`, etc.) is left unmasked
- * as a potential identifier for these dialects, same as before.
+ * For every other dialect, where `"..."` unconditionally means identifier (Postgres, SQL Server's
+ * ANSI mode, generic), a `"..."` span right after an operator token (`=`, `<`, `<>`, `!=`, ...) is
+ * still masked as if it were a value: that position is unambiguous regardless of dialect (`col =
+ * "literal"` is never a quoted identifier there), so leaving it unmasked would misdetect e.g.
+ * Postgres's `WHERE note = "from ghost"` as a table reference. Every other position (right after
+ * FROM/JOIN, a `.` qualifier, a function's `(`, etc.) is left unmasked as a potential identifier for
+ * these dialects, same as before.
  *
  * The masked replacement doesn't need to preserve length or map back to offsets in `sql` --
  * callers only read captured regex groups (or do their own keyword search) off the masked copy.
@@ -2967,12 +2967,12 @@ const TABLE_REF_PATTERN_UNICODE_SQLSERVER = buildTableRefPattern(TABLE_REF_UNQUO
  */
 function maskSqlLiteralsAndComments(sql: string, databaseType?: DatabaseType): string {
   const dialectId = resolveSqlDialectId({ databaseType });
-  const mysqlDashCommentRequiresWhitespace = !!databaseType && MYSQL_DASH_COMMENT_DIALECTS.has(databaseType);
+  const mysqlFamily = !!databaseType && MYSQL_DASH_COMMENT_DIALECTS.has(databaseType);
   const mysqlBackslashEscape = !!databaseType && BACKSLASH_ESCAPE_STRING_DIALECTS.has(databaseType);
-  // Same scope as mysqlDashCommentRequiresWhitespace: MySQL's actual default sql_mode (ANSI_QUOTES
-  // disabled) is what this models -- see this function's doc comment above.
-  const mysqlDoubleQuoteIsString = mysqlDashCommentRequiresWhitespace;
-  const tokens = tokenizeSqlSemantic(sql, dialectId, { mysqlDashCommentRequiresWhitespace, mysqlBackslashEscape, mysqlDoubleQuoteIsString });
+  // "..." always tokenizes as quoted_identifier here (never forced to "string") -- MySQL-family
+  // string-vs-identifier ambiguity is resolved below by token position instead, so the underlying
+  // scan doesn't need to guess a dialect-wide default. See this function's doc comment above.
+  const tokens = tokenizeSqlSemantic(sql, dialectId, { mysqlDashCommentRequiresWhitespace: mysqlFamily, mysqlBackslashEscape });
 
   let out = "";
   let cursor = 0;
@@ -2981,10 +2981,16 @@ function maskSqlLiteralsAndComments(sql: string, databaseType?: DatabaseType): s
   // value (e.g. `= /* x */ "from ghost"`) must not reset this, or the value right after the
   // comment escapes masking.
   let afterValueOperator = false;
+  // Tracks whether the *next* token sits in table-reference position (right after
+  // TABLE_REF_INTRODUCER_KEYWORDS, or a `.`-qualified continuation of one) for the MySQL-family
+  // position-based rule below. Survives comment tokens the same way afterValueOperator does --
+  // `FROM /* c */ "orders"` must still resolve "orders" as a table.
+  let tableRefState: "none" | "expectSegment" | "afterSegment" = "none";
   for (const t of tokens) {
     out += sql.slice(cursor, t.span.start);
     const isDoubleQuotedIdentifier = t.kind === "quoted_identifier" && t.quote === '"';
-    const maskAsValue = t.kind === "string" || (isDoubleQuotedIdentifier && afterValueOperator);
+    const isTableRefSegment = tableRefState === "expectSegment" && (t.kind === "quoted_identifier" || t.kind === "word");
+    const maskAsValue = t.kind === "string" || (isDoubleQuotedIdentifier && (afterValueOperator || (mysqlFamily && !isTableRefSegment)));
     if (t.kind === "comment") {
       out += " ";
     } else if (maskAsValue) {
@@ -2994,6 +3000,16 @@ function maskSqlLiteralsAndComments(sql: string, databaseType?: DatabaseType): s
     }
     cursor = t.span.end;
     afterValueOperator = t.kind === "operator" || (t.kind === "comment" && afterValueOperator);
+    if (t.kind !== "comment") {
+      tableRefState =
+        tableRefState === "expectSegment" && (t.kind === "quoted_identifier" || t.kind === "word")
+          ? "afterSegment"
+          : tableRefState === "afterSegment" && t.kind === "punctuation" && t.text === "."
+            ? "expectSegment"
+            : t.kind === "word" && TABLE_REF_INTRODUCER_KEYWORDS.includes(t.normalized)
+              ? "expectSegment"
+              : "none";
+    }
   }
   out += sql.slice(cursor);
   return out;

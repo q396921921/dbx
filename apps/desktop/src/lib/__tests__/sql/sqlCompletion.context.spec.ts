@@ -789,13 +789,61 @@ describe("sqlCompletion scoped context classification", () => {
     expect(context.referencedTables.some((t) => t.name === "测试表")).toBe(false);
   });
 
-  it("does not treat a double-quoted FROM target as a table name under MySQL's default (non-ANSI_QUOTES) sql_mode", () => {
-    // Without ANSI_QUOTES, MySQL parses "orders" as a string literal (same as 'orders'), not a
-    // quoted identifier -- `FROM "orders"` isn't valid MySQL syntax under the default sql_mode, so
-    // this must not surface a phantom "orders" table.
+  it("treats a double-quoted FROM target as a table reference regardless of MySQL's sql_mode (position-aware masking)", () => {
+    // sql_mode (and therefore whether "..." is ANSI_QUOTES identifier quoting or a string literal)
+    // isn't observable at parse time, so "..." right after FROM/JOIN/UPDATE/etc. is always treated
+    // as a potential table identifier -- matching ANSI_QUOTES-enabled MySQL -- while "..." elsewhere
+    // (function args, CASE branches, operator-adjacent values) is still masked as a value, matching
+    // MySQL's actual default sql_mode. See maskSqlLiteralsAndComments's doc comment.
     const sql = 'SELECT * FROM "orders" WHERE ';
     const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
-    expect(context.referencedTables.some((t) => t.name === "orders")).toBe(false);
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders" })]));
+  });
+
+  it("keeps resolving a double-quoted FROM target as a table when a comment sits between FROM and it (mysql)", () => {
+    const sql = 'SELECT * FROM /* c */ "orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders" })]));
+  });
+
+  it("resolves a double-quoted, dotted schema-qualified table reference (mysql)", () => {
+    const sql = 'SELECT * FROM "db"."orders" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ schema: "db", name: "orders" })]));
+  });
+
+  it("resolves both an unquoted and a double-quoted table across a JOIN, alongside a plain alias (mysql)", () => {
+    const sql = 'SELECT * FROM a JOIN "orders" o ON a.id = o.id WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "a" }), expect.objectContaining({ name: "orders", alias: "o" })]));
+  });
+
+  it("resolves a double-quoted UPDATE target as a referenced table while still masking a double-quoted value in SET (mysql)", () => {
+    const sql = 'UPDATE "orders" SET status = "x" WHERE ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "orders" })]));
+    expect(context.referencedTables.some((t) => t.name === "x")).toBe(false);
+  });
+
+  it("does not desync the token stream on a backslash-escaped quote inside a double-quoted value (mysql)", () => {
+    const sql = 'SELECT * FROM real_table WHERE note = "she said \\"hi\\"" ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "mysql" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.preferredKeywords).toEqual(expect.arrayContaining(["AND", "OR"]));
+  });
+
+  it("does not desync the token stream on a backslash-escaped quote inside a double-quoted value (hive)", () => {
+    // Hive isn't in MYSQL_DASH_COMMENT_DIALECTS, so "..." here is (and was, before this fix) always
+    // a quoted_identifier, masked only via the operator-adjacency fallback -- this test isn't about
+    // that masking decision, it's about whether reading the "..." span itself (now always routed
+    // through readQuotedString, see tokens.ts) still finds the true closing quote for a
+    // mysqlBackslashEscape dialect outside MYSQL_DASH_COMMENT_DIALECTS. Before this fix, hive read
+    // "..." with the doubled-quote-only reader regardless of mysqlBackslashEscape, so this span
+    // would desync at the first backslash-escaped quote and corrupt everything parsed after it.
+    const sql = 'SELECT * FROM real_table WHERE note = "she said \\"hi\\"" ';
+    const context = getSqlCompletionContext(sql, sql.length, { databaseType: "hive" });
+    expect(context.referencedTables).toEqual(expect.arrayContaining([expect.objectContaining({ name: "real_table" })]));
+    expect(context.preferredKeywords).toEqual(expect.arrayContaining(["AND", "OR"]));
   });
 
   it("masks a double-quoted string used as a function argument from being read as a table reference (mysql)", () => {
