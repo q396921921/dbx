@@ -14,7 +14,7 @@ describe("databaseObjectCapabilities", () => {
     expect(sidebarObjectKindsForDatabase("postgres")).not.toContain("SYNONYM");
   });
 
-  it("exposes OceanBase Oracle sequences without widening Oracle or synonym support", () => {
+  it("exposes OceanBase Oracle sequences without widening synonym support", () => {
     const oceanBaseObjects = sidebarObjectKindsForDatabase("oceanbase-oracle");
 
     expect(oceanBaseObjects).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"]);
@@ -29,8 +29,22 @@ describe("databaseObjectCapabilities", () => {
         objectTypes: oceanBaseObjects,
       }).map((node) => node.type),
     ).toEqual(["group-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-sequences", "group-packages"]);
+  });
 
-    expect(sidebarObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SYNONYM", "PACKAGE", "PACKAGE_BODY"]);
+  it("exposes Oracle sequences through the existing grouped object path", () => {
+    const oracleObjects = sidebarObjectKindsForDatabase("oracle");
+
+    expect(oracleObjects).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY"]);
+    expect(databaseObjectCapabilities("oracle").sourceReadable).toContain("SEQUENCE");
+    expect(
+      buildObjectGroupPlaceholderNodes({
+        nodeId: "connection:database:HR",
+        connectionId: "connection",
+        database: "database",
+        schema: "HR",
+        objectTypes: oracleObjects,
+      }).map((node) => node.type),
+    ).toContain("group-sequences");
   });
 
   it("expands package members only for implemented database paths", () => {
