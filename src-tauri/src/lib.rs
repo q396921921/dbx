@@ -2348,6 +2348,10 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             if let RunEvent::Opened { urls } = &event {
+                if urls.iter().any(|url| commands::deep_link::is_app_open_deep_link(url.as_str())) {
+                    show_main_window(app_handle);
+                }
+
                 let links: Vec<String> = urls
                     .iter()
                     .map(|url| url.to_string())
