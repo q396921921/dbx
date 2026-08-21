@@ -1952,6 +1952,7 @@ function oraclePlSqlTokens(sql: string): OraclePlSqlToken[] {
 
 function previousWordToken(tokens: Array<{ kind: "word" | "semicolon"; value: string }>, index: number): string | null {
   for (let i = index - 1; i >= 0; i -= 1) {
+    if (tokens[i].kind === "semicolon") return null;
     if (tokens[i].kind === "word") return tokens[i].value;
   }
   return null;
@@ -1959,6 +1960,7 @@ function previousWordToken(tokens: Array<{ kind: "word" | "semicolon"; value: st
 
 function nextWordToken(tokens: Array<{ kind: "word" | "semicolon"; value: string }>, index: number): string | null {
   for (let i = index + 1; i < tokens.length; i += 1) {
+    if (tokens[i].kind === "semicolon") return null;
     if (tokens[i].kind === "word") return tokens[i].value;
   }
   return null;
