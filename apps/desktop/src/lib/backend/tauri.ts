@@ -3565,6 +3565,10 @@ export async function vectorDropCollection(connectionId: string, database: strin
   return invoke("vector_drop_collection", { connectionId, database, collection });
 }
 
+export async function vectorRenameCollection(connectionId: string, database: string, collection: string, newName: string): Promise<void> {
+  return invoke("vector_rename_collection", { connectionId, database, collection, newName });
+}
+
 export async function elasticsearchListIndices(connectionId: string): Promise<string[]> {
   const collections = await documentListCollections(connectionId, "default");
   return collections.map((c) => c.name);
