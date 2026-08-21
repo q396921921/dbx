@@ -1035,6 +1035,22 @@ WHERE request_json LIKE '%"paperFlag":null%';`;
     expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
   });
 
+  it("keeps a line-start MySQL TRUNCATE function inside a SELECT projection", () => {
+    const sql = `SELECT
+  order_id,
+  TRUNCATE(amount, 2) AS rounded_amount
+FROM orders;`;
+
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual([sql.slice(0, -1)]);
+    expect(currentExecutableStatementRange(sql, indexOf(sql, "TRUNCATE"), "mysql")?.sql.trim()).toBe(sql.slice(0, -1));
+  });
+
+  it("keeps standalone TRUNCATE TABLE statements separate", () => {
+    const sql = "SELECT 1;\nTRUNCATE TABLE t;";
+
+    expect(rangeSqlTexts(executableStatementRanges(sql, "mysql"))).toEqual(["SELECT 1", "TRUNCATE TABLE t"]);
+  });
+
   it("does not merge a plain MySQL DESC table statement with the next query", () => {
     const sql = "DESC users\nSELECT * FROM users;";
     expect(statementRangeAtCursor(sql, indexOf(sql, "DESC"), "mysql")?.sql.trim()).toBe("DESC users");
