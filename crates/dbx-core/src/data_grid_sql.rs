@@ -4549,6 +4549,19 @@ mod tests {
         );
         assert_eq!(
             build_data_grid_count_sql(DataGridCountSqlOptions {
+                database_type: Some(DatabaseType::Jdbc),
+                identifier_quote: None,
+                catalog: None,
+                database: None,
+                schema: Some("DEMO".to_string()),
+                table_name: "STUDENT".to_string(),
+                where_input: None,
+                count_hint: None,
+            }),
+            "SELECT COUNT(*) AS cnt FROM DEMO.STUDENT"
+        );
+        assert_eq!(
+            build_data_grid_count_sql(DataGridCountSqlOptions {
                 database_type: Some(DatabaseType::Doris),
                 identifier_quote: None,
                 catalog: Some("iceberg_catalog".to_string()),

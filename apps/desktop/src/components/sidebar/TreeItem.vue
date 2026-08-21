@@ -208,6 +208,10 @@ function currentDatabaseType(): DatabaseType | undefined {
   return activeNode.value.connectionId ? effectiveDatabaseTypeForConnection(connectionStore.getConfig(activeNode.value.connectionId)) : undefined;
 }
 
+function currentDriverProfile(): string | undefined {
+  return activeNode.value.connectionId ? connectionStore.getConfig(activeNode.value.connectionId)?.driver_profile : undefined;
+}
+
 function getIconInfo(node: TreeNode): { icon: any; colorClass: string } | null {
   switch (node.type) {
     case "connection":
@@ -1116,6 +1120,7 @@ function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
       database: activeNode.value.database,
       referenceType: "database",
       databaseType: currentDatabaseType(),
+      driverProfile: currentDriverProfile(),
     });
   }
   if (activeNode.value.type === "column") {
@@ -1128,6 +1133,7 @@ function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
       tableName: activeNode.value.tableName,
       columnName,
       databaseType: currentDatabaseType(),
+      driverProfile: currentDriverProfile(),
     });
   }
   const payload = createTableReferencePayload({
@@ -1136,6 +1142,7 @@ function tableReferenceDragPayload(): QueryEditorTableReferencePayload | null {
     schema: activeNode.value.schema,
     tableName: activeNode.value.label,
     databaseType: currentDatabaseType(),
+    driverProfile: currentDriverProfile(),
   });
   return payload;
 }
