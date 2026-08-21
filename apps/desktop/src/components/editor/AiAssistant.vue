@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, toRaw, watch, type Component } from "vue";
 import { uuid } from "@/lib/common/utils";
 import { useI18n } from "vue-i18n";
@@ -131,6 +131,8 @@ import ExplainPlanViewer from "@/components/explain/ExplainPlanViewer.vue";
 import { parseExplainResult, parseOracleExplainText, type ParsedExplainPlan } from "@/lib/diagram/explainPlan";
 import { copyToClipboard } from "@/lib/common/clipboard";
 import { AI_TABLE_MENTION_CANDIDATE_LIMIT, AI_TABLE_MENTION_SCHEMA_LIMIT, filterAiTableMentionCandidates, formatAiTableMention, parseAiTableMentions, type AiTableMention } from "@/lib/ai/aiTableMentions";
+import { handleAiTableReferenceDropEvent } from "@/lib/ai/aiTableReferenceDrop";
+import { DBX_TABLE_REFERENCE_DROP_EVENT, clearActiveTableReferencePayload } from "@/lib/editor/queryEditorTableDrop";
 import { isAiPromptImeCompositionEvent, shouldSubmitAiPromptOnKeydown } from "@/lib/ai/aiPromptKeyboard";
 import { isActionableWriteProposalMessage, isActionableWriteSqlProposal, looksLikeActionProposal, looksLikeWriteSqlProposal, shouldGrantWriteSqlOnShortAffirmative } from "@/lib/ai/aiProposalDetect";
 import { visibleToActualIndex } from "@/lib/ai/aiMessageEdit";
@@ -2286,6 +2288,22 @@ function onTauriFileDrop(event: Event) {
   void addDroppedAttachmentPaths(payload.paths);
 }
 
+function onTableReferenceDropEvent(event: Event) {
+  handleAiTableReferenceDropEvent(event, {
+    context: {
+      connectionId: props.tab?.connectionId || props.connection?.id,
+      database: props.tab?.database || props.connection?.database || "",
+    },
+    assistantRoot: assistantRootRef.value,
+    elementFromPoint: (x, y) => document.elementFromPoint(x, y),
+    onMention: (mention, payload) => {
+      addSelectedMention({ kind: "table", schema: mention.schema, name: mention.table, tableType: "table" });
+      clearActiveTableReferencePayload(payload);
+      nextTick(() => promptTextareaRef.value?.focus());
+    },
+  });
+}
+
 async function send() {
   const text = prompt.value.trim();
   if ((!text && !selectedMentions.value.length && !selectedSqlFileMentions.value.length && !selectedCsvAttachments.value.length && !selectedImageAttachments.value.length) || isGenerating.value) return;
@@ -2891,6 +2909,7 @@ onMounted(async () => {
 
   window.addEventListener("resize", handlePanelResize);
   document.addEventListener("dbx:tauri-file-drop", onTauriFileDrop as EventListener);
+  window.addEventListener(DBX_TABLE_REFERENCE_DROP_EVENT, onTableReferenceDropEvent);
   if (typeof ResizeObserver !== "undefined" && assistantRootRef.value) {
     promptPanelResizeObserver = new ResizeObserver(handlePanelResize);
     promptPanelResizeObserver.observe(assistantRootRef.value);
@@ -2969,6 +2988,7 @@ onUnmounted(() => {
   document.body.style.cursor = "";
   window.removeEventListener("resize", handlePanelResize);
   document.removeEventListener("dbx:tauri-file-drop", onTauriFileDrop as EventListener);
+  window.removeEventListener(DBX_TABLE_REFERENCE_DROP_EVENT, onTableReferenceDropEvent);
   promptPanelResizeObserver?.disconnect();
 });
 
@@ -3042,7 +3062,7 @@ async function openExternalUrl(url: string) {
 </script>
 
 <template>
-  <div ref="assistantRootRef" class="flex h-full min-h-0 flex-col overflow-hidden" @dragenter="onAttachmentDragEnter" @dragover="onAttachmentDragOver" @dragleave="onAttachmentDragLeave" @drop="onAttachmentDrop">
+  <div ref="assistantRootRef" data-ai-assistant-root class="flex h-full min-h-0 flex-col overflow-hidden" @dragenter="onAttachmentDragEnter" @dragover="onAttachmentDragOver" @dragleave="onAttachmentDragLeave" @drop="onAttachmentDrop">
     <div class="flex items-center gap-2 border-b px-3 shrink-0" :class="settings.editorSettings.appLayout === 'classic' ? 'h-9' : 'h-10'">
       <span class="flex flex-1 self-stretch items-center truncate text-xs font-medium" data-tauri-drag-region>
         {{ chatTitle }}

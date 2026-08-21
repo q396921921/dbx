@@ -24,7 +24,16 @@ export interface QueryEditorTableReferenceDropDetail {
 
 let activeTableReferencePayload: QueryEditorTableReferencePayload | null = null;
 
-export function createTableReferencePayload(options: { connectionId?: string; database?: string; schema?: string; tableName?: string; columnName?: string; referenceType?: "database" | "table" | "column"; databaseType?: DatabaseType; driverProfile?: string }): QueryEditorTableReferencePayload | null {
+export function createTableReferencePayload(options: {
+  connectionId?: string;
+  database?: string;
+  schema?: string;
+  tableName?: string;
+  columnName?: string;
+  referenceType?: "database" | "table" | "column";
+  databaseType?: DatabaseType;
+  driverProfile?: string;
+}): QueryEditorTableReferencePayload | null {
   if (!options.connectionId || options.database == null) return null;
   const referenceType = options.referenceType ?? (options.columnName ? "column" : "table");
   if (referenceType !== "database" && !options.tableName) return null;
