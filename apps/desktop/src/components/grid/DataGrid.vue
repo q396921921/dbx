@@ -1076,8 +1076,13 @@ const formatterJsonPath = ref("$.user.name");
 const formatterMaskPrefix = ref(4);
 const formatterMaskSuffix = ref(4);
 const formatterCustomId = ref(CUSTOM_FORMATTER_NEW);
+const formatterCustomCapturedDeleteVersion = ref<number>();
 const formatterCustomName = ref("");
 const formatterCustomTemplate = ref("${value}");
+const formatterCustomDeleteOpen = ref(false);
+const formatterCustomDeleteLoading = ref(false);
+const formatterCustomDeleteId = ref("");
+const formatterCustomDeleteName = ref("");
 const formatterForeignKeyRefSchema = ref("");
 const formatterForeignKeyRefTable = ref("");
 const formatterForeignKeyRefColumn = ref("");
@@ -1508,10 +1513,12 @@ function loadFormatterDraft(formatter: ColumnFormatterConfig | undefined) {
   } else if (draft.kind === "custom-ref") {
     const saved = settingsStore.editorSettings.customColumnFormatters[draft.formatterId];
     formatterCustomId.value = saved ? saved.id : CUSTOM_FORMATTER_NEW;
+    formatterCustomCapturedDeleteVersion.value = saved ? settingsStore.customColumnFormatterDeleteVersion(saved.id) : undefined;
     formatterCustomName.value = saved?.name ?? "";
     formatterCustomTemplate.value = saved?.template ?? "${value}";
   } else if (draft.kind === "custom-template") {
     formatterCustomId.value = CUSTOM_FORMATTER_NEW;
+    formatterCustomCapturedDeleteVersion.value = undefined;
     formatterCustomName.value = "";
     formatterCustomTemplate.value = draft.template;
   } else if (draft.kind === "foreign-key-display") {
@@ -1585,22 +1592,33 @@ function handleColumnFormatterOpenChange(value: boolean, columnIndex: number) {
   }
 }
 
-function saveColumnFormatter(columnIndex: number) {
+async function saveColumnFormatter(columnIndex: number) {
   const column = props.result.columns[columnIndex];
   const key = column ? formatterKeyForColumn(column) : null;
   if (!key) return;
-  let formatter = currentFormatterDraft();
-  if (formatterKind.value === "custom-template" && formatterCustomName.value.trim()) {
-    const id = formatterCustomId.value === CUSTOM_FORMATTER_NEW ? createCustomFormatterId() : formatterCustomId.value;
-    const saved = settingsStore.upsertCustomColumnFormatter({
-      id,
-      name: formatterCustomName.value,
-      template: formatterCustomTemplate.value,
-    });
-    if (saved) formatter = { kind: "custom-ref", formatterId: saved.id };
+  try {
+    let formatter = currentFormatterDraft();
+    if (formatterKind.value === "custom-template" && formatterCustomName.value.trim()) {
+      const id = formatterCustomId.value === CUSTOM_FORMATTER_NEW ? createCustomFormatterId() : formatterCustomId.value;
+      const saved = await settingsStore.upsertCustomColumnFormatter(
+        {
+          id,
+          name: formatterCustomName.value,
+          template: formatterCustomTemplate.value,
+        },
+        formatterCustomCapturedDeleteVersion.value,
+      );
+      if (!saved) {
+        selectCustomFormatter(CUSTOM_FORMATTER_NEW);
+        return;
+      }
+      formatter = { kind: "custom-ref", formatterId: saved.id };
+    }
+    settingsStore.updateColumnFormatter(key, formatter);
+    closeColumnFormatter();
+  } catch (error) {
+    toast(t("grid.tableOperationFailed", { message: translateBackendError(t, error) }), 5000);
   }
-  settingsStore.updateColumnFormatter(key, formatter);
-  closeColumnFormatter();
 }
 
 function clearColumnFormatter(columnIndex: number) {
@@ -1629,14 +1647,42 @@ function selectFormatterKind(value: FormatterDraftKind, columnIndex: number) {
 function selectCustomFormatter(value: string) {
   formatterCustomId.value = value;
   if (value === CUSTOM_FORMATTER_NEW) {
+    formatterCustomCapturedDeleteVersion.value = undefined;
     formatterCustomName.value = "";
     formatterCustomTemplate.value = "${value}";
     return;
   }
   const saved = settingsStore.editorSettings.customColumnFormatters[value];
   if (!saved) return;
+  formatterCustomCapturedDeleteVersion.value = settingsStore.customColumnFormatterDeleteVersion(saved.id);
   formatterCustomName.value = saved.name;
   formatterCustomTemplate.value = saved.template;
+}
+
+function requestDeleteCustomFormatter() {
+  if (formatterCustomId.value === CUSTOM_FORMATTER_NEW) return;
+  const saved = settingsStore.editorSettings.customColumnFormatters[formatterCustomId.value];
+  if (!saved) return;
+  formatterCustomDeleteId.value = saved.id;
+  formatterCustomDeleteName.value = saved.name;
+  formatterCustomDeleteOpen.value = true;
+}
+
+async function confirmDeleteCustomFormatter() {
+  const id = formatterCustomDeleteId.value;
+  if (!id || formatterCustomDeleteLoading.value) return;
+  formatterCustomDeleteLoading.value = true;
+  try {
+    await settingsStore.deleteCustomColumnFormatter(id);
+    if (formatterCustomId.value === id) selectCustomFormatter(CUSTOM_FORMATTER_NEW);
+    formatterCustomDeleteOpen.value = false;
+    formatterCustomDeleteId.value = "";
+    formatterCustomDeleteName.value = "";
+  } catch (error) {
+    toast(t("grid.tableOperationFailed", { message: translateBackendError(t, error) }), 5000);
+  } finally {
+    formatterCustomDeleteLoading.value = false;
+  }
 }
 
 function createCustomFormatterId(): string {
@@ -11991,17 +12037,31 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                                   <div class="text-xs font-medium text-muted-foreground">
                                     {{ t("grid.formatterSavedCustom") }}
                                   </div>
-                                  <Select :model-value="formatterCustomId" @update:model-value="(value: any) => selectCustomFormatter(String(value))">
-                                    <SelectTrigger class="h-8 text-xs">
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem :value="CUSTOM_FORMATTER_NEW">{{ t("grid.formatterNewCustom") }}</SelectItem>
-                                      <SelectItem v-for="formatter in savedCustomFormatters" :key="formatter.id" :value="formatter.id">
-                                        {{ formatter.name }}
-                                      </SelectItem>
-                                    </SelectContent>
-                                  </Select>
+                                  <div class="flex items-center gap-1">
+                                    <Select :model-value="formatterCustomId" @update:model-value="(value: any) => selectCustomFormatter(String(value))">
+                                      <SelectTrigger class="h-8 min-w-0 flex-1 text-xs">
+                                        <SelectValue />
+                                      </SelectTrigger>
+                                      <SelectContent>
+                                        <SelectItem :value="CUSTOM_FORMATTER_NEW">{{ t("grid.formatterNewCustom") }}</SelectItem>
+                                        <SelectItem v-for="formatter in savedCustomFormatters" :key="formatter.id" :value="formatter.id">
+                                          {{ formatter.name }}
+                                        </SelectItem>
+                                      </SelectContent>
+                                    </Select>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      class="h-8 w-8 shrink-0 text-destructive hover:text-destructive"
+                                      :disabled="formatterCustomId === CUSTOM_FORMATTER_NEW"
+                                      :title="t('grid.formatterDeleteCustom')"
+                                      :aria-label="t('grid.formatterDeleteCustom')"
+                                      @click.stop="requestDeleteCustomFormatter"
+                                    >
+                                      <Trash2 class="h-3.5 w-3.5" />
+                                    </Button>
+                                  </div>
                                 </div>
                                 <label class="block space-y-1.5">
                                   <span class="text-xs font-medium text-muted-foreground">
@@ -13140,6 +13200,15 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
       <SqlPreviewPanel :sql="previewSqlText" :loading="isPreviewLoading" :can-undo="canUndoPendingChange" :can-redo="canRedoPendingChange" @undo="undoGridChange" @redo="redoGridChange" @close="closeSqlPreview" />
     </div>
 
+    <DangerConfirmDialog
+      v-model:open="formatterCustomDeleteOpen"
+      :title="t('grid.formatterDeleteCustom')"
+      :message="t('grid.formatterDeleteCustomMessage', { name: formatterCustomDeleteName })"
+      :confirm-label="t('grid.formatterDeleteCustom')"
+      :loading="formatterCustomDeleteLoading"
+      :close-on-confirm="false"
+      @confirm="confirmDeleteCustomFormatter"
+    />
     <DangerConfirmDialog
       v-model:open="conditionalBulkEditConfirmOpen"
       :title="t('grid.conditionalBulkEditConfirmTitle')"
