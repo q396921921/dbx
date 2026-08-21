@@ -1317,9 +1317,42 @@ fn table_comments_from_query_result(result: db::QueryResult) -> HashMap<String, 
         .collect()
 }
 
-fn oracle_columns_sql(schema: &str, table: &str) -> String {
-    let owner = oracle_columns_owner_filter(schema);
-    format!(
+// Oracle 11g can spend about a minute evaluating SYS_CONTEXT inside the ALL_SYNONYMS START WITH clause.
+const ORACLE_CURRENT_SCHEMA_SQL: &str = "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AS CURRENT_SCHEMA FROM DUAL";
+
+fn oracle_current_schema_from_query_result(result: db::QueryResult) -> Result<String, String> {
+    let schema_index = result
+        .columns
+        .iter()
+        .position(|column| column.trim().eq_ignore_ascii_case("CURRENT_SCHEMA"))
+        .ok_or_else(|| "Oracle current schema query did not return CURRENT_SCHEMA".to_string())?;
+    let schema = result
+        .rows
+        .first()
+        .and_then(|row| row.get(schema_index))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| "Oracle current schema query returned an empty schema".to_string())?;
+    let schema = schema.trim();
+    if schema.is_empty() {
+        return Err("Oracle current schema query returned an empty schema".to_string());
+    }
+    Ok(schema.to_string())
+}
+
+fn oracle_columns_sql(schema: &str, table: &str) -> Result<String, String> {
+    let schema = schema.trim();
+    if schema.is_empty() {
+        return Err("Oracle columns query requires a resolved schema".to_string());
+    }
+    oracle_columns_sql_for_resolved_owner(&schema.to_uppercase(), table)
+}
+
+fn oracle_columns_sql_for_resolved_owner(owner: &str, table: &str) -> Result<String, String> {
+    if owner.trim().is_empty() {
+        return Err("Oracle columns query requires a resolved schema".to_string());
+    }
+    let owner = sql_string(owner);
+    Ok(format!(
         "WITH synonym_chain AS ( \
            SELECT CONNECT_BY_ROOT s.OWNER AS root_owner, \
                   s.TABLE_OWNER AS resolved_owner, \
@@ -1384,16 +1417,7 @@ fn oracle_columns_sql(schema: &str, table: &str) -> String {
            ON ro.resolved_owner = c.OWNER AND ro.resolved_table = c.TABLE_NAME \
          ORDER BY c.COLUMN_ID",
         table = sql_string(table),
-    )
-}
-
-fn oracle_columns_owner_filter(schema: &str) -> String {
-    let schema = schema.trim();
-    if schema.is_empty() {
-        "SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')".to_string()
-    } else {
-        sql_string(&schema.to_uppercase())
-    }
+    ))
 }
 
 fn oracle_column_type(data_type: &str, precision: Option<i32>, scale: Option<i32>, length: Option<i32>) -> String {
@@ -1452,13 +1476,30 @@ async fn oracle_columns_via_sql(
     client: &mut db::agent_driver::AgentDriverClient,
     timeout_duration: Option<Duration>,
 ) -> Result<Vec<db::ColumnInfo>, String> {
-    let sql = oracle_columns_sql(schema, table);
+    let request_schema = (!schema.trim().is_empty()).then_some(schema);
+    let sql = if let Some(schema) = request_schema {
+        oracle_columns_sql(schema, table)?
+    } else {
+        let result = client
+            .execute_query_with_timeout::<db::QueryResult>(
+                agent_execute_query_params(
+                    ORACLE_CURRENT_SCHEMA_SQL,
+                    if database.is_empty() { None } else { Some(database) },
+                    None,
+                    QueryExecutionOptions { max_rows: Some(1), ..Default::default() },
+                ),
+                timeout_duration,
+            )
+            .await?;
+        let current_schema = oracle_current_schema_from_query_result(result)?;
+        oracle_columns_sql_for_resolved_owner(&current_schema, table)?
+    };
     let result = client
         .execute_query_with_timeout::<db::QueryResult>(
             agent_execute_query_params(
                 &sql,
                 if database.is_empty() { None } else { Some(database) },
-                if schema.is_empty() { None } else { Some(schema) },
+                request_schema,
                 QueryExecutionOptions { max_rows: Some(10_000), ..Default::default() },
             ),
             timeout_duration,
@@ -1474,14 +1515,34 @@ async fn external_driver_oracle_columns_via_sql(
     schema: &str,
     table: &str,
 ) -> Result<Vec<db::ColumnInfo>, String> {
+    let request_schema = if schema.trim().is_empty() { "" } else { schema };
+    let sql = if request_schema.is_empty() {
+        let result: db::QueryResult = session
+            .invoke_with_timeout(
+                "executeQuery",
+                serde_json::json!({
+                    "connection": config,
+                    "database": database,
+                    "schema": request_schema,
+                    "sql": ORACLE_CURRENT_SCHEMA_SQL,
+                    "maxRows": 1
+                }),
+                agent_metadata_timeout(Some(config)),
+            )
+            .await?;
+        let current_schema = oracle_current_schema_from_query_result(result)?;
+        oracle_columns_sql_for_resolved_owner(&current_schema, table)?
+    } else {
+        oracle_columns_sql(schema, table)?
+    };
     let result: db::QueryResult = session
         .invoke_with_timeout(
             "executeQuery",
             serde_json::json!({
                 "connection": config,
                 "database": database,
-                "schema": schema,
-                "sql": oracle_columns_sql(schema, table),
+                "schema": request_schema,
+                "sql": sql,
                 "maxRows": 10_000
             }),
             agent_metadata_timeout(Some(config)),
@@ -2806,7 +2867,8 @@ mod tests {
         mysql_external_driver_ddl_from_query_result, mysql_external_driver_ddl_sql,
         mysql_object_source_ddl_column_index, mysql_object_source_sql, mysql_table_list_source_for_config,
         mysql_table_metadata_catalog, normalize_information_schema_table_type, oracle_columns_from_query_result,
-        oracle_columns_sql, oracle_object_statistics_dba_segments_sql, oracle_object_statistics_from_query_result,
+        oracle_columns_sql, oracle_columns_sql_for_resolved_owner, oracle_current_schema_from_query_result,
+        oracle_object_statistics_dba_segments_sql, oracle_object_statistics_from_query_result,
         oracle_object_statistics_rows_only_sql, oracle_object_statistics_sql,
         oracle_object_statistics_user_segments_sql, oracle_table_comment_from_query_result, oracle_table_comment_sql,
         oracle_table_comments_sql, presto_like_columns_from_query_result, presto_like_information_schema_columns_sql,
@@ -2814,7 +2876,7 @@ mod tests {
         should_query_oracle_columns_via_sql_first, table_comments_from_query_result, table_name_filter_matches,
         tdengine_table_comment_like_pattern, tdengine_table_comment_sql, tdengine_table_comments_sql,
         uses_mongodb_agent_collection_listing, visible_schema_filter, MetadataErrorAction, MysqlTableListSource,
-        TableNameFilter, TDENGINE_COMMENT_SEARCH_TIMEOUT, TDENGINE_LIKE_PATTERN_MAX_BYTES,
+        TableNameFilter, ORACLE_CURRENT_SCHEMA_SQL, TDENGINE_COMMENT_SEARCH_TIMEOUT, TDENGINE_LIKE_PATTERN_MAX_BYTES,
     };
     use super::{list_databases_core, list_tables_core};
     use super::{
@@ -2826,6 +2888,24 @@ mod tests {
     use crate::storage::Storage;
     use std::collections::HashMap;
     use std::time::Duration;
+
+    fn oracle_current_schema_result(columns: &[&str], rows: Vec<Vec<serde_json::Value>>) -> db::QueryResult {
+        db::QueryResult {
+            columns: columns.iter().map(|column| (*column).to_string()).collect(),
+            column_types: Vec::new(),
+            column_sortables: Vec::new(),
+            spatial_columns: Vec::new(),
+            spatial_values: Vec::new(),
+            rows,
+            affected_rows: 0,
+            execution_time_ms: 0,
+            truncated: false,
+            session_id: None,
+            has_more: false,
+            elasticsearch_raw_body: None,
+            messages: Vec::new(),
+        }
+    }
 
     async fn spawn_turso_table_server() -> (String, tokio::task::JoinHandle<()>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -4506,10 +4586,11 @@ for line in sys.stdin:
 
     #[test]
     fn oracle_columns_sql_uses_exact_table_name_for_quoted_lowercase_tables() {
-        let sql = oracle_columns_sql("DBX_TEST", "test");
+        let sql = oracle_columns_sql("DBX_TEST", "test").unwrap();
 
         assert!(sql.contains("ALL_TAB_COLUMNS"));
         assert!(sql.contains("ALL_COL_COMMENTS"));
+        assert!(!sql.contains("SYS_CONTEXT"));
         assert!(sql.contains("o.OWNER = 'DBX_TEST'"));
         assert!(sql.contains("o.OBJECT_NAME = 'test'"));
         assert!(sql.contains("cols.OWNER = c.OWNER"));
@@ -4519,20 +4600,62 @@ for line in sys.stdin:
 
     #[test]
     fn oracle_columns_sql_resolves_private_and_public_synonyms_in_oracle_precedence_order() {
-        let sql = oracle_columns_sql("", "ORDERS_ALIAS");
+        let sql = oracle_columns_sql_for_resolved_owner("Dbx'Owner", "ORDERS_ALIAS").unwrap();
 
-        assert!(sql.contains("SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA')"));
+        assert!(!sql.contains("SYS_CONTEXT"));
         assert!(sql.contains("FROM ALL_SYNONYMS s"));
-        assert!(sql.contains("s.OWNER IN (SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), 'PUBLIC')"));
-        assert!(sql.contains("CASE WHEN sc.root_owner = SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA') THEN 1 ELSE 2 END"));
+        assert!(sql.contains("s.OWNER IN ('Dbx''Owner', 'PUBLIC')"));
+        assert!(sql.contains("CASE WHEN sc.root_owner = 'Dbx''Owner' THEN 1 ELSE 2 END"));
         assert!(sql.contains("s.DB_LINK IS NULL"));
         assert!(sql.contains("ORDER BY resolution_priority, synonym_depth"));
         assert!(sql.contains("WHERE ROWNUM = 1"));
     }
 
     #[test]
+    fn oracle_blank_schema_requires_a_resolved_current_schema_literal() {
+        assert_eq!(
+            ORACLE_CURRENT_SCHEMA_SQL,
+            "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') AS CURRENT_SCHEMA FROM DUAL"
+        );
+        assert!(oracle_columns_sql("", "ORDERS_ALIAS").is_err());
+
+        let current_schema = oracle_current_schema_from_query_result(oracle_current_schema_result(
+            &["current_schema"],
+            vec![vec![serde_json::json!("  Mixed'Case  ")]],
+        ))
+        .unwrap();
+        assert_eq!(current_schema, "Mixed'Case");
+        let sql = oracle_columns_sql_for_resolved_owner(&current_schema, "ORDERS_ALIAS").unwrap();
+
+        assert!(sql.contains("s.OWNER IN ('Mixed''Case', 'PUBLIC')"));
+        assert!(sql.contains("o.OWNER = 'Mixed''Case'"));
+        assert!(!sql.contains("SYS_CONTEXT"));
+    }
+
+    #[test]
+    fn oracle_current_schema_result_rejects_missing_empty_and_non_string_values() {
+        assert!(oracle_current_schema_from_query_result(oracle_current_schema_result(
+            &["OTHER"],
+            vec![vec![serde_json::json!("DBX_TEST")]],
+        ))
+        .is_err());
+        let missing_rows = oracle_current_schema_result(&["CURRENT_SCHEMA"], Vec::new());
+        assert!(oracle_current_schema_from_query_result(missing_rows).is_err());
+        assert!(oracle_current_schema_from_query_result(oracle_current_schema_result(
+            &["CURRENT_SCHEMA"],
+            vec![vec![serde_json::json!("   ")]],
+        ))
+        .is_err());
+        assert!(oracle_current_schema_from_query_result(oracle_current_schema_result(
+            &["CURRENT_SCHEMA"],
+            vec![vec![serde_json::json!(11)]],
+        ))
+        .is_err());
+    }
+
+    #[test]
     fn oracle_columns_sql_follows_two_level_synonyms_without_cycles() {
-        let sql = oracle_columns_sql("DBX_TEST", "ORDERS_ALIAS");
+        let sql = oracle_columns_sql("DBX_TEST", "ORDERS_ALIAS").unwrap();
 
         assert!(sql.contains("SELECT CONNECT_BY_ROOT s.OWNER AS root_owner"));
         assert!(sql.contains("LEVEL AS synonym_depth"));
@@ -4546,7 +4669,7 @@ for line in sys.stdin:
 
     #[test]
     fn oracle_columns_sql_preserves_quoted_case_synonym_names_and_excludes_database_links() {
-        let sql = oracle_columns_sql("DBX_TEST", "Order Alias");
+        let sql = oracle_columns_sql("DBX_TEST", "Order Alias").unwrap();
 
         assert!(sql.contains("s.SYNONYM_NAME = 'Order Alias'"));
         assert!(sql.contains("o.OBJECT_NAME = 'Order Alias'"));
