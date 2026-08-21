@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { customTypeCapabilities, databaseObjectCapabilities, normalizeSidebarObjectKind, sidebarObjectKindsForDatabase, supportsPackageMemberExpansion, supportsTypeObjectSource } from "@/lib/database/databaseObjectCapabilities";
+import { buildObjectGroupPlaceholderNodes } from "@/lib/table/tableTree";
 
 describe("databaseObjectCapabilities", () => {
   it("exposes supported programmable objects for Dameng", () => {
@@ -11,6 +12,25 @@ describe("databaseObjectCapabilities", () => {
     expect(sidebarObjectKindsForDatabase("xugu")).toContain("SYNONYM");
     expect(sidebarObjectKindsForDatabase("oceanbase-oracle")).not.toContain("SYNONYM");
     expect(sidebarObjectKindsForDatabase("postgres")).not.toContain("SYNONYM");
+  });
+
+  it("exposes OceanBase Oracle sequences without widening Oracle or synonym support", () => {
+    const oceanBaseObjects = sidebarObjectKindsForDatabase("oceanbase-oracle");
+
+    expect(oceanBaseObjects).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"]);
+    expect(databaseObjectCapabilities("oceanbase-oracle").sourceReadable).toEqual(["VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"]);
+    expect(oceanBaseObjects).not.toContain("SYNONYM");
+    expect(
+      buildObjectGroupPlaceholderNodes({
+        nodeId: "connection:database:APP",
+        connectionId: "connection",
+        database: "database",
+        schema: "APP",
+        objectTypes: oceanBaseObjects,
+      }).map((node) => node.type),
+    ).toEqual(["group-tables", "group-views", "group-materialized-views", "group-procedures", "group-functions", "group-sequences", "group-packages"]);
+
+    expect(sidebarObjectKindsForDatabase("oracle")).toEqual(["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SYNONYM", "PACKAGE", "PACKAGE_BODY"]);
   });
 
   it("expands package members only for implemented database paths", () => {
