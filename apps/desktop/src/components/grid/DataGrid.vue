@@ -802,9 +802,12 @@ const contextHeaderColumnIndex = ref<number | null>(null);
 const contextHeaderVisibleColIdx = ref<number | null>(null);
 let contextMenuLifecycle = 0;
 
-function invalidateSyntheticContextSelection() {
+function invalidateContextMenuTarget() {
   contextSelectionIsSynthetic.value = false;
   contextCell.value = null;
+  contextHeaderColumn.value = null;
+  contextHeaderColumnIndex.value = null;
+  contextHeaderVisibleColIdx.value = null;
 }
 
 function onGridContextMenuOpen() {
@@ -842,7 +845,7 @@ function onGridContextMenuClose() {
   const targetId = target?.id;
   queueMicrotask(() => {
     if (lifecycle !== contextMenuLifecycle) return;
-    invalidateSyntheticContextSelection();
+    invalidateContextMenuTarget();
     // CustomContextMenu closes before starting an item action. Its action runs
     // in this turn, so only a menu dismissal leaves this target unclaimed.
     if (targetId !== undefined && contextFilterTarget.value?.id === targetId && !activeContextFilterActions.has(targetId)) contextFilterTarget.value = null;
@@ -5091,7 +5094,7 @@ const selection = useDataGridSelection({
   getScrollElement: dataGridSelectionScroller,
   cellFromClientPoint: dataGridCellFromClientPoint,
   rowFromClientPoint: dataGridRowFromClientPoint,
-  onUserCellSelection: invalidateSyntheticContextSelection,
+  onUserCellSelection: invalidateContextMenuTarget,
   // Canvas schedules its draw before the document-level mousemove handler runs,
   // so its row state must be current before that frame is painted.
   shouldUpdateDraggedRowsImmediately: () => useCanvasGridRows.value,
@@ -7669,7 +7672,7 @@ function showCellDetails(rowIndex: number, colIndex: number) {
 
 function showCellDetailsForVisibleCell(rowIndex: number, visibleColIdx: number, actualColIdx: number) {
   clearRowSelection();
-  invalidateSyntheticContextSelection();
+  invalidateContextMenuTarget();
   selectSingleCell(rowIndex, visibleColIdx);
   showCellDetails(rowIndex, actualColIdx);
 }
@@ -7754,11 +7757,8 @@ function onTransposeCellMouseenter(rowIndex: number, actualColIdx: number) {
 function selectTransposeCell(rowIndex: number, actualColIdx: number, event: MouseEvent) {
   const visibleColIdx = visibleColumnIndexes.value.indexOf(actualColIdx);
   if (visibleColIdx < 0) return;
-  contextHeaderColumn.value = null;
-  contextHeaderColumnIndex.value = null;
-  contextHeaderVisibleColIdx.value = null;
   clearRowSelection();
-  invalidateSyntheticContextSelection();
+  invalidateContextMenuTarget();
   if (event.shiftKey || event.metaKey || event.ctrlKey) {
     extendCellSelectionTo(rowIndex, visibleColIdx);
   } else {
@@ -7771,11 +7771,8 @@ function selectTransposeCell(rowIndex: number, actualColIdx: number, event: Mous
 function showTransposeCellDetails(rowIndex: number, actualColIdx: number) {
   const visibleColIdx = visibleColumnIndexes.value.indexOf(actualColIdx);
   if (visibleColIdx < 0) return;
-  contextHeaderColumn.value = null;
-  contextHeaderColumnIndex.value = null;
-  contextHeaderVisibleColIdx.value = null;
   clearRowSelection();
-  invalidateSyntheticContextSelection();
+  invalidateContextMenuTarget();
   selectSingleCell(rowIndex, visibleColIdx);
   transposeRowIndex.value = rowIndex;
   showCellDetails(rowIndex, actualColIdx);
@@ -8502,7 +8499,7 @@ function toggleKeyboardTranspose(): boolean {
 // Shared path that selects or extends to nextPosition and scrolls it into view.
 // Used by both moveSelectedCell (relative steps) and navigateSelectedCell (absolute/page jumps).
 function applyCellNavigation(nextPosition: CellPosition, extend = false, block: DataGridScrollAlignment = "nearest", previousPageRowIndex?: number): boolean {
-  invalidateSyntheticContextSelection();
+  invalidateContextMenuTarget();
   if (extend) extendCellSelectionTo(nextPosition.rowIndex, nextPosition.colIndex);
   else selectSingleCell(nextPosition.rowIndex, nextPosition.colIndex);
   clearRowSelection();
@@ -9560,7 +9557,7 @@ watch(
     closeReadonlyCellTextSelection();
     clearCellSelection();
     clearRowSelection();
-    invalidateSyntheticContextSelection();
+    invalidateContextMenuTarget();
     closeCellDetails();
     closeDetailDialogs();
     if (shouldPreserveTranspose) {
@@ -9576,7 +9573,7 @@ watch(
 
 // --- Context menu handlers ---
 function onHeaderContext(col: string, columnIndex: number) {
-  contextCell.value = null;
+  invalidateContextMenuTarget();
   const visibleColIdx = visibleColumnIndexes.value.indexOf(columnIndex);
   if (visibleColIdx >= 0 && !columnIsSelected(visibleColIdx)) {
     selectColumn(visibleColIdx);
@@ -9671,9 +9668,7 @@ function clearNativeTextSelection() {
 function onCellContext(rowId: number, rowIndex: number, colIdx: number, visibleColIdx: number, event?: MouseEvent) {
   event?.preventDefault();
   clearNativeTextSelection();
-  contextHeaderColumn.value = null;
-  contextHeaderColumnIndex.value = null;
-  contextHeaderVisibleColIdx.value = null;
+  invalidateContextMenuTarget();
   contextCell.value = { rowId, rowIndex, col: colIdx };
   if (hasRowSelection.value && isRowSelected(rowId)) {
     contextSelectionIsSynthetic.value = false;
@@ -9821,9 +9816,7 @@ watch(editValue, scheduleActiveCellEditTextareaResize);
 
 function onRowContext(rowId: number, rowIndex: number) {
   batchAppendPasteRowId.value = null;
-  contextHeaderColumn.value = null;
-  contextHeaderColumnIndex.value = null;
-  contextHeaderVisibleColIdx.value = null;
+  invalidateContextMenuTarget();
   contextCell.value = { rowId, rowIndex, col: -1 };
   if (!isRowSelected(rowId)) {
     clearCellSelection();
@@ -11778,6 +11771,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                       'data-grid-header-cell--selected': isSelectingAll,
                     }"
                     @click="selectAllCells"
+                    @contextmenu="invalidateContextMenuTarget"
                   >
                     #
                   </div>
