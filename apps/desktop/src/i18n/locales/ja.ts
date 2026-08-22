@@ -6253,6 +6253,7 @@ export default withEnglishFallback({
     mcpDeepSeekHarnessConfigPath: "dsh web では、この insert エントリを $DSH_HOME/profiles/web/cordis.patch.yml に追加します。別の profile では web を置き換えてください。既存の patch エントリは上書きしないでください。dsh web --dump-config で確認するか、HMR で変更を再読み込みできます。",
     mcpCursorConfigPath: "Cursorはプロジェクトの .cursor/mcp.json またはグローバル ~/.cursor/mcp.json を使用できます。",
     mcpCodeBuddyConfigPath: "CodeBuddy Codeはグローバル ~/.codebuddy/.mcp.json またはプロジェクトレベルの .mcp.json を使用できます。",
+    mcpZCodeConfigPath: "ZCode：設定 > MCP サーバー > 新しい MCP サーバー > 完全な設定を開き、ユーザーまたはワークスペースのスコープを選択して JSON 設定を貼り付けます。",
     mcpTraeConfigPath: "TRAE: 設定 > MCP > 追加 > 手動で追加 からJSON設定を貼り付けます。",
     mcpCherryStudioConfigPath: "Cherry Studio: 設定 > MCPサーバー > サーバーを追加 > JSONをインポート から設定を貼り付けます。",
     mcpVsCodeConfigPath: "VS Code/Copilotはワークスペースの .vscode/mcp.json またはユーザープロファイルの mcp.json を使用できます。",
