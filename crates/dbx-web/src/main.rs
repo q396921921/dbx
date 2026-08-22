@@ -479,6 +479,8 @@ async fn main() {
         .route("/query/build-database-search-sql", post(routes::query::build_database_search_sql))
         .route("/query/build-search-result-where", post(routes::query::build_search_result_where))
         .route("/query/build-rename-object-sql", post(routes::query::build_rename_object_sql))
+        .route("/query/build-rename-database-sql", post(routes::query::build_rename_database_sql))
+        .route("/query/build-rename-database-preflight-sql", post(routes::query::build_rename_database_preflight_sql))
         .route("/query/build-create-database-sql", post(routes::query::build_create_database_sql))
         .route("/query/build-sqlite-attach-database-sql", post(routes::query::build_sqlite_attach_database_sql))
         .route("/query/build-drop-object-sql", post(routes::query::build_drop_object_sql))

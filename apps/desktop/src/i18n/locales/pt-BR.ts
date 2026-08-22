@@ -3015,6 +3015,10 @@ export default withEnglishFallback({
     closeRightTabs: "Fechar abas à direita",
     compileObject: "Compilar",
     compileObjectSuccess: '"{name}" compilado com sucesso',
+    renameDatabase: "Renomear banco de dados",
+    renameDatabaseTitle: "Renomear banco de dados",
+    renameDatabaseNotOwner: "Somente o proprietário do banco de dados pode renomear «{name}».",
+    renameDatabasePreparedTransactions: "Há {count} transações preparadas pendentes no banco de dados «{name}». Execute COMMIT ou ROLLBACK antes de renomear.",
   },
   visibleDatabases: {
     title: "Bancos de dados visíveis",

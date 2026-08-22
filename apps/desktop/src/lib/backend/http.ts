@@ -1316,6 +1316,14 @@ export async function buildRenameObjectSql(options: BuildRenameObjectSqlOptions)
   return post("/api/query/build-rename-object-sql", { options });
 }
 
+export async function buildRenameDatabaseSql(options: { databaseType?: DatabaseType; oldName: string; newName: string; terminateConnections: boolean }): Promise<string> {
+  return post("/api/query/build-rename-database-sql", options);
+}
+
+export async function buildRenameDatabasePreflightSql(options: { databaseType?: DatabaseType; databaseName: string }): Promise<string> {
+  return post("/api/query/build-rename-database-preflight-sql", options);
+}
+
 export async function buildCreateDatabaseSql(options: CreateDatabaseSqlOptions): Promise<string> {
   return post("/api/query/build-create-database-sql", { options });
 }

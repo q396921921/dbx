@@ -139,7 +139,7 @@ import {
   type DropObjectSqlOptions,
   type TableChildObjectType,
 } from "@/lib/database/dbAdminSql";
-import { buildRenameObjectSql, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
+import { buildRenameObjectSql, buildRenameDatabaseSql, buildRenameDatabasePreflightSql, databaseRenameMaintenanceDatabase, supportsDatabaseRename, supportsObjectRename, type RenameableObjectType } from "@/lib/table/objectRenameSql";
 import { buildEditableObjectSource, buildRoutineRenameObjectSourceStatements, supportsSourceBackedRoutineRename } from "@/lib/table/objectSourceEditor";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
 import { buildViewDdl } from "@/lib/table/viewDdl";
@@ -1216,6 +1216,10 @@ function requestRenameSelectedNode(): boolean {
   }
   if (canRenameMongoCollection.value) {
     openRenameMongoCollectionDialog();
+    return true;
+  }
+  if (canRenameDatabase.value) {
+    openRenameDatabaseDialog();
     return true;
   }
   if (canRenameObject.value) {
@@ -2535,6 +2539,15 @@ function openRenameObjectDialog() {
   showRenameObjectDialog.value = true;
 }
 
+function openRenameDatabaseDialog() {
+  claimTreeItemDialogOwnership();
+  routeTreeItemDialogController();
+  renameObjectName.value = activeNode.value.label;
+  renameObjectError.value = "";
+  renameObjectPreviewSql.value = "";
+  showRenameObjectDialog.value = true;
+}
+
 async function executeTreeNodeSqlWithProductionGuard(
   node: Pick<TreeNode, "connectionId" | "database" | "schema">,
   sql: string,
@@ -2544,6 +2557,7 @@ async function executeTreeNodeSqlWithProductionGuard(
     executeAsScript?: boolean;
     executionId?: string;
     isCancelledBeforeDispatch?: () => boolean;
+    beforeExecute?: () => Promise<void>;
     markDispatched?: () => void;
   } = {},
 ) {
@@ -2562,10 +2576,12 @@ async function executeTreeNodeSqlWithProductionGuard(
     database,
     sql,
     source: t("production.sourceSidebar"),
-    execute: () => {
+    execute: async () => {
       // The caller may have observed a cancel click while we were still
       // waiting on connection setup or the production-safety confirmation
       // above — if so, never actually dispatch the SQL to the backend.
+      if (options.isCancelledBeforeDispatch?.()) throw new Error("Operation cancelled before it was sent to the database.");
+      await options.beforeExecute?.();
       if (options.isCancelledBeforeDispatch?.()) throw new Error("Operation cancelled before it was sent to the database.");
       options.markDispatched?.();
       return options.executeAsScript ? api.executeScript(node.connectionId!, database, sql, options.schema ?? node.schema) : api.executeQuery(node.connectionId!, database, sql, options.schema ?? node.schema, executionId, { timeoutSecs });
@@ -2578,9 +2594,27 @@ let renameObjectPreviewRequestId = 0;
 async function refreshRenameObjectPreviewSql() {
   const node = activeNode.value;
   const requestId = ++renameObjectPreviewRequestId;
-  const objectType = nodeRenameObjectType();
   const newName = renameObjectName.value.trim();
-  if (!showRenameObjectDialog.value || !objectType || !newName || newName === node.label) {
+  if (!showRenameObjectDialog.value || !newName || newName === node.label) {
+    renameObjectPreviewSql.value = "";
+    return;
+  }
+  // Database rename path
+  if (node.type === "database") {
+    try {
+      const sql = await buildRenameDatabaseSql({
+        databaseType: currentDatabaseType(),
+        oldName: node.label,
+        newName,
+      });
+      if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = sql;
+    } catch {
+      if (requestId === renameObjectPreviewRequestId) renameObjectPreviewSql.value = "";
+    }
+    return;
+  }
+  const objectType = nodeRenameObjectType();
+  if (!objectType) {
     renameObjectPreviewSql.value = "";
     return;
   }
@@ -2608,14 +2642,68 @@ watch([showRenameObjectDialog, renameObjectName, () => activeNode.value.label, (
 
 async function confirmRenameObject() {
   const node = sidebarFormTarget.value ?? activeNode.value;
-  const objectType = node.type === "table" ? "TABLE" : node.type === "view" ? "VIEW" : node.type === "materialized_view" ? "MATERIALIZED_VIEW" : node.type === "procedure" ? "PROCEDURE" : node.type === "function" ? "FUNCTION" : null;
   const newName = renameObjectName.value.trim();
-  if (!objectType || !newName || newName === node.label || !node.connectionId || !node.database) return;
+  if (!newName || newName === node.label || !node.connectionId || !node.database) return;
   renameObjectError.value = "";
   let renameApplied = false;
   try {
     const dbType = databaseTypeForNode(node);
     await connectionStore.ensureConnected(node.connectionId);
+
+    // Database rename path
+    if (node.type === "database") {
+      const maintenanceDatabase = databaseRenameMaintenanceDatabase(connectionStore.getConfig(node.connectionId)?.database, node.label);
+      // Preflight: check permissions, prepared transactions, and active connections
+      const preflightSql = await buildRenameDatabasePreflightSql({
+        databaseType: dbType,
+        databaseName: node.label,
+      });
+      const preflightResult = await api.executeQuery(node.connectionId, maintenanceDatabase, preflightSql);
+      let activeConnections = 0;
+      let preparedTransactions = 0;
+      let isOwner = false;
+      if (preflightResult && preflightResult.rows.length > 0) {
+        const row = preflightResult.rows[0] as any[];
+        activeConnections = Number(row[0]) || 0;
+        preparedTransactions = Number(row[1]) || 0;
+        isOwner = row[2] === true || row[2] === "t" || String(row[2]) === "true";
+      }
+
+      if (!isOwner) {
+        renameObjectError.value = t("contextMenu.renameDatabaseNotOwner", { name: node.label });
+        return;
+      }
+      if (preparedTransactions > 0) {
+        renameObjectError.value = t("contextMenu.renameDatabasePreparedTransactions", { name: node.label, count: preparedTransactions });
+        return;
+      }
+
+      const sql = await buildRenameDatabaseSql({
+        databaseType: dbType,
+        oldName: node.label,
+        newName,
+        terminateConnections: activeConnections > 0,
+      });
+      const executed = await executeTreeNodeSqlWithProductionGuard(node, sql, {
+        database: maintenanceDatabase,
+        executeAsScript: true,
+        beforeExecute: () => connectionStore.closeDatabaseConnection(node.connectionId!, node.label),
+      });
+      if (executed === undefined) return;
+      renameApplied = true;
+      toast(t("contextMenu.renameObjectSuccess", { oldName: node.label, newName }), 3000);
+      showRenameObjectDialog.value = false;
+      const liveNode = findSidebarActionTarget(connectionStore.treeNodes, createSidebarActionTarget(node)) ?? node;
+      liveNode.label = newName;
+      liveNode.database = newName;
+      const renamedNode: TreeNode = { ...liveNode, label: newName, database: newName };
+      connectionStore.replacePinnedTreeNode(liveNode, renamedNode);
+      void connectionStore.refreshTreeNode(liveNode);
+      return;
+    }
+
+    const objectType = node.type === "table" ? "TABLE" : node.type === "view" ? "VIEW" : node.type === "materialized_view" ? "MATERIALIZED_VIEW" : node.type === "procedure" ? "PROCEDURE" : node.type === "function" ? "FUNCTION" : null;
+    if (!objectType) return;
     if (supportsSourceBackedRoutineRename(dbType, objectType as any)) {
       const schema = node.schema || node.database;
       const source = await api.getObjectSource(node.connectionId, node.database, schema, node.objectName || node.label, objectType as any, node.signature);
@@ -2953,6 +3041,18 @@ const canEditDatabaseProperties = computed(() => {
 const canEditDatabaseCharsetCollation = computed(() => databasePropertyGroups.value.includes("charsetCollation"));
 
 const canEditDatabaseComment = computed(() => databasePropertyGroups.value.includes("databaseComment"));
+
+const canRenameDatabase = computed(() => {
+  const node = activeNode.value;
+  if (node.type !== "database" || !node.database) return false;
+  const config = node.connectionId ? connectionStore.getConfig(node.connectionId) : undefined;
+  return !!config && !config.read_only && supportsDatabaseRename(config.db_type);
+});
+
+const renameObjectDialogTitle = computed(() => {
+  if (activeNode.value.type === "database") return t("contextMenu.renameDatabaseTitle");
+  return t("contextMenu.renameObjectTitle");
+});
 
 const canCreateSchema = computed(() => {
   const config = activeNode.value.connectionId ? connectionStore.getConfig(activeNode.value.connectionId) : undefined;
@@ -4388,6 +4488,7 @@ function objectDialogCapabilities() {
   return {
     showRenameObjectDialog,
     renameObjectName,
+    renameObjectDialogTitle,
     renameObjectPreviewSql,
     renameObjectError,
     confirmRenameObject,
@@ -4916,6 +5017,14 @@ function buildDatabaseSidebarMenu(context: SidebarMenuFactoryContext): boolean {
     }
     if (canEditDatabaseProperties.value) {
       items.push({ label: t("contextMenu.editDatabaseProperties"), action: openEditDatabasePropertiesDialog, icon: SquarePen });
+    }
+    if (canRenameDatabase.value) {
+      items.push({
+        label: t("contextMenu.renameDatabase"),
+        action: openRenameDatabaseDialog,
+        icon: Pencil,
+        shortcut: shortcutRename,
+      });
     }
     if (canCreateTable.value) {
       items.push({ label: t("contextMenu.createTable"), action: createTable, icon: Plus });
