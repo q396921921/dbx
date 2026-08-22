@@ -346,6 +346,32 @@ fn primary_key_change(options: &TableStructureSqlOptions) -> Option<PrimaryKeyCh
     Some(PrimaryKeyChange { old_ids, new_ids, new_names })
 }
 
+fn unsupported_primary_key_change_warning(options: &TableStructureSqlOptions, change: &PrimaryKeyChange<'_>) -> String {
+    let action = if change.old_ids.is_empty() { "Adding" } else { "Changing" };
+    format!("{action} primary keys is not supported for {} from this editor.", database_label(options.database_type))
+}
+
+pub(super) fn validate_primary_key_change_scope(options: &TableStructureSqlOptions) -> Vec<String> {
+    if let Some(original) = options
+        .columns
+        .iter()
+        .find(|column| column.marked_for_drop && was_primary_key_column(column))
+        .and_then(|column| column.original.as_ref())
+    {
+        return vec![format!("Primary key column \"{}\" cannot be dropped from this editor.", original.name)];
+    }
+
+    let Some(change) = primary_key_change(options) else { return Vec::new() };
+    let capabilities = capabilities_for(options.database_type);
+    let supported =
+        if change.old_ids.is_empty() { capabilities.add_primary_key } else { capabilities.alter_primary_key };
+    if supported {
+        Vec::new()
+    } else {
+        vec![unsupported_primary_key_change_warning(options, &change)]
+    }
+}
+
 fn mysql_auto_increment_touches_primary_key(column: &EditableStructureColumn, change: &PrimaryKeyChange<'_>) -> bool {
     column.extra.as_ref().is_some_and(|extra| extra.auto_increment.unwrap_or(false))
         && (change.old_ids.contains(column.id.as_str()) || change.new_ids.contains(column.id.as_str()))
@@ -363,11 +389,10 @@ pub(super) fn build_primary_key_sql(
     // columns is not a PK change. A draft that drops a PK column is also rejected here.
     let Some(change) = primary_key_change(options) else { return Vec::new() };
 
-    if !capabilities.alter_primary_key {
-        warnings.push(format!(
-            "Changing primary keys is not supported for {} from this editor.",
-            database_label(options.database_type)
-        ));
+    let supported =
+        if change.old_ids.is_empty() { capabilities.add_primary_key } else { capabilities.alter_primary_key };
+    if !supported {
+        warnings.push(unsupported_primary_key_change_warning(options, &change));
         return Vec::new();
     }
 

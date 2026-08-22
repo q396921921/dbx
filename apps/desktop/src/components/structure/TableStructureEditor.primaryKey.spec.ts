@@ -263,7 +263,7 @@ function draft(isPrimaryKey = false, identity?: { seed: number; increment: numbe
   };
 }
 
-async function mountEditor(databaseType: "sqlserver" | "postgres" | "sqlite" | "oracle" | "dameng" | "duckdb" | "informix", isPrimaryKey = false, options: { database?: string; dynamicTypes?: string[]; identity?: { seed: number; increment: number } } = {}) {
+async function mountEditor(databaseType: "sqlserver" | "postgres" | "sqlite" | "oracle" | "oceanbase-oracle" | "iris" | "dameng" | "duckdb" | "informix", isPrimaryKey = false, options: { database?: string; dynamicTypes?: string[]; identity?: { seed: number; increment: number } } = {}) {
   mocks.connection.db_type = databaseType;
   mocks.connection.name = databaseType;
   mocks.connection.driver_label = databaseType;
@@ -315,10 +315,10 @@ async function mountLoadingEditor(initialTab: "columns" | "indexes" | "foreignKe
   return root;
 }
 
-function columnCheckbox(root: HTMLElement, header: string): HTMLInputElement {
+function columnCheckbox(root: HTMLElement, header: string, rowIndex = 0): HTMLInputElement {
   const headerIndex = Array.from(root.querySelectorAll("thead th")).findIndex((cell) => cell.textContent?.trim() === header);
   if (headerIndex < 0) throw new Error(`Missing ${header} column`);
-  const row = root.querySelector<HTMLElement>('[data-column-row-index="0"]');
+  const row = root.querySelector<HTMLElement>(`[data-column-row-index="${rowIndex}"]`);
   const cell = row?.querySelectorAll("td")[headerIndex];
   const checkbox = cell?.querySelector<HTMLInputElement>('input[type="checkbox"]');
   if (!checkbox) throw new Error(`Missing ${header} checkbox`);
@@ -428,8 +428,67 @@ describe("TableStructureEditor primary key editing", () => {
     );
   });
 
-  it("keeps the primary-key checkbox disabled for an existing Oracle column", async () => {
+  it("enables a primary key on an existing keyless Oracle column and makes it not null", async () => {
     const root = await mountEditor("oracle");
+    const primaryKey = columnCheckbox(root, "structureEditor.primaryKey");
+    const nullable = columnCheckbox(root, "structureEditor.nullable");
+
+    expect(primaryKey.disabled).toBe(false);
+    expect(nullable.checked).toBe(true);
+
+    primaryKey.checked = true;
+    primaryKey.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+
+    expect(primaryKey.checked).toBe(true);
+    expect(nullable.checked).toBe(false);
+    await vi.waitFor(() => expect(mocks.buildTableStructureChangeSql).toHaveBeenCalled());
+    expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        columns: [expect.objectContaining({ isPrimaryKey: true, isNullable: false })],
+      }),
+    );
+  });
+
+  it("keeps all primary-key checkboxes enabled while composing a new Oracle key", async () => {
+    const root = await mountEditor("oracle");
+    buttonWithText(root, "structureEditor.addColumn").click();
+    await nextTick();
+
+    const firstPrimaryKey = columnCheckbox(root, "structureEditor.primaryKey", 0);
+    const secondPrimaryKey = columnCheckbox(root, "structureEditor.primaryKey", 1);
+    expect(firstPrimaryKey.disabled).toBe(false);
+    expect(secondPrimaryKey.disabled).toBe(false);
+
+    firstPrimaryKey.checked = true;
+    firstPrimaryKey.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+    expect(secondPrimaryKey.disabled).toBe(false);
+
+    secondPrimaryKey.checked = true;
+    secondPrimaryKey.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+
+    await vi.waitFor(() =>
+      expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          columns: [expect.objectContaining({ isPrimaryKey: true }), expect.objectContaining({ isPrimaryKey: true })],
+        }),
+      ),
+    );
+  });
+
+  it("keeps an existing Oracle primary key and all replacement choices disabled", async () => {
+    const root = await mountEditor("oracle", true);
+    buttonWithText(root, "structureEditor.addColumn").click();
+    await nextTick();
+
+    expect(columnCheckbox(root, "structureEditor.primaryKey", 0).disabled).toBe(true);
+    expect(columnCheckbox(root, "structureEditor.primaryKey", 1).disabled).toBe(true);
+  });
+
+  it.each(["oceanbase-oracle", "iris"] as const)("keeps primary-key creation disabled for existing %s tables", async (databaseType) => {
+    const root = await mountEditor(databaseType);
 
     expect(columnCheckbox(root, "structureEditor.primaryKey").disabled).toBe(true);
   });

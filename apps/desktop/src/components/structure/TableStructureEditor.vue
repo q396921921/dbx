@@ -2433,8 +2433,9 @@ function isColumnCharsetDisabled(column: EditableStructureColumn): boolean {
 
 function isPrimaryKeyDisabled(column: EditableStructureColumn): boolean {
   if (column.markedForDrop) return true;
-  if (!column.original) return false;
-  return !structureCapabilities.value.alterPrimaryKey;
+  if (isCreateMode.value || structureCapabilities.value.alterPrimaryKey) return false;
+  if (!structureCapabilities.value.addPrimaryKey) return true;
+  return columns.value.some((candidate) => candidate.original?.is_primary_key);
 }
 
 function canDropColumn(column: EditableStructureColumn): boolean {
