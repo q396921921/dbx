@@ -57,7 +57,7 @@ import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { usePromptTemplateStore } from "@/stores/promptTemplateStore";
 import { connectionIconType } from "@/lib/connection/connectionPresentation";
 import DatabaseIcon from "@/components/icons/DatabaseIcon.vue";
-import ConnectionGroupBadge from "@/components/connection/ConnectionGroupBadge.vue";
+import ConnectionTreeSelect from "@/components/connection/ConnectionTreeSelect.vue";
 import { useQueryStore } from "@/stores/queryStore";
 import { useToast } from "@/composables/useToast";
 import { useNavigationTargets } from "@/composables/useNavigationTargets";
@@ -3428,27 +3428,18 @@ async function openExternalUrl(url: string) {
             <template v-if="connectionStore.connections.length">
               <DatabaseIcon v-if="connection" :db-type="connectionIconType(connection)" class="h-3 w-3 shrink-0" />
               <Server v-else class="h-3 w-3 shrink-0" />
-              <Select
+              <ConnectionTreeSelect
                 :model-value="connection?.id || ''"
-                @update:model-value="
-                  (v) => {
-                    if (typeof v === 'string') changeConnection(v);
-                  }
-                "
-              >
-                <SelectTrigger class="h-5 w-auto border-0 rounded-md bg-transparent dark:bg-transparent p-0 px-1 text-xs text-foreground/80 shadow-none focus:ring-0 focus-visible:ring-0 [&_svg]:size-3">
-                  <SelectValue :placeholder="t('editor.selectConnection')">{{ connection?.name || t("editor.selectConnection") }}</SelectValue>
-                </SelectTrigger>
-                <SelectContent class="min-w-48">
-                  <SelectItem v-for="conn in connectionStore.connections" :key="conn.id" :value="conn.id">
-                    <div class="flex min-w-0 items-center gap-2">
-                      <DatabaseIcon :db-type="connectionIconType(conn)" class="h-3.5 w-3.5 shrink-0" />
-                      <ConnectionGroupBadge :connection-id="conn.id" />
-                      <span class="truncate">{{ conn.name }}</span>
-                    </div>
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+                :connections="connectionStore.connections"
+                :layout="connectionStore.sidebarLayout"
+                :placeholder="t('editor.selectConnection')"
+                :search-placeholder="t('editor.searchConnection')"
+                :empty-text="t('grid.noSearchResults')"
+                trigger-class="h-5 px-1 text-foreground/80"
+                trigger-icon-class="h-3 w-3"
+                list-class="w-72 max-w-[calc(100vw-2rem)]"
+                @update:model-value="(v) => changeConnection(v)"
+              />
               <template v-if="connection">
                 <Database class="h-3 w-3 shrink-0 text-foreground/40" />
                 <Select
