@@ -7,7 +7,7 @@ import { useQueryStore } from "@/stores/queryStore";
 import { useSavedSqlStore } from "@/stores/savedSqlStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useToast } from "@/composables/useToast";
-import type { ObjectSourceKind, TableInfo, TableNameFilter, TreeNode, TreeNodeType } from "@/types/database";
+import type { ObjectSourceKind, QueryTab, TableInfo, TableNameFilter, TreeNode, TreeNodeType } from "@/types/database";
 import {
   createSidebarSearchSubtreePreserver,
   filterSidebarSearchRootsByConnectionState,
@@ -1250,6 +1250,7 @@ async function scrollToSidebarNode(nodeId: string, options?: { align?: SidebarNo
     index,
     currentScrollTop: scroller.scrollTop,
     viewportHeight: scroller.clientHeight,
+    scrollHeight: scroller.scrollHeight,
     topOcclusionHeight: topOcclusionHeightForSidebarNode(nodeId),
     ...(options?.align ? { align: options.align } : {}),
   });
@@ -1304,7 +1305,10 @@ async function startRenamingConnectionNode(connectionId: string) {
 }
 
 async function locateActiveTabInSidebar() {
-  const tab = activeTab.value;
+  await locateTabInSidebar(activeTab.value, "smart");
+}
+
+async function locateTabInSidebar(tab: QueryTab | undefined | null, align: SidebarNodeScrollAlign = "center") {
   if (!tab) return;
 
   const tabTarget = activeTabSidebarTarget(tab);
@@ -1397,7 +1401,7 @@ async function locateActiveTabInSidebar() {
   store.treeSelectionAnchorId = match.id;
   await nextTick();
 
-  await scrollToSidebarNode(match.id, { align: "smart" });
+  await scrollToSidebarNode(match.id, { align });
   await flashSidebarNode(match.id);
 }
 
@@ -1955,6 +1959,7 @@ async function selectActiveTabSidebarNode(options: { scroll: boolean }) {
     index,
     currentScrollTop: scroller.scrollTop,
     viewportHeight: scroller.clientHeight,
+    scrollHeight: scroller.scrollHeight,
     topOcclusionHeight: topOcclusionHeightForSidebarNode(match.id),
   });
   if (nextScrollTop !== scroller.scrollTop) {
@@ -2163,7 +2168,7 @@ onUnmounted(() => {
   if (sidebarTreeContentMeasureFrame) window.cancelAnimationFrame(sidebarTreeContentMeasureFrame);
 });
 
-defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
+defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes, locateTabInSidebar });
 </script>
 
 <template>

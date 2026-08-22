@@ -12,7 +12,7 @@ import ConnectionTree from "@/components/sidebar/ConnectionTree.vue";
 import { applyConnectionMultiSelection, emptyConnectionMultiSelection, isExitConnectionMultiSelectionShortcut } from "@/lib/sidebar/sidebarConnectionMultiSelect";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useToast } from "@/composables/useToast";
-import type { TreeNode } from "@/types/database";
+import type { QueryTab, TreeNode } from "@/types/database";
 
 defineProps<{
   sidebarWidth: number;
@@ -86,6 +86,10 @@ function collapseAllTreeNodes() {
 
 function focusSearch(): boolean {
   return connectionTreeRef.value?.focusSearch() ?? false;
+}
+
+function locateTabInSidebar(tab: QueryTab) {
+  return connectionTreeRef.value?.locateTabInSidebar(tab);
 }
 
 function clearConnectionMultiSelection() {
@@ -163,7 +167,7 @@ function confirmCreateSelectedGroup() {
   showCreateSelectedGroupDialog.value = false;
 }
 
-defineExpose({ focusSearch });
+defineExpose({ focusSearch, locateTabInSidebar });
 </script>
 
 <template>
