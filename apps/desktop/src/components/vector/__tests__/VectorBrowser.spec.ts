@@ -85,9 +85,11 @@ beforeEach(() => {
   document.body.appendChild(root);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await flushUi();
   app?.unmount();
   app = null;
+  await flushUi();
   root?.remove();
   root = null;
   document.body.innerHTML = "";
