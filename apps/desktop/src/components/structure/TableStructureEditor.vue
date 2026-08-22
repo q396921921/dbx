@@ -1993,10 +1993,18 @@ function isDamengIdentityChecked(column: EditableStructureColumn): boolean {
   return !!column.extra.autoIncrement || !!column.extra.identity;
 }
 
+function originalHasDamengIdentity(column: EditableStructureColumn): boolean {
+  return column.original?.extra?.toLowerCase().includes("identity") ?? false;
+}
+
 function canEditDamengIdentity(column: EditableStructureColumn): boolean {
-  if (column.original || column.markedForDrop || !isDamengIdentityCompatibleDataType(column.dataType)) return false;
+  if (column.markedForDrop || !isDamengIdentityCompatibleDataType(column.dataType)) return false;
   // DM8 permits only one identity column per table, so prevent creating an invalid draft in the editor.
   return isDamengIdentityChecked(column) || !columns.value.some((candidate) => candidate !== column && !candidate.markedForDrop && isDamengIdentityChecked(candidate));
+}
+
+function canEditDamengIdentityParameters(column: EditableStructureColumn): boolean {
+  return canEditDamengIdentity(column) && !originalHasDamengIdentity(column);
 }
 
 function clearDamengIdentity(column: EditableStructureColumn) {
@@ -2012,10 +2020,11 @@ function syncDamengIdentityForDataType(column: EditableStructureColumn) {
 }
 
 function ensureDamengIdentity(column: EditableStructureColumn) {
+  const originalIdentity = parseExtraToColumnExtra(column.original?.extra, "dameng").identity;
   column.extra.autoIncrement = true;
   column.extra.identity = {
-    seed: column.extra.identity?.seed ?? 1,
-    increment: column.extra.identity?.increment ?? 1,
+    seed: column.extra.identity?.seed ?? originalIdentity?.seed ?? 1,
+    increment: column.extra.identity?.increment ?? originalIdentity?.increment ?? 1,
   };
 }
 
@@ -2030,13 +2039,13 @@ function setDamengIdentity(column: EditableStructureColumn, checked: boolean) {
 }
 
 function updateDamengIdentitySeed(column: EditableStructureColumn, value: string | number) {
-  if (!canEditDamengIdentity(column)) return;
+  if (!canEditDamengIdentityParameters(column)) return;
   ensureDamengIdentity(column);
   column.extra.identity!.seed = parseOptionalNumberInput(value);
 }
 
 function updateDamengIdentityIncrement(column: EditableStructureColumn, value: string | number) {
-  if (!canEditDamengIdentity(column)) return;
+  if (!canEditDamengIdentityParameters(column)) return;
   ensureDamengIdentity(column);
   column.extra.identity!.increment = parseOptionalNumberInput(value);
 }
@@ -3539,7 +3548,7 @@ watch([activeTab, ddlLoading], ([tab, loading]) => {
                             type="number"
                             :class="[structureControlClass, 'w-14']"
                             :placeholder="t('structureEditor.identitySeed')"
-                            :disabled="!canEditDamengIdentity(column)"
+                            :disabled="!canEditDamengIdentityParameters(column)"
                             @update:model-value="(v) => updateDamengIdentitySeed(column, v)"
                           />
                           <Input
@@ -3547,7 +3556,7 @@ watch([activeTab, ddlLoading], ([tab, loading]) => {
                             type="number"
                             :class="[structureControlClass, 'w-14']"
                             :placeholder="t('structureEditor.identityIncrement')"
-                            :disabled="!canEditDamengIdentity(column)"
+                            :disabled="!canEditDamengIdentityParameters(column)"
                             @update:model-value="(v) => updateDamengIdentityIncrement(column, v)"
                           />
                         </template>

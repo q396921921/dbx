@@ -2834,6 +2834,212 @@ fn dameng_unchanged_identity_extra_does_not_mark_existing_column_changed() {
 }
 
 #[test]
+fn dameng_enables_identity_on_existing_not_null_column() {
+    let mut id = existing_pk_column("ID", "INT", false, false);
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(10), increment: Some(2) }),
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![id],
+    ));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE \"SYSDBA\".\"TEST\" ADD COLUMN \"ID\" IDENTITY(10, 2);"]);
+}
+
+#[test]
+fn dameng_makes_existing_column_not_null_before_enabling_identity() {
+    let mut id = column("ID");
+    id.data_type = "INT".to_string();
+    id.is_nullable = false;
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(1), increment: Some(1) }),
+        ..Default::default()
+    });
+    id.original = Some(ColumnInfo {
+        name: "ID".to_string(),
+        data_type: "INT".to_string(),
+        is_nullable: true,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![id],
+    ));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"SYSDBA\".\"TEST\" MODIFY (\"ID\" INT NOT NULL);",
+            "ALTER TABLE \"SYSDBA\".\"TEST\" ADD COLUMN \"ID\" IDENTITY(1, 1);",
+        ]
+    );
+}
+
+#[test]
+fn dameng_disables_identity_on_existing_column() {
+    let mut id = existing_pk_column("ID", "INT", false, false);
+    id.extra = Some(ColumnExtra::default());
+    id.original.as_mut().unwrap().extra = Some("IDENTITY(10, 2)".to_string());
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![id],
+    ));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, vec!["ALTER TABLE \"SYSDBA\".\"TEST\" DROP IDENTITY;"]);
+}
+
+#[test]
+fn dameng_moves_identity_with_drop_before_add_regardless_of_column_order() {
+    let mut target = existing_pk_column("TARGET_ID", "BIGINT", false, false);
+    target.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(100), increment: Some(5) }),
+        ..Default::default()
+    });
+
+    let mut source = existing_pk_column("SOURCE_ID", "INT", false, false);
+    source.extra = Some(ColumnExtra::default());
+    source.original.as_mut().unwrap().extra = Some("IDENTITY(1, 1)".to_string());
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![target, source],
+    ));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"SYSDBA\".\"TEST\" DROP IDENTITY;",
+            "ALTER TABLE \"SYSDBA\".\"TEST\" ADD COLUMN \"TARGET_ID\" IDENTITY(100, 5);",
+        ]
+    );
+}
+
+#[test]
+fn dameng_rejects_identity_on_incompatible_existing_column() {
+    let mut code = column("CODE");
+    code.data_type = "VARCHAR(255)".to_string();
+    code.is_nullable = false;
+    code.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(1), increment: Some(1) }),
+        ..Default::default()
+    });
+    code.original = Some(ColumnInfo {
+        name: "CODE".to_string(),
+        data_type: "VARCHAR(255)".to_string(),
+        is_nullable: false,
+        column_default: None,
+        is_primary_key: false,
+        extra: None,
+        comment: None,
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![code],
+    ));
+
+    assert!(result.statements.is_empty());
+    assert_eq!(
+        result.warnings,
+        vec!["Dameng identity column \"CODE\" must use tinyint, smallint, int, integer, bigint, number, numeric, or decimal/dec with scale 0."]
+    );
+}
+
+#[test]
+fn dameng_rejects_zero_increment_when_enabling_existing_identity() {
+    let mut id = existing_pk_column("ID", "INT", false, false);
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(1), increment: Some(0) }),
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![id],
+    ));
+
+    assert!(result.statements.is_empty());
+    assert_eq!(result.warnings, vec!["Dameng identity column \"ID\" increment cannot be 0."]);
+}
+
+#[test]
+fn dameng_rejects_changing_existing_identity_parameters() {
+    let mut id = existing_pk_column("ID", "INT", false, false);
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(10), increment: Some(3) }),
+        ..Default::default()
+    });
+    id.original.as_mut().unwrap().extra = Some("IDENTITY(10, 2)".to_string());
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Dameng,
+        Some("SYSDBA"),
+        "TEST",
+        vec![id],
+    ));
+
+    assert!(result.statements.is_empty());
+    assert_eq!(
+        result.warnings,
+        vec![
+            "Changing Dameng IDENTITY seed or increment for existing column \"ID\" is not supported from this editor."
+        ]
+    );
+}
+
+#[test]
+fn oracle_does_not_adopt_dameng_existing_identity_ddl() {
+    let mut id = existing_pk_column("ID", "NUMBER(10)", false, false);
+    id.extra = Some(ColumnExtra {
+        auto_increment: Some(true),
+        identity: Some(ColumnIdentity { generation: None, seed: Some(1), increment: Some(1) }),
+        ..Default::default()
+    });
+
+    let result = build_table_structure_change_sql(structure_change_options(
+        DatabaseType::Oracle,
+        Some("APP"),
+        "USERS",
+        vec![id],
+    ));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(result.statements, Vec::<String>::new());
+}
+
+#[test]
 fn dameng_rejects_adding_second_identity_column() {
     let mut existing = column("ID");
     existing.data_type = "INT".to_string();
@@ -2876,6 +3082,7 @@ fn dameng_rejects_adding_second_identity_column() {
         is_gaussdb_m_mode: false,
     });
 
+    assert_eq!(result.statements, Vec::<String>::new());
     assert_eq!(result.warnings, vec!["Dameng tables can have only one identity column."]);
 }
 

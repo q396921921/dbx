@@ -226,7 +226,8 @@ import TableStructureEditor from "@/components/structure/TableStructureEditor.vu
 
 const mountedApps: App[] = [];
 
-function draft(isPrimaryKey = false) {
+function draft(isPrimaryKey = false, identity?: { seed: number; increment: number }) {
+  const isNullable = identity ? false : !isPrimaryKey;
   return {
     initialized: true,
     activeTab: "columns" as const,
@@ -238,18 +239,18 @@ function draft(isPrimaryKey = false) {
         id: "existing:id",
         name: "id",
         dataType: "INT",
-        isNullable: !isPrimaryKey,
+        isNullable,
         defaultValue: "",
         comment: "",
         isPrimaryKey,
-        extra: {},
+        extra: identity ? { autoIncrement: true, identity: { ...identity } } : {},
         original: {
           name: "id",
           data_type: "INT",
-          is_nullable: !isPrimaryKey,
+          is_nullable: isNullable,
           column_default: null,
           is_primary_key: isPrimaryKey,
-          extra: null,
+          extra: identity ? `IDENTITY(${identity.seed}, ${identity.increment})` : null,
           comment: null,
         },
         originalPosition: 0,
@@ -262,7 +263,7 @@ function draft(isPrimaryKey = false) {
   };
 }
 
-async function mountEditor(databaseType: "sqlserver" | "postgres" | "sqlite" | "oracle" | "dameng" | "duckdb" | "informix", isPrimaryKey = false, options: { database?: string; dynamicTypes?: string[] } = {}) {
+async function mountEditor(databaseType: "sqlserver" | "postgres" | "sqlite" | "oracle" | "dameng" | "duckdb" | "informix", isPrimaryKey = false, options: { database?: string; dynamicTypes?: string[]; identity?: { seed: number; increment: number } } = {}) {
   mocks.connection.db_type = databaseType;
   mocks.connection.name = databaseType;
   mocks.connection.driver_label = databaseType;
@@ -277,7 +278,7 @@ async function mountEditor(databaseType: "sqlserver" | "postgres" | "sqlite" | "
     database: options.database ?? "test",
     schema: "SYSDBA",
     tableName: "users",
-    draft: draft(isPrimaryKey),
+    draft: draft(isPrimaryKey, options.identity),
   });
   mountedApps.push(app);
   app.mount(root);
@@ -324,6 +325,12 @@ function columnCheckbox(root: HTMLElement, header: string): HTMLInputElement {
   return checkbox;
 }
 
+function columnPropertyCheckbox(root: HTMLElement, title: string): HTMLInputElement {
+  const checkbox = root.querySelector<HTMLInputElement>(`[data-column-row-index="0"] label[title="${title}"] input[type="checkbox"]`);
+  if (!checkbox) throw new Error(`Missing ${title} checkbox`);
+  return checkbox;
+}
+
 function buttonWithText(root: HTMLElement, text: string): HTMLButtonElement {
   const button = Array.from(root.querySelectorAll("button")).find((item) => item.textContent?.includes(text));
   if (!button) throw new Error(`Missing ${text} button`);
@@ -348,6 +355,57 @@ afterEach(() => {
 });
 
 describe("TableStructureEditor primary key editing", () => {
+  it("allows enabling identity on an existing Dameng integer column", async () => {
+    const root = await mountEditor("dameng");
+    const identity = columnPropertyCheckbox(root, "structureEditor.identity");
+    const nullable = columnCheckbox(root, "structureEditor.nullable");
+
+    expect(identity.disabled).toBe(false);
+    expect(nullable.checked).toBe(true);
+
+    identity.checked = true;
+    identity.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+
+    expect(identity.checked).toBe(true);
+    expect(nullable.checked).toBe(false);
+    expect(Array.from(root.querySelectorAll<HTMLInputElement>('[data-column-row-index="0"] input[type="number"]')).every((input) => !input.disabled)).toBe(true);
+    await vi.waitFor(() => expect(mocks.buildTableStructureChangeSql).toHaveBeenCalled());
+    expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        columns: [
+          expect.objectContaining({
+            isNullable: false,
+            extra: expect.objectContaining({ autoIncrement: true, identity: { seed: 1, increment: 1 } }),
+          }),
+        ],
+      }),
+    );
+  });
+
+  it("allows disabling existing Dameng identity while keeping its parameters read-only", async () => {
+    const root = await mountEditor("dameng", false, { identity: { seed: 10, increment: 2 } });
+    const identity = columnPropertyCheckbox(root, "structureEditor.identity");
+    const identityInputs = Array.from(root.querySelectorAll<HTMLInputElement>('[data-column-row-index="0"] input[type="number"]'));
+
+    expect(identity.disabled).toBe(false);
+    expect(identity.checked).toBe(true);
+    expect(identityInputs).toHaveLength(2);
+    expect(identityInputs.every((input) => input.disabled)).toBe(true);
+
+    identity.checked = false;
+    identity.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+
+    expect(identity.checked).toBe(false);
+    await vi.waitFor(() => expect(mocks.buildTableStructureChangeSql).toHaveBeenCalled());
+    expect(mocks.buildTableStructureChangeSql).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        columns: [expect.objectContaining({ extra: expect.objectContaining({ autoIncrement: false, identity: undefined }) })],
+      }),
+    );
+  });
+
   it("enables the primary-key checkbox for an existing Dameng column and makes it not null", async () => {
     const root = await mountEditor("dameng");
     const primaryKey = columnCheckbox(root, "structureEditor.primaryKey");
