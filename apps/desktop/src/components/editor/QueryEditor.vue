@@ -334,7 +334,6 @@ const completionTranslations = computed(() => ({
 const MAX_COMPLETION_TABLES = 200;
 const PRESTO_ON_DEMAND_TABLE_COMPLETION_MIN_PREFIX = 2;
 const PRESTO_ON_DEMAND_TABLE_COMPLETION_LIMIT = 20;
-const MAX_JOIN_FK_PREFETCH_TABLES = 24;
 const MAX_SEMANTIC_DIAGNOSTIC_COLUMN_TABLES = 4;
 const liveFontSize = ref(settingsStore.editorSettings.fontSize);
 const gestureStartFontSize = ref(settingsStore.editorSettings.fontSize);
@@ -617,6 +616,7 @@ let cachedTables: SqlCompletionTable[] = [];
 const cachedCompletionObjectsByScope = new Map<string, SqlCompletionObject[]>();
 // Persistent column cache keyed by "schema.table" or "table"
 const cachedColumnsByTable = new Map<string, SqlCompletionColumn[]>();
+const cachedPrefixColumnsByTable = new Map<string, SqlCompletionColumn[]>();
 const cachedInsertValueHintColumnsByTable = new Map<string, string[]>();
 const cachedForeignKeysByTable = new Map<string, SqlCompletionForeignKey[]>();
 const loadedColumnsByTable = new Set<string>();
@@ -650,10 +650,19 @@ function completionColumnRequestContext(reference?: Pick<SqlCompletionReferenced
   };
 }
 
-async function listCompletionColumnsForEditor(connectionId: string, database: string, table: string, schema?: string, catalog = props.catalog, reference?: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted">) {
+async function listCompletionColumnsForEditor(connectionId: string, database: string, table: string, schema?: string, catalog = props.catalog, reference?: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted">, prefix?: string) {
   const requestedVersion = props.completionContextVersion;
   const sessionScoped = usesOracleSessionCompletionColumns(schema);
-  const columns = await connectionStore.listCompletionColumns(connectionId, database, table, schema, completionColumnRequestContext(reference), catalog);
+  let columns: SqlCompletionColumn[];
+  if (prefix && prefix.length >= 2 && (props.databaseType === "postgres" || props.databaseType === "mysql")) {
+    try {
+      columns = await connectionStore.listCompletionColumnsByPrefix(connectionId, database, table, schema, prefix, catalog, completionColumnRequestContext(reference));
+    } catch {
+      columns = await connectionStore.listCompletionColumns(connectionId, database, table, schema, completionColumnRequestContext(reference), catalog);
+    }
+  } else {
+    columns = await connectionStore.listCompletionColumns(connectionId, database, table, schema, completionColumnRequestContext(reference), catalog);
+  }
   if (sessionScoped && requestedVersion !== props.completionContextVersion) throw new Error("Stale Oracle completion context");
   return columns;
 }
@@ -2156,11 +2165,35 @@ function identifierRangeAt(sql: string, pos: number): { from: number; to: number
 
 type CompletionMetadataScope = Pick<SqlCompletionScope, "database" | "schema">;
 
-function completionCacheKey(table: { name: string; catalog?: string | null; database?: string | null; schema?: string | null }, scope?: CompletionMetadataScope) {
+function completionCacheKey(table: { name: string; catalog?: string | null; database?: string | null; schema?: string | null; nameQuoted?: boolean; schemaQuoted?: boolean }, scope?: CompletionMetadataScope) {
   const schema = table.schema ?? scope?.schema ?? props.schema;
   const scopedDatabase = scope && scope.database !== props.database ? scope.database : undefined;
   const database = supportsDatabaseSchemaQualifierCompletion() ? (table.database ?? scopedDatabase) : undefined;
-  return schema ? `${database ? `${database}.` : ""}${schema}.${table.name}` : table.name;
+  const baseKey = schema ? `${database ? `${database}.` : ""}${schema}.${table.name}` : table.name;
+  if (props.databaseType !== "postgres" || (!table.nameQuoted && !table.schemaQuoted)) return baseKey;
+  return `${baseKey}:quoted:s=${table.schemaQuoted ? "1" : "0"}:t=${table.nameQuoted ? "1" : "0"}`;
+}
+
+function completionPrefixCacheKey(table: { name: string; catalog?: string | null; database?: string | null; schema?: string | null; nameQuoted?: boolean; schemaQuoted?: boolean }, scope: CompletionMetadataScope | undefined, prefix: string) {
+  return `${completionCacheKey(table, scope)}:prefix:${prefix.trim().toLowerCase()}`;
+}
+
+function lookupCachedPrefixColumns(table: { name: string; catalog?: string | null; database?: string | null; schema?: string | null; nameQuoted?: boolean; schemaQuoted?: boolean }, scope: CompletionMetadataScope | undefined, prefix: string): SqlCompletionColumn[] | undefined {
+  const normalizedPrefix = prefix.trim().toLowerCase();
+  const exactKey = completionPrefixCacheKey(table, scope, normalizedPrefix);
+  const exact = cachedPrefixColumnsByTable.get(exactKey);
+  if (exact) return exact;
+
+  const marker = `${completionCacheKey(table, scope)}:prefix:`;
+  let best: { prefix: string; columns: SqlCompletionColumn[] } | undefined;
+  for (const [key, columns] of cachedPrefixColumnsByTable) {
+    if (!key.startsWith(marker)) continue;
+    const cachedPrefix = key.slice(marker.length);
+    if (!normalizedPrefix.startsWith(cachedPrefix) || (best && cachedPrefix.length <= best.prefix.length)) continue;
+    best = { prefix: cachedPrefix, columns };
+  }
+  if (!best) return undefined;
+  return best.columns.filter((column) => column.name.toLowerCase().startsWith(normalizedPrefix));
 }
 
 const pendingInsertValueHintColumnLoads = new Set<string>();
@@ -3165,6 +3198,23 @@ function unregisterTableReferenceDropListener() {
 }
 
 let completionEpoch = 0;
+let tableCompletionRefreshActive = false;
+let latestTableCompletionRefresh: (() => Promise<void>) | null = null;
+
+function queueTableCompletionRefresh(task: () => Promise<void>): void {
+  latestTableCompletionRefresh = task;
+  if (tableCompletionRefreshActive) return;
+  tableCompletionRefreshActive = true;
+  void (async () => {
+    while (latestTableCompletionRefresh) {
+      const next = latestTableCompletionRefresh;
+      latestTableCompletionRefresh = null;
+      await next();
+    }
+  })().finally(() => {
+    tableCompletionRefreshActive = false;
+  });
+}
 let completionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 let typedCompletionActivationUntil = 0;
 let suppressNextSqlCompletionAutoStartUntil = 0;
@@ -3837,13 +3887,25 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
 
   const qualifiedColumnTarget = completionQualifiedTableTarget(completionContext);
   if (qualifiedColumnTarget) {
-    const cacheKey = completionCacheKey(qualifiedColumnTarget, scope);
-    const cached = cachedColumnsByTable.get(cacheKey);
+    const reference = completionContext.referencedTables.find((table) => completionTablesMatch(table, qualifiedColumnTarget));
+    const qualifiedCacheTable = { ...qualifiedColumnTarget, nameQuoted: reference?.nameQuoted, schemaQuoted: reference?.schemaQuoted };
+    const cacheKey = completionCacheKey(qualifiedCacheTable, scope);
+    const cachedPrefix = completionContext.prefix.length >= 2 && (props.databaseType === "postgres" || props.databaseType === "mysql") ? lookupCachedPrefixColumns(qualifiedCacheTable, scope, completionContext.prefix) : undefined;
+    const cached = cachedPrefix ?? cachedColumnsByTable.get(cacheKey);
     if (cached) {
       columnsByTable.set(cacheKey, cached);
     } else {
       const target = completionMetadataTarget(qualifiedColumnTarget, scope);
-      const localColumns = target && !usesOracleSessionCompletionColumns(target.schema) ? connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, qualifiedColumnTarget.name, target.schema, target.catalog) : [];
+      const prefixColumns =
+        target && completionContext.prefix.length >= 2 && (props.databaseType === "postgres" || props.databaseType === "mysql")
+          ? connectionStore.lookupLocalCompletionColumnsByPrefix(props.connectionId, target.database, qualifiedColumnTarget.name, target.schema, completionContext.prefix, target.catalog, completionColumnRequestContext(reference))
+          : [];
+      const localColumns =
+        prefixColumns.length > 0
+          ? prefixColumns
+          : target && !usesOracleSessionCompletionColumns(target.schema)
+            ? connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, qualifiedColumnTarget.name, target.schema, target.catalog, completionColumnRequestContext(reference))
+            : [];
       if (localColumns.length > 0) {
         columnsByTable.set(cacheKey, localColumns);
       }
@@ -3866,13 +3928,22 @@ function buildLocalSqlCompletionResult(completionContext: ReturnType<typeof getS
       continue;
     }
     const cacheKey = completionCacheKey(refTable, scope);
-    const cached = cachedColumnsByTable.get(cacheKey);
+    const prefixCompletion =
+      (props.databaseType === "postgres" || props.databaseType === "mysql") &&
+      completionContext.qualifier &&
+      completionContext.prefix.length >= 2 &&
+      isReferencedTableQualifier(completionContext) &&
+      (refTable.alias?.toLowerCase() === completionContext.qualifier.toLowerCase() || refTable.name.toLowerCase() === completionContext.qualifier.toLowerCase())
+        ? completionContext.prefix
+        : undefined;
+    const cached = (prefixCompletion ? lookupCachedPrefixColumns(refTable, scope, prefixCompletion) : undefined) ?? cachedColumnsByTable.get(cacheKey);
     if (cached) {
       columnsByTable.set(cacheKey, cached);
       continue;
     }
     const target = completionMetadataTarget(refTable, scope);
-    const localColumns = target && !usesOracleSessionCompletionColumns(target.schema) ? connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, refTable.name, target.schema, target.catalog, refTable) : [];
+    const prefixColumns = target && prefixCompletion ? connectionStore.lookupLocalCompletionColumnsByPrefix(props.connectionId, target.database, refTable.name, target.schema, prefixCompletion, target.catalog, refTable) : [];
+    const localColumns = prefixColumns.length > 0 ? prefixColumns : target && !usesOracleSessionCompletionColumns(target.schema) ? connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, refTable.name, target.schema, target.catalog, refTable) : [];
     if (localColumns.length > 0) {
       columnsByTable.set(cacheKey, localColumns);
     }
@@ -3938,16 +4009,21 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
   });
   if (!localOnlyMetadata && !schemaLookupDatabase && (completionContext.suggestTables || (!!completionContext.qualifier && !isReferencedTableQualifier(completionContext)))) {
     const globalOracleTableSearch = props.databaseType === "oracle" && completionContext.suggestTables && !completionContext.qualifier;
-    void connectionStore
-      .refreshCompletionTables(connectionId, tableLookupTarget.database, tableLookupTarget.filter, MAX_COMPLETION_TABLES, tableLookupTarget.schema, globalOracleTableSearch, scope.schema, props.catalog)
-      .then((tables) => {
+    const refreshEpoch = completionEpoch;
+    queueTableCompletionRefresh(async () => {
+      if (refreshEpoch !== completionEpoch) return;
+      try {
+        const tables = await connectionStore.refreshCompletionTables(connectionId, tableLookupTarget.database, tableLookupTarget.filter, MAX_COMPLETION_TABLES, tableLookupTarget.schema, globalOracleTableSearch, scope.schema, props.catalog);
+        if (refreshEpoch !== completionEpoch) return;
         const scopedTables = tables.map((table) => ({ ...table, database: table.database ?? tableLookupTarget.database }));
         cachedTables = mergeCompletionTables(cachedTables, scopedTables);
-        if (completionContext.suggestTables && completionContext.referencedTables.length > 0) {
-          void ensureForeignKeysForTables([...completionContext.referencedTables, ...scopedTables.slice(0, MAX_JOIN_FK_PREFETCH_TABLES)]);
+        if (completionContext.suggestJoinConditions && completionContext.referencedTables.length > 0) {
+          void ensureForeignKeysForTables(completionContext.referencedTables);
         }
-      })
-      .catch(() => {});
+      } catch {
+        // Local candidates remain available when the remote refresh fails.
+      }
+    });
   }
   if (!localOnlyMetadata && shouldLoadCompletionObjects(completionContext)) {
     const completionObjectScope = routineCompletionScopeForContext(completionContext, scope);
@@ -4009,7 +4085,7 @@ function scheduleCompletionMetadataRefresh(completionContext: ReturnType<typeof 
         .catch(() => {});
     }
   }
-  if (!tableNameCompletion && (completionContext.suggestTables || completionContext.suggestJoinConditions) && completionContext.referencedTables.length > 0) {
+  if (!tableNameCompletion && completionContext.suggestJoinConditions && completionContext.referencedTables.length > 0) {
     void ensureForeignKeysForTables(completionContext.referencedTables);
   }
 }
@@ -4278,20 +4354,27 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
 
   const tableNameCompletion = isTableNameCompletionContext(completionContext);
   const shouldFetchColumnsForCompletion = !tableNameCompletion && (!onDemandOnlyColumns || completionContext.suggestColumns || completionContext.exclusiveColumnSuggestions || !!completionContext.insertTable);
+  const hasQualifiedColumnPrefix = (props.databaseType === "postgres" || props.databaseType === "mysql") && completionContext.qualifier && completionContext.prefix.length >= 2 && isReferencedTableQualifier(completionContext);
+  const columnRefs = hasQualifiedColumnPrefix
+    ? refs.filter((refTable) => refTable.alias?.toLowerCase() === completionContext.qualifier!.toLowerCase() || refTable.name.toLowerCase() === completionContext.qualifier!.toLowerCase() || (!!qualifiedColumnTarget && completionTablesMatch(refTable, qualifiedColumnTarget)))
+    : refs.slice(0, 4);
   if (shouldFetchColumnsForCompletion) {
     await Promise.all(
-      refs.map(async (refTable) => {
+      columnRefs.map(async (refTable) => {
         if (isVirtualCompletionTableReference(refTable)) return;
         if (refTable.columns && refTable.columns.length > 0) return;
         const cacheKey = completionCacheKey(refTable, scope);
-        if (cachedColumnsByTable.has(cacheKey)) return;
+        const prefixCompletion = hasQualifiedColumnPrefix ? completionContext.prefix : undefined;
+        const prefixCacheKey = prefixCompletion ? completionPrefixCacheKey(refTable, scope, prefixCompletion) : undefined;
+        if (prefixCompletion ? lookupCachedPrefixColumns(refTable, scope, prefixCompletion) : cachedColumnsByTable.has(cacheKey)) return;
         try {
           const target = completionMetadataTarget(refTable, scope);
           if (!target) return;
-          const columns = await listCompletionColumnsForEditor(props.connectionId!, target.database, refTable.name, target.schema, target.catalog, refTable);
+          const columns = await listCompletionColumnsForEditor(props.connectionId!, target.database, refTable.name, target.schema, target.catalog, refTable, prefixCompletion);
           if (epoch !== completionEpoch) return;
           if (columns.length === 0) return;
-          cachedColumnsByTable.set(cacheKey, columns);
+          if (prefixCacheKey) cachedPrefixColumnsByTable.set(prefixCacheKey, columns);
+          else cachedColumnsByTable.set(cacheKey, columns);
         } catch (e) {
           console.error(`[DBX] Failed to load columns for ${cacheKey}:`, e);
         }
@@ -4300,9 +4383,8 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
   }
   if (epoch !== completionEpoch) return null;
 
-  if (!tableNameCompletion && (completionContext.suggestTables || completionContext.suggestJoinConditions) && refs.length > 0) {
-    const fkPrefetchTables = completionContext.suggestTables ? [...refs, ...tables.slice(0, MAX_JOIN_FK_PREFETCH_TABLES)] : refs;
-    await ensureForeignKeysForTables(fkPrefetchTables.filter((table) => !("columns" in table) || !table.columns || table.columns.length === 0));
+  if (!tableNameCompletion && completionContext.suggestJoinConditions && refs.length > 0) {
+    await ensureForeignKeysForTables(refs.filter((table) => !("columns" in table) || !table.columns || table.columns.length === 0));
     if (epoch !== completionEpoch) return null;
   }
 
@@ -4315,6 +4397,7 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
     }
   } else {
     for (const refTable of refs) {
+      if (hasQualifiedColumnPrefix && !columnRefs.includes(refTable)) continue;
       if (refTable.columns && refTable.columns.length > 0) {
         const key = refTable.name;
         columnsByTable.set(
@@ -4328,7 +4411,15 @@ async function performAsyncCompletionWithResult(epoch: number, completionContext
         continue;
       }
       const cacheKey = completionCacheKey(refTable, scope);
-      const cached = cachedColumnsByTable.get(cacheKey);
+      const prefixCompletion =
+        (props.databaseType === "postgres" || props.databaseType === "mysql") &&
+        completionContext.qualifier &&
+        completionContext.prefix.length >= 2 &&
+        isReferencedTableQualifier(completionContext) &&
+        (refTable.alias?.toLowerCase() === completionContext.qualifier.toLowerCase() || refTable.name.toLowerCase() === completionContext.qualifier.toLowerCase())
+          ? completionContext.prefix
+          : undefined;
+      const cached = (prefixCompletion ? lookupCachedPrefixColumns(refTable, scope, prefixCompletion) : undefined) ?? cachedColumnsByTable.get(cacheKey);
       if (cached) {
         columnsByTable.set(cacheKey, cached);
       }
@@ -4446,6 +4537,7 @@ function refreshCompletionCache() {
   cachedTables = [];
   cachedCompletionObjectsByScope.clear();
   cachedColumnsByTable.clear();
+  cachedPrefixColumnsByTable.clear();
   cachedInsertValueHintColumnsByTable.clear();
   loadedColumnsByTable.clear();
   cachedForeignKeysByTable.clear();
