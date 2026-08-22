@@ -4195,6 +4195,8 @@ export default withEnglishFallback({
     saved: "Znode guardado",
     deleted: "Znode eliminado",
     base64Readonly: "Los valores Base64 son de solo lectura en esta versión.",
+    utf8PreviewLossy: "Los bytes UTF-8 no válidos se muestran como caracteres de sustitución (�). El valor Base64 original no cambia.",
+    utf8PreviewUnavailable: "El valor Base64 no es válido, por lo que se muestra el valor original.",
     createMode: "Modo de creación",
     createModePersistent: "Persistente",
     createModeEphemeral: "Efímero",

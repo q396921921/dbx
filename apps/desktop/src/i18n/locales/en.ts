@@ -4372,6 +4372,8 @@ export default {
     saved: "Znode saved",
     deleted: "Znode deleted",
     base64Readonly: "Base64 values are read-only in this version.",
+    utf8PreviewLossy: "Invalid UTF-8 bytes are shown as replacement characters (�). The original Base64 value is unchanged.",
+    utf8PreviewUnavailable: "The Base64 value is invalid, so the original value is shown.",
     createMode: "Create Mode",
     createModePersistent: "Persistent",
     createModeEphemeral: "Ephemeral",

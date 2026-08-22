@@ -6938,6 +6938,8 @@ export default withEnglishFallback({
     saved: "Znode 已儲存",
     deleted: "Znode 已刪除",
     base64Readonly: "Base64 值在此版本中為唯讀。",
+    utf8PreviewLossy: "UTF-8 預覽中的無效位元組已顯示為取代字元（�），原始 Base64 值未變更。",
+    utf8PreviewUnavailable: "Base64 值無效，無法產生 UTF-8 預覽，目前顯示原始值。",
     createMode: "建立模式",
     createModePersistent: "持久",
     createModeEphemeral: "臨時",

@@ -3847,6 +3847,8 @@ export default withEnglishFallback({
     saved: "Znode를 저장했습니다",
     deleted: "Znode를 삭제했습니다",
     base64Readonly: "Base64 값은 이 버전에서 읽기 전용입니다.",
+    utf8PreviewLossy: "잘못된 UTF-8 바이트는 대체 문자(�)로 표시됩니다. 원본 Base64 값은 변경되지 않습니다.",
+    utf8PreviewUnavailable: "Base64 값이 잘못되어 UTF-8 미리 보기를 생성할 수 없습니다. 원본 값을 표시합니다.",
     createMode: "생성 모드",
     createModePersistent: "영구",
     createModeEphemeral: "임시",

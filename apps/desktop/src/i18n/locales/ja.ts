@@ -3119,6 +3119,8 @@ export default withEnglishFallback({
     saved: "Znodeを保存しました",
     deleted: "Znodeを削除しました",
     base64Readonly: "Base64値はこのバージョンでは読み取り専用です。",
+    utf8PreviewLossy: "無効な UTF-8 バイトは置換文字（�）で表示されます。元の Base64 値は変更されません。",
+    utf8PreviewUnavailable: "Base64 値が無効なため UTF-8 プレビューを生成できません。元の値を表示しています。",
     createMode: "作成モード",
     createModePersistent: "永続",
     createModeEphemeral: "エフェメラル",

@@ -4359,6 +4359,8 @@ export default withEnglishFallback({
     saved: "Znode 已保存",
     deleted: "Znode 已删除",
     base64Readonly: "Base64 值当前版本只读。",
+    utf8PreviewLossy: "UTF-8 预览中的无效字节已显示为替换字符（�），原始 Base64 值未改变。",
+    utf8PreviewUnavailable: "Base64 值无效，无法生成 UTF-8 预览，当前显示原始值。",
     createMode: "创建模式",
     createModePersistent: "持久节点",
     createModeEphemeral: "临时节点",
