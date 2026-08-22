@@ -369,6 +369,7 @@ const { openAllDatabasesExport, openDataCompare, openDatabaseExport, openDatabas
 
 const emit = defineEmits<{
   "rename-started": [];
+  "request-connection-rename": [connectionId: string];
   "request-group-rename": [groupId: string];
   "request-saved-sql-rename": [nodeId: string];
   "node-toggled": [node: TreeNode, expanded: boolean];
@@ -1209,7 +1210,7 @@ function requestRenameSelectedNode(): boolean {
   if (selected.length > 1 && selected.some((node) => node.id === activeNode.value.id)) return false;
   const editTarget = selectedConnectionEditTarget(activeNode.value, selected);
   if (editTarget) {
-    connectionStore.startEditing(editTarget.connectionId);
+    emit("request-connection-rename", editTarget.connectionId);
     return true;
   }
   if (canRenameMongoCollection.value) {

@@ -2996,6 +2996,20 @@ export const useConnectionStore = defineStore("connection", () => {
     }
   }
 
+  async function renameConnection(connectionId: string, name: string): Promise<boolean> {
+    const trimmed = name.trim();
+    if (!trimmed) return false;
+    const index = connections.value.findIndex((connection) => connection.id === connectionId);
+    if (index < 0 || connections.value[index].name === trimmed) return false;
+
+    const nextConnections = [...connections.value];
+    nextConnections[index] = { ...nextConnections[index], name: trimmed };
+    await persistConnections(nextConnections);
+    connections.value = nextConnections;
+    rebuildTreeNodes();
+    return true;
+  }
+
   async function updateConnectionDatabaseInfo(connectionId: string, databaseInfo: DatabaseConnectionInfo, expectedConfigFingerprint?: string): Promise<void> {
     const normalized = normalizeDatabaseConnectionInfo(databaseInfo);
     if (!normalized) return;
@@ -8400,6 +8414,7 @@ export const useConnectionStore = defineStore("connection", () => {
     pasteConnectionClipboard,
     addEphemeralConnection,
     updateConnection,
+    renameConnection,
     applyGlobalTimeouts,
     updateConnectionDatabaseInfo,
     setDefaultDatabase,

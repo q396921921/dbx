@@ -1295,6 +1295,14 @@ async function startRenamingSavedSqlNode(nodeId: string) {
   store.selectedTreeNodeId = nodeId;
 }
 
+async function startRenamingConnectionNode(connectionId: string) {
+  pendingRenameNodeId.value = connectionId;
+  store.selectedTreeNodeId = connectionId;
+  store.selectedTreeNodeIds = [connectionId];
+  await scrollToSidebarNode(connectionId);
+  store.selectedTreeNodeId = connectionId;
+}
+
 async function locateActiveTabInSidebar() {
   const tab = activeTab.value;
   if (!tab) return;
@@ -2176,6 +2184,7 @@ defineExpose({ focusSearch, createNewGroup, collapseAllTreeNodes });
       @open-visible-nacos-namespaces="openSidebarVisibleNacosNamespaces"
       @open-table-name-filters="openSidebarTableNameFilters"
       @add-to-ai="(node) => emit('add-to-ai', node)"
+      @request-connection-rename="startRenamingConnectionNode"
       @request-group-rename="startRenamingCreatedGroup"
       @request-saved-sql-rename="startRenamingSavedSqlNode"
       @open-danger-dialog="openSidebarDangerDialog"
