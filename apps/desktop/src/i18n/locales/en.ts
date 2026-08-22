@@ -6556,6 +6556,7 @@ export default {
     mcpCodexConfigPath: "Codex can use ~/.codex/config.toml or a project-level .codex/config.toml.",
     mcpDeepSeekHarnessConfigPath: "For dsh web, merge this insert entry into $DSH_HOME/profiles/web/cordis.patch.yml; replace web for another profile. Do not overwrite existing patch entries. Verify with dsh web --dump-config or let HMR reload the change.",
     mcpCursorConfigPath: "Cursor can use .cursor/mcp.json in the project or ~/.cursor/mcp.json globally.",
+    mcpCodeBuddyConfigPath: "CodeBuddy Code can use ~/.codebuddy/.mcp.json globally or .mcp.json in the project.",
     mcpTraeConfigPath: "TRAE: Settings > MCP > Add > Add Manually, then paste the JSON configuration.",
     mcpCherryStudioConfigPath: "Cherry Studio: Settings > MCP Servers > Add Server > Import JSON, then paste the configuration.",
     mcpVsCodeConfigPath: "VS Code/Copilot can use .vscode/mcp.json in the workspace or mcp.json in the user profile.",

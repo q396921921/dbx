@@ -6544,6 +6544,7 @@ export default withEnglishFallback({
     mcpCodexConfigPath: "Codex 可放在 ~/.codex/config.toml 或项目级 .codex/config.toml。",
     mcpDeepSeekHarnessConfigPath: "dsh web：将此 insert 条目合并到 $DSH_HOME/profiles/web/cordis.patch.yml；其他 profile 请替换 web。不要覆盖已有 patch 条目。可用 dsh web --dump-config 验证，或等待 HMR 热加载。",
     mcpCursorConfigPath: "Cursor 可放在项目级 .cursor/mcp.json 或全局 ~/.cursor/mcp.json。",
+    mcpCodeBuddyConfigPath: "CodeBuddy Code 可使用全局 ~/.codebuddy/.mcp.json 或项目级 .mcp.json。",
     mcpTraeConfigPath: "TRAE：设置 > MCP > 添加 > 手动添加，然后粘贴 JSON 配置。",
     mcpCherryStudioConfigPath: "Cherry Studio：设置 > MCP 服务器 > 添加服务器 > 导入 JSON，然后粘贴配置。",
     mcpVsCodeConfigPath: "VS Code/Copilot 可放在工作区 .vscode/mcp.json 或用户配置文件 mcp.json。",
