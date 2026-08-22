@@ -1726,6 +1726,16 @@ export async function listIndexes(connectionId: string, database: string, schema
   });
 }
 
+export async function listReferenceKeyColumns(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<string[]> {
+  return invoke("list_reference_key_columns", {
+    connectionId,
+    database,
+    schema,
+    table,
+    catalog,
+  });
+}
+
 export async function listForeignKeys(connectionId: string, database: string, schema: string, table: string, catalog?: string): Promise<ForeignKeyInfo[]> {
   return invoke("list_foreign_keys", {
     connectionId,
