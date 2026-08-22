@@ -2316,9 +2316,9 @@ function completionTablesMatch(left: { name: string; catalog?: string | null; da
   return left.schema.toLowerCase() === right.schema.toLowerCase();
 }
 
-async function findExactSemanticDiagnosticTable(table: SqlTableReference): Promise<SqlCompletionTable | null> {
+async function findExactSemanticDiagnosticTable(table: SqlTableReference, scope?: CompletionMetadataScope): Promise<SqlCompletionTable | null> {
   if (!props.connectionId || props.database == null) return null;
-  const target = completionMetadataTarget(table);
+  const target = completionMetadataTarget(table, scope);
   if (!target) return null;
   const localMatches = connectionStore.lookupLocalCompletionTables(props.connectionId, target.database, table.name, MAX_COMPLETION_TABLES, target.schema, target.catalog);
   const localExact = localMatches.find((item) => completionTablesMatch(item, table));
@@ -2327,17 +2327,17 @@ async function findExactSemanticDiagnosticTable(table: SqlTableReference): Promi
     return localExact;
   }
 
-  const remoteMatches = await connectionStore.listCompletionTables(props.connectionId, target.database, table.name, MAX_COMPLETION_TABLES, target.schema, false, props.schema, target.catalog);
+  const remoteMatches = await connectionStore.listCompletionTables(props.connectionId, target.database, table.name, MAX_COMPLETION_TABLES, target.schema, false, scope?.schema ?? props.schema, target.catalog);
   cachedTables = mergeCompletionTables(cachedTables, remoteMatches);
   return remoteMatches.find((item) => completionTablesMatch(item, table)) ?? null;
 }
 
-async function ensureColumnsForTable(table: { name: string; database?: string | null; schema?: string | null }, reference?: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted">): Promise<boolean> {
+async function ensureColumnsForTable(table: { name: string; database?: string | null; schema?: string | null }, reference?: Pick<SqlCompletionReferencedTable, "nameQuoted" | "schemaQuoted">, scope?: CompletionMetadataScope): Promise<boolean> {
   if (isVirtualCompletionTableReference(table)) return false;
-  const cacheKey = completionCacheKey(table);
+  const cacheKey = completionCacheKey(table, scope);
   if (cachedColumnsByTable.has(cacheKey)) return true;
   if (!props.connectionId || props.database == null) return false;
-  const target = completionMetadataTarget(table);
+  const target = completionMetadataTarget(table, scope);
   if (!target) return false;
   const localColumns = connectionStore.lookupLocalCompletionColumns(props.connectionId, target.database, table.name, target.schema, target.catalog, completionColumnRequestContext(reference));
   if (localColumns.length > 0) {
@@ -2380,7 +2380,7 @@ async function ensureColumnsForTable(table: { name: string; database?: string | 
     }
 
     for (const schema of schemaCandidates) {
-      const schemaTarget = completionMetadataTarget({ ...table, schema });
+      const schemaTarget = completionMetadataTarget({ ...table, schema }, scope);
       if (!schemaTarget) continue;
       const retryColumns = await listCompletionColumnsForEditor(props.connectionId, schemaTarget.database, table.name, schemaTarget.schema, schemaTarget.catalog, reference);
       if (retryColumns.length > 0) {
@@ -2869,7 +2869,23 @@ function compareSqlSemanticDiagnostics(left: SqlSemanticDiagnostic, right: SqlSe
   return left.span.start_line - right.span.start_line || left.span.start_column - right.span.start_column || left.span.end_line - right.span.end_line || left.span.end_column - right.span.end_column || left.message.localeCompare(right.message);
 }
 
-async function enrichSemanticDiagnosticTables(tables: SqlTableReference[]): Promise<{ tables: SqlTableReference[]; missingTables: Set<string> }> {
+function semanticDiagnosticMetadataScope(sql: string, range: SqlTextRange): CompletionMetadataScope {
+  const selectedDatabase = props.database!;
+  const parsedDatabase = props.databaseType === "sqlserver" ? sqlServerUseDatabaseBeforeCursor(sql, range.from) : undefined;
+  if (!parsedDatabase || !props.connectionId) return { database: selectedDatabase, schema: props.schema };
+  const database = connectionStore.lookupLocalCompletionDatabases(props.connectionId, parsedDatabase, MAX_COMPLETION_TABLES).find((candidate) => candidate.toLowerCase() === parsedDatabase.toLowerCase()) ?? parsedDatabase;
+  return {
+    database,
+    schema: metadataSchemaForConnection(connectionStore.getConfig(props.connectionId), database, undefined),
+  };
+}
+
+function semanticDiagnosticTablesForScope(tables: SqlTableReference[], scope: CompletionMetadataScope): SqlTableReference[] {
+  if (props.databaseType !== "sqlserver" || scope.database === props.database) return tables;
+  return tables.map((table) => (table.database ? table : { ...table, database: scope.database, schema: table.schema ?? scope.schema }));
+}
+
+async function enrichSemanticDiagnosticTables(tables: SqlTableReference[], scope?: CompletionMetadataScope): Promise<{ tables: SqlTableReference[]; missingTables: Set<string> }> {
   if (!props.connectionId || props.database == null) return { tables, missingTables: new Set() };
 
   const enriched: SqlTableReference[] = [];
@@ -2884,7 +2900,7 @@ async function enrichSemanticDiagnosticTables(tables: SqlTableReference[]): Prom
       continue;
     }
     try {
-      const match = await findExactSemanticDiagnosticTable(table);
+      const match = await findExactSemanticDiagnosticTable(table, scope);
       if (!match) missingTables.add(tableReferenceKey(table));
       enriched.push(match?.schema ? { ...table, schema: match.schema } : table);
     } catch {
@@ -2894,7 +2910,7 @@ async function enrichSemanticDiagnosticTables(tables: SqlTableReference[]): Prom
   return { tables: enriched, missingTables };
 }
 
-async function ensureColumnsForSemanticDiagnostics(tables: SqlTableReference[]): Promise<Set<string>> {
+async function ensureColumnsForSemanticDiagnostics(tables: SqlTableReference[], scope?: CompletionMetadataScope): Promise<Set<string>> {
   const missingTables = new Set<string>();
   const seen = new Set<string>();
   const targets: SqlTableReference[] = [];
@@ -2904,7 +2920,7 @@ async function ensureColumnsForSemanticDiagnostics(tables: SqlTableReference[]):
       columns?: string[];
     };
     if (tableWithInlineColumns.columns && tableWithInlineColumns.columns.length > 0) continue;
-    const cacheKey = completionCacheKey(table);
+    const cacheKey = completionCacheKey(table, scope);
     if (cachedColumnsByTable.has(cacheKey)) continue;
     const normalizedKey = cacheKey.toLowerCase();
     if (seen.has(normalizedKey)) continue;
@@ -2915,7 +2931,7 @@ async function ensureColumnsForSemanticDiagnostics(tables: SqlTableReference[]):
   await Promise.all(
     targets.map(async (table) => {
       try {
-        await ensureColumnsForTable(table);
+        await ensureColumnsForTable(table, undefined, scope);
       } catch (error) {
         if (isMissingTableMetadataError(error)) {
           missingTables.add(tableReferenceKey(table));
@@ -3004,13 +3020,18 @@ async function refreshSemanticDiagnostics(options: { preserveOutsideRanges?: boo
           })
         : null;
       const semanticAnalysis = semanticModel ? mergeSqlSemanticReferenceAnalysis(analysis, semanticModel) : analysis;
-      const { tables, missingTables } = await enrichSemanticDiagnosticTables(semanticAnalysis.tables);
-      const columnMetadataMissingTables = await ensureColumnsForSemanticDiagnostics(tables);
+      const metadataScope = semanticDiagnosticMetadataScope(sql, range);
+      const scopedAnalysis = {
+        ...semanticAnalysis,
+        tables: semanticDiagnosticTablesForScope(semanticAnalysis.tables, metadataScope),
+      };
+      const { tables, missingTables } = await enrichSemanticDiagnosticTables(scopedAnalysis.tables, metadataScope);
+      const columnMetadataMissingTables = await ensureColumnsForSemanticDiagnostics(tables, metadataScope);
       for (const tableKey of columnMetadataMissingTables) missingTables.add(tableKey);
       if (runId !== semanticDiagnosticRunId) return;
 
       const enrichedAnalysis: SqlReferenceAnalysis = {
-        ...semanticAnalysis,
+        ...scopedAnalysis,
         tables,
       };
       nextDiagnostics.push(

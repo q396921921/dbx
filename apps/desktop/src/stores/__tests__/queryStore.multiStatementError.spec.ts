@@ -592,7 +592,13 @@ describe("queryStore multi-statement errors", () => {
       database: "FooDB",
       query_timeout_secs: 30,
     });
-    mocks.executeMulti.mockResolvedValueOnce([{ columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 }]).mockResolvedValueOnce([{ columns: ["Error"], rows: [["Database does not exist"]], affected_rows: 0, execution_time_ms: 1, execution_error: true }]);
+    mocks.executeMulti
+      .mockResolvedValueOnce([{ columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 }])
+      .mockResolvedValueOnce([{ columns: ["Error"], rows: [["Database does not exist"]], affected_rows: 0, execution_time_ms: 1, execution_error: true }])
+      .mockResolvedValueOnce([
+        { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 },
+        { columns: ["Error"], rows: [["Table does not exist"]], affected_rows: 0, execution_time_ms: 1, execution_error: true },
+      ]);
     const { useQueryStore } = await import("@/stores/queryStore");
     const store = useQueryStore();
     const tabA = store.createTab("sqlserver-1", "FooDB", "Tab A", "query", "dbo");
@@ -607,6 +613,69 @@ describe("queryStore multi-statement errors", () => {
     await store.executeTabSql(tabA, "USE [MissingDB];");
 
     expect(store.tabs.find((tab) => tab.id === tabA)?.database).toBe("BarDB");
+
+    await store.executeTabSql(tabA, "USE [ReportingDB];\nGO\nSELECT * FROM missing_table;");
+
+    expect(store.tabs.find((tab) => tab.id === tabA)?.database).toBe("ReportingDB");
+  });
+
+  it("propagates SQL Server USE context through labels and paginates the final query", async () => {
+    const firstPageRows = Array.from({ length: 100 }, (_, index) => [index + 1]);
+    mocks.getConnectionConfig.mockReturnValue({
+      id: "sqlserver-1",
+      name: "SQL Server",
+      db_type: "sqlserver",
+      database: "FooDB",
+      query_timeout_secs: 30,
+    });
+    mocks.prepareQueryPaginationExecutionPlan.mockImplementation(async (options) => {
+      const offset = options.pagination.offset;
+      const pageSql = `SELECT * FROM Users ORDER BY (SELECT NULL) OFFSET ${offset} ROWS FETCH NEXT 100 ROWS ONLY;`;
+      return {
+        sqlToExecute: pageSql,
+        pageSql,
+        pageLimit: 100,
+        pageOffset: offset,
+        countSql: "SELECT COUNT(*) AS dbx_total_rows FROM Users;",
+        useAgentResultSession: false,
+      };
+    });
+    mocks.executeMulti
+      .mockResolvedValueOnce([
+        { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 },
+        { columns: [], rows: [], affected_rows: 0, execution_time_ms: 1 },
+        { columns: ["id"], rows: firstPageRows, affected_rows: 113, execution_time_ms: 1 },
+      ])
+      .mockResolvedValueOnce([{ columns: ["id"], rows: [[101]], affected_rows: 113, execution_time_ms: 1 }]);
+    const { useQueryStore } = await import("@/stores/queryStore");
+    const store = useQueryStore();
+    const tabId = store.createTab("sqlserver-1", "FooDB", "Users", "query", "dbo");
+    const script = "USE FooDB;\nGO\nUSE [BarDB];\nGO\nSELECT * FROM Users;\nGO\n";
+
+    await store.executeTabSql(tabId, script);
+
+    const firstPage = store.tabs.find((tab) => tab.id === tabId)!;
+    expect(mocks.prepareQueryPaginationExecutionPlan).toHaveBeenNthCalledWith(1, expect.objectContaining({ sql: "SELECT * FROM Users", queryBaseSql: "SELECT * FROM Users", pagination: expect.objectContaining({ limit: 100, offset: 0 }) }));
+    expect(mocks.executeMulti.mock.calls[0]?.[2]).toBe("USE FooDB;\nGO\nUSE [BarDB];\nGO\nSELECT * FROM Users ORDER BY (SELECT NULL) OFFSET 0 ROWS FETCH NEXT 100 ROWS ONLY;\nGO\n");
+    expect(mocks.executeMulti.mock.calls[0]?.[5]).toMatchObject({ maxRows: 100, fetchSize: 100 });
+    expect(firstPage).toMatchObject({ database: "BarDB", schema: undefined, resultPageLimit: 100, resultPageOffset: 0 });
+    expect(firstPage.result).toMatchObject({ sourceStatement: "SELECT * FROM Users", sourceLabel: "BarDB.Users" });
+    expect(firstPage.result?.rows).toHaveLength(100);
+    expect(firstPage.resultCountSql).toBe("USE FooDB;\nGO\nUSE [BarDB];\nGO\nSELECT COUNT(*) AS dbx_total_rows FROM Users;\nGO\n");
+    expect(mocks.closeClientConnectionSession).toHaveBeenCalledWith("sqlserver-1", "FooDB", tabId);
+
+    await store.executeTabSql(tabId, firstPage.result!.sourceStatement!, {
+      resultBaseSql: firstPage.result!.sourceStatement,
+      pagination: { limit: 100, offset: 100 },
+      appendResult: { maxRows: 10_000 },
+      preserveResultDuringExecution: true,
+      replaceActiveResultInGroup: true,
+    });
+
+    expect(mocks.executeMulti.mock.calls[1]?.[1]).toBe("BarDB");
+    expect(mocks.executeMulti.mock.calls[1]?.[2]).toBe("SELECT * FROM Users ORDER BY (SELECT NULL) OFFSET 100 ROWS FETCH NEXT 100 ROWS ONLY;");
+    expect(store.tabs.find((tab) => tab.id === tabId)?.result?.rows).toHaveLength(101);
+    expect(store.tabs.find((tab) => tab.id === tabId)?.result?.rows.at(-1)).toEqual([101]);
   });
 
   it("invalidates Oracle completion metadata when clearing a tab schema resets its session", async () => {
