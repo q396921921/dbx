@@ -195,6 +195,7 @@ import {
   type ResultScopedRowCache,
 } from "@/lib/dataGrid/dataGridLargeValues";
 import { dataGridBottomScrollTop, dataGridScrollPosition, isDataGridAtScrollBottom, isDataGridNearScrollBottom, isDataGridPrefixAppend, shouldCheckInfiniteScrollAfterScroll, type DataGridScrollPosition } from "@/lib/dataGrid/dataGridInfiniteScroll";
+import { resolveDataGridWheelScroll } from "@/lib/dataGrid/dataGridWheel";
 import { CANVAS_DATA_GRID_ROW_HEIGHT, MAX_CANVAS_DATA_GRID_PIXEL_RATIO, canvasDataGridActionOverlayWidth, canvasDataGridActionReservedWidth, dataGridSearchMatchKey, drawCanvasDataGrid, type CanvasDevicePixelSize } from "@/lib/dataGrid/canvasDataGridRenderer";
 import { DATA_GRID_DARK_STRIPED_ROW_BG, DATA_GRID_LIGHT_STRIPED_ROW_BG, dataGridActiveRowBackground } from "@/lib/dataGrid/dataGridPaintTheme";
 import { createRowLowerTextCache } from "@/lib/dataGrid/dataGridRowLowerText";
@@ -6721,14 +6722,9 @@ function onCanvasScroll(event: Event) {
   scheduleCanvasDraw();
 }
 
-function canvasWheelDeltaToPixels(delta: number, deltaMode: number, pageSize: number): number {
-  if (deltaMode === WheelEvent.DOM_DELTA_LINE) return delta * CANVAS_DATA_GRID_ROW_HEIGHT;
-  if (deltaMode === WheelEvent.DOM_DELTA_PAGE) return delta * pageSize;
-  return delta;
-}
-
 function shouldAccelerateCanvasWheel(event: WheelEvent): boolean {
   if (event.ctrlKey || event.metaKey) return false;
+  if (event.deltaX !== 0) return true;
   if (event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL) return true;
   return event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && Math.abs(event.deltaY) >= CANVAS_TRACKPAD_DELTA_THRESHOLD;
 }
@@ -6738,42 +6734,45 @@ function onCanvasWheel(event: WheelEvent) {
   const scroller = canvasScrollerElement();
   if (!scroller) return;
 
-  const verticalDelta = canvasWheelDeltaToPixels(event.deltaY, event.deltaMode, scroller.clientHeight);
-  const horizontalDelta = canvasWheelDeltaToPixels(event.deltaX, event.deltaMode, scroller.clientWidth);
-  const shiftedHorizontalDelta = event.shiftKey && Math.abs(verticalDelta) > Math.abs(horizontalDelta) ? verticalDelta : 0;
-  const nextTop = shiftedHorizontalDelta === 0 ? Math.max(0, Math.min(scroller.scrollHeight - scroller.clientHeight, scroller.scrollTop + verticalDelta * CANVAS_MOUSE_WHEEL_SCROLL_MULTIPLIER)) : scroller.scrollTop;
-  const nextLeft = Math.max(0, Math.min(scroller.scrollWidth - scroller.clientWidth, scroller.scrollLeft + (horizontalDelta + shiftedHorizontalDelta) * CANVAS_MOUSE_WHEEL_SCROLL_MULTIPLIER));
-
-  if (nextTop === scroller.scrollTop && nextLeft === scroller.scrollLeft) return;
+  const wheelScroll = resolveDataGridWheelScroll({
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
+    deltaMode: event.deltaMode,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    lineSize: CANVAS_DATA_GRID_ROW_HEIGHT,
+    metrics: scroller,
+    accelerationFactor: CANVAS_MOUSE_WHEEL_SCROLL_MULTIPLIER,
+  });
+  if (!wheelScroll.moved) return;
   event.preventDefault();
-  scroller.scrollTop = nextTop;
-  scroller.scrollLeft = nextLeft;
+  event.stopPropagation();
+  scroller.scrollTop = wheelScroll.nextScrollTop;
+  scroller.scrollLeft = wheelScroll.nextScrollLeft;
   onCanvasScroll({ target: scroller } as unknown as Event);
 }
 
 function onDomGridWheel(event: WheelEvent) {
-  if (event.ctrlKey || event.metaKey) return;
   const scroller = event.currentTarget instanceof HTMLElement ? event.currentTarget : gridScrollerElement();
   if (!scroller) return;
 
-  const verticalDelta = canvasWheelDeltaToPixels(event.deltaY, event.deltaMode, scroller.clientHeight);
-  const horizontalDelta = canvasWheelDeltaToPixels(event.deltaX, event.deltaMode, scroller.clientWidth);
-  const shiftedHorizontalDelta = event.shiftKey && Math.abs(verticalDelta) > Math.abs(horizontalDelta) ? verticalDelta : 0;
-  const effectiveVerticalDelta = shiftedHorizontalDelta === 0 ? verticalDelta : 0;
-  const effectiveHorizontalDelta = horizontalDelta + shiftedHorizontalDelta;
-  if (effectiveVerticalDelta === 0 && effectiveHorizontalDelta === 0) return;
-
-  const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-  const maxLeft = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-  const nextTop = Math.max(0, Math.min(maxTop, scroller.scrollTop + effectiveVerticalDelta));
-  const nextLeft = Math.max(0, Math.min(maxLeft, scroller.scrollLeft + effectiveHorizontalDelta));
-  // Let an outer scroll container handle wheel input once the grid reaches its boundary.
-  if (nextTop === scroller.scrollTop && nextLeft === scroller.scrollLeft) return;
+  const wheelScroll = resolveDataGridWheelScroll({
+    deltaX: event.deltaX,
+    deltaY: event.deltaY,
+    deltaMode: event.deltaMode,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    lineSize: CANVAS_DATA_GRID_ROW_HEIGHT,
+    metrics: scroller,
+  });
+  if (!wheelScroll.moved) return;
   event.preventDefault();
   event.stopPropagation();
 
-  scroller.scrollTop = nextTop;
-  scroller.scrollLeft = nextLeft;
+  scroller.scrollTop = wheelScroll.nextScrollTop;
+  scroller.scrollLeft = wheelScroll.nextScrollLeft;
   onScrollerScroll({ target: scroller } as unknown as Event);
 }
 
