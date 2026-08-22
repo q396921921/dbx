@@ -44,6 +44,7 @@ export function quoteTableIdentifier(databaseType: DatabaseType | undefined, nam
     databaseType === "kyuubi" ||
     databaseType === "impala" ||
     databaseType === "spark" ||
+    databaseType === "databricks" ||
     databaseType === "databend" ||
     databaseType === "tdengine" ||
     databaseType === "access" ||

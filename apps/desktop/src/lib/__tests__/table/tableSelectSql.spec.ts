@@ -68,6 +68,12 @@ describe("quoteTableIdentifier", () => {
     expect(quoteTableIdentifier("kyuubi", "order`items")).toBe("`order``items`");
   });
 
+  it("backtick-quotes Databricks identifiers", () => {
+    expect(quoteTableIdentifier("databricks", "order`items")).toBe("`order``items`");
+    expect(quoteTableDataIdentifier("databricks", "order`items")).toBe("`order``items`");
+    expect(qualifiedTableName({ databaseType: "databricks", schema: "sales", tableName: "ads_veeva_target_customer_df" })).toBe("`sales`.`ads_veeva_target_customer_df`");
+  });
+
   it("uses BigQuery quoted identifiers and escape sequences", () => {
     expect(quoteTableIdentifier("bigquery", "order")).toBe("`order`");
     expect(quoteTableIdentifier("bigquery", "a`b")).toBe("`a\\`b`");

@@ -709,6 +709,31 @@ mod tests {
     }
 
     #[test]
+    fn databricks_table_select_uses_backtick_identifiers() {
+        assert_eq!(
+            build_table_data_select_sql(TableDataSelectSqlOptions {
+                database_type: Some(DatabaseType::Databricks),
+                schema: Some("sales".to_string()),
+                table_name: "ads_veeva_target_customer_df".to_string(),
+                limit: Some(100),
+                ..Default::default()
+            }),
+            "SELECT * FROM `sales`.`ads_veeva_target_customer_df` LIMIT 100;"
+        );
+        assert_eq!(
+            build_table_data_select_sql(TableDataSelectSqlOptions {
+                database_type: Some(DatabaseType::Databricks),
+                identifier_quote: Some("\"".to_string()),
+                schema: Some("sales`west".to_string()),
+                table_name: "ads`target".to_string(),
+                limit: Some(100),
+                ..Default::default()
+            }),
+            "SELECT * FROM `sales``west`.`ads``target` LIMIT 100;"
+        );
+    }
+
+    #[test]
     fn doris_external_catalog_prefixes_from_clause() {
         let sql =
             build_table_data_select_sql(opts(DatabaseType::Doris, Some("iceberg_catalog"), Some("sales"), "orders"));
