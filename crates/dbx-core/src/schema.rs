@@ -2523,6 +2523,7 @@ fn filter_object_infos(
     limit: Option<usize>,
     offset: Option<usize>,
     object_types: Option<&[String]>,
+    table_name_filter: Option<&TableNameFilter>,
 ) -> Vec<db::ObjectInfo> {
     let filter = filter.unwrap_or("");
     let limit = limit.unwrap_or(usize::MAX);
@@ -2530,6 +2531,7 @@ fn filter_object_infos(
     objects
         .into_iter()
         .filter(|object| metadata_name_or_comment_matches(&object.name, object.comment.as_deref(), filter))
+        .filter(|object| table_name_filter_matches(&object.name, table_name_filter))
         .filter(|object| object_info_matches_object_types(object, object_types))
         .skip(offset)
         .take(limit)
@@ -4225,6 +4227,26 @@ for line in sys.stdin:
     }
 
     #[test]
+    fn filter_object_infos_applies_sql_like_name_filter() {
+        let objects = vec![
+            test_object_info("fn_get_user", "FUNCTION"),
+            test_object_info("fn_get_role", "FUNCTION"),
+            test_object_info("fn_get_role_bak", "FUNCTION"),
+            test_object_info("internal_hash", "FUNCTION"),
+        ];
+        let object_types = vec!["FUNCTION".to_string()];
+        let name_filter =
+            TableNameFilter { include_patterns: vec!["FN_%".to_string()], exclude_patterns: vec!["%_BAK".to_string()] };
+
+        let filtered = filter_object_infos(objects, None, None, None, Some(&object_types), Some(&name_filter));
+
+        assert_eq!(
+            filtered.into_iter().map(|object| object.name).collect::<Vec<_>>(),
+            vec!["fn_get_user", "fn_get_role"]
+        );
+    }
+
+    #[test]
     fn filter_object_infos_filters_object_type_before_offset_and_limit() {
         let objects = vec![
             test_object_info("sync_user", "PROCEDURE"),
@@ -4234,7 +4256,7 @@ for line in sys.stdin:
         ];
         let object_types = vec!["FUNCTION".to_string()];
 
-        let filtered = filter_object_infos(objects, Some("fn"), Some(1), Some(1), Some(&object_types));
+        let filtered = filter_object_infos(objects, Some("fn"), Some(1), Some(1), Some(&object_types), None);
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].name, "fetch_name");
@@ -4250,7 +4272,7 @@ for line in sys.stdin:
         ];
         let object_types = vec!["MATERIALIZED_VIEW".to_string()];
 
-        let filtered = filter_object_infos(objects, Some("orders"), Some(1), Some(1), Some(&object_types));
+        let filtered = filter_object_infos(objects, Some("orders"), Some(1), Some(1), Some(&object_types), None);
 
         assert_eq!(filtered.into_iter().map(|object| object.name).collect::<Vec<_>>(), vec!["monthly_orders_mv"]);
     }
@@ -4264,7 +4286,7 @@ for line in sys.stdin:
         let objects = vec![order_view, sync_user, test_object_info("audit_log", "TABLE")];
 
         let object_types = vec!["VIEW".to_string()];
-        let filtered = filter_object_infos(objects, Some("revenue"), None, None, Some(&object_types));
+        let filtered = filter_object_infos(objects, Some("revenue"), None, None, Some(&object_types), None);
 
         assert_eq!(filtered.into_iter().map(|object| object.name).collect::<Vec<_>>(), vec!["order_view"]);
     }
@@ -5024,13 +5046,16 @@ pub async fn list_objects_core(
     limit: Option<usize>,
     offset: Option<usize>,
     object_types: Option<&[String]>,
+    table_name_filter: Option<&TableNameFilter>,
 ) -> Result<Vec<db::ObjectInfo>, String> {
     let db_config = connection_config(state, connection_id).await;
     let filter_locally_after_oracle_comments = db_config.as_ref().is_some_and(|config| {
         config.db_type == DatabaseType::Oracle && filter.is_some_and(|filter| !filter.trim().is_empty())
     });
-    let use_oracle_agent_paging =
-        db_config.as_ref().is_some_and(is_default_oracle_agent_config) && !filter_locally_after_oracle_comments;
+    let force_local_table_name_filter = table_name_filter.is_some_and(|filter| !filter.is_empty());
+    let use_oracle_agent_paging = db_config.as_ref().is_some_and(is_default_oracle_agent_config)
+        && !filter_locally_after_oracle_comments
+        && !force_local_table_name_filter;
     let metadata_session = EphemeralAgentMetadataSession::open(state, connection_id, Some(database), "objects").await;
     let result = retry_metadata_connection_for_session(
         state,
@@ -5047,6 +5072,7 @@ pub async fn list_objects_core(
                 limit,
                 offset,
                 object_types,
+                table_name_filter,
                 metadata_session.client_session_id(),
             )
             .await
@@ -5058,7 +5084,7 @@ pub async fn list_objects_core(
                 } else {
                     offset
                 };
-                filter_object_infos(outcome.objects, filter, limit, final_offset, object_types)
+                filter_object_infos(outcome.objects, filter, limit, final_offset, object_types, table_name_filter)
             })?;
             Ok(objects)
         },
@@ -5481,13 +5507,20 @@ async fn list_objects_once(
     limit: Option<usize>,
     offset: Option<usize>,
     object_types: Option<&[String]>,
+    table_name_filter: Option<&TableNameFilter>,
     client_session_id: Option<&str>,
 ) -> Result<ObjectListOutcome, String> {
     let pool_key =
         state.get_or_create_metadata_pool_for_session(connection_id, Some(database), client_session_id).await?;
     let db_config = connection_config(state, connection_id).await;
-    let (mysql_limit, mysql_offset) =
-        if filter.is_none_or(|value| value.trim().is_empty()) { (limit, offset) } else { (None, None) };
+    let force_local_table_name_filter = table_name_filter.is_some_and(|filter| !filter.is_empty());
+    let (mysql_limit, mysql_offset) = if filter.is_none_or(|value| value.trim().is_empty())
+        && !table_name_filter.is_some_and(|filter| !filter.is_empty())
+    {
+        (limit, offset)
+    } else {
+        (None, None)
+    };
 
     {
         let connections = state.connections.read().await;
@@ -5544,14 +5577,14 @@ async fn list_objects_once(
             }
             let mut client = client.lock().await;
             let agent_filter = if filter_locally_after_oracle_comments { None } else { filter };
-            let agent_limit = if filter_locally_after_oracle_comments {
+            let agent_limit = if filter_locally_after_oracle_comments || force_local_table_name_filter {
                 None
             } else if use_oracle_agent_paging {
                 limit
             } else {
                 None
             };
-            let agent_offset = if filter_locally_after_oracle_comments {
+            let agent_offset = if filter_locally_after_oracle_comments || force_local_table_name_filter {
                 None
             } else if use_oracle_agent_paging {
                 offset
@@ -5818,7 +5851,7 @@ async fn list_completion_objects_once(
         }
         PoolKind::SqlServer(_) => {
             let outcome =
-                list_objects_once(state, connection_id, database, schema, None, None, None, None, None).await?;
+                list_objects_once(state, connection_id, database, schema, None, None, None, None, None, None).await?;
             Ok(filter_completion_objects(outcome.objects))
         }
         _ => Ok(Vec::new()),

@@ -221,6 +221,7 @@ pub async fn list_objects(
     offset: Option<usize>,
     object_types: Option<Vec<String>>,
     catalog: Option<String>,
+    table_name_filter: Option<dbx_core::schema::TableNameFilter>,
 ) -> Result<Vec<db::ObjectInfo>, String> {
     if let Some(catalog) = external_doris_catalog(&state, &connection_id, catalog.as_deref()).await {
         let tables = dbx_core::schema::list_doris_catalog_tables_core(
@@ -232,7 +233,7 @@ pub async fn list_objects(
             limit,
             offset,
             object_types.as_deref(),
-            None,
+            table_name_filter.as_ref(),
         )
         .await?;
         return Ok(tables
@@ -264,6 +265,7 @@ pub async fn list_objects(
         limit,
         offset,
         object_types.as_deref(),
+        table_name_filter.as_ref(),
     )
     .await
 }

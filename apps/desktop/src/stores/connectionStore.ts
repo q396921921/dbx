@@ -1715,9 +1715,9 @@ export const useConnectionStore = defineStore("connection", () => {
     tableListSourceRevisions.set(connectionId, tableListSourceRevision(connectionId) + 1);
   }
 
-  function tableNameFilterMetadataExtra(filter: TableNameFilter | undefined, sourceRevision: number): MetadataScopeInput["extra"] {
+  function tableNameFilterMetadataExtra(filter: TableNameFilter | undefined, sourceRevision?: number): MetadataScopeInput["extra"] {
     return {
-      tableListSourceRevision: sourceRevision,
+      ...(sourceRevision === undefined ? {} : { tableListSourceRevision: sourceRevision }),
       ...(filter
         ? {
             tableNameFilterInclude: filter.includePatterns,
@@ -2066,6 +2066,14 @@ export const useConnectionStore = defineStore("connection", () => {
       return { children: [], objectCount: 0, hasMore: false, nextOffset: options.offset };
     }
     const searchFilter = options.searchFilter || undefined;
+    const userTableNameFilter = activeTableNameFilterForScope({
+      connectionId: options.node.connectionId,
+      database: options.node.database,
+      schema: options.node.schema,
+      nodeKind: options.node.type,
+      catalog: options.node.catalog,
+    });
+    const tableNameFilter = effectiveTableNameFilterForNode(options.node, userTableNameFilter);
     const fetchLimit = searchFilter ? undefined : options.pageSize + 1;
     const fetchOffset = searchFilter ? undefined : options.offset;
     const objects = await loadCachedMetadataListPage<ObjectInfo[]>(
@@ -2080,8 +2088,12 @@ export const useConnectionStore = defineStore("connection", () => {
         limit: fetchLimit,
         offset: fetchOffset,
         sidebarDisplayMode: useSettingsStore().editorSettings.sidebarObjectDisplay,
+        extra: tableNameFilterMetadataExtra(tableNameFilter),
       }),
-      () => api.listObjects(options.node.connectionId!, options.node.database!, options.querySchema, options.objectTypes, searchFilter, fetchLimit, fetchOffset),
+      () =>
+        tableNameFilter || options.node.catalog
+          ? api.listObjects(options.node.connectionId!, options.node.database!, options.querySchema, options.objectTypes, searchFilter, fetchLimit, fetchOffset, options.node.catalog, tableNameFilter)
+          : api.listObjects(options.node.connectionId!, options.node.database!, options.querySchema, options.objectTypes, searchFilter, fetchLimit, fetchOffset),
       { force: options.force },
     );
     const hasMore = searchFilter ? false : objects.length > options.pageSize;

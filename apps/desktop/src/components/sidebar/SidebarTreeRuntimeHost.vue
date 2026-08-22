@@ -74,6 +74,7 @@ import { resolveDefaultDatabase } from "@/lib/database/defaultDatabase";
 import { connectionUsesVisibleSchemaFilter } from "@/lib/database/visibleDatabases";
 import { canTreeNodePin, canTreeNodeShowExpander } from "@/lib/sidebar/sidebarTreeItemLayout";
 import { sidebarConnectionVisibleFilterMenu } from "@/lib/sidebar/sidebarVisibleFilterMenu";
+import { supportsSidebarObjectNameFilter } from "@/lib/sidebar/sidebarObjectNameFilter";
 import { connectionGroupDestinationRows } from "@/lib/sidebar/sidebarLayout";
 import { objectTypesForGroupNode } from "@/lib/table/tableTree";
 import { loadSidebarObjectGroup } from "@/lib/sidebar/sidebarObjectGroupRouting";
@@ -5658,7 +5659,7 @@ function buildObjectGroupSidebarMenu(context: SidebarMenuFactoryContext): boolea
         disabled: node.isLoading,
       });
     }
-    if (node.type === "group-tables") {
+    if (supportsSidebarObjectNameFilter(node)) {
       items.push({
         label: t("contextMenu.tableNameFilters"),
         action: () => emit("open-table-name-filters", node),

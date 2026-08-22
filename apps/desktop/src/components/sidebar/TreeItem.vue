@@ -69,6 +69,7 @@ import { connectionBearingGroupIdsUnder, connectionIdsUnderGroup } from "@/lib/s
 import { isSidebarDatabaseOpenForVisual } from "@/lib/sidebar/sidebarDatabaseOpenState";
 import { sidebarTreeContextKey } from "@/lib/sidebar/sidebarTreeContext";
 import { connectionCanConfigureSidebarVisibleDatabases } from "@/lib/sidebar/sidebarVisibleFilterMenu";
+import { supportsSidebarObjectNameFilter } from "@/lib/sidebar/sidebarObjectNameFilter";
 import { isWindows } from "@/lib/backend/platform";
 import { flattenTree } from "@/composables/useFlatTree";
 import { productionContextForDatabase } from "@/lib/database/productionSafety";
@@ -407,8 +408,8 @@ function visibleLabel(node: TreeNode): string {
   return withValidity(displayLabel(node));
 }
 
-function hasActiveTableNameFilter(node: TreeNode): boolean {
-  if (node.type !== "group-tables" || !node.connectionId || !node.database) return false;
+function hasActiveObjectNameFilter(node: TreeNode): boolean {
+  if (!supportsSidebarObjectNameFilter(node) || !node.connectionId || !node.database) return false;
   const filter = connectionStore.tableNameFilterForScope({
     connectionId: node.connectionId,
     database: node.database,
@@ -1471,7 +1472,7 @@ function onKeydown(event: KeyboardEvent) {
                 node.objectCount != null
               "
               class="text-muted-foreground text-[10px] shrink-0"
-              >{{ node.objectCount }}<span v-if="hasActiveTableNameFilter(node)"> · {{ t("tree.tableNameFilterActive") }}</span></span
+              >{{ node.objectCount }}<span v-if="hasActiveObjectNameFilter(node)"> · {{ t("tree.tableNameFilterActive") }}</span></span
             >
             <Badge v-if="isNodeDefaultDatabase" variant="secondary" class="h-4 px-1.5 text-[10px]">
               {{ t("editor.defaultDatabase") }}

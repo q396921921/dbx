@@ -1093,7 +1093,7 @@ export async function getTableComment(connectionId: string, database: string, sc
   });
 }
 
-export async function listObjects(connectionId: string, database: string, schema: string, objectTypes?: (SidebarObjectKind | "EVENT")[], filter?: string, limit?: number, offset?: number, catalog?: string): Promise<ObjectInfo[]> {
+export async function listObjects(connectionId: string, database: string, schema: string, objectTypes?: (SidebarObjectKind | "EVENT")[], filter?: string, limit?: number, offset?: number, catalog?: string, tableNameFilter?: import("@/types/database").TableNameFilter): Promise<ObjectInfo[]> {
   return invoke("list_objects", {
     connectionId,
     database,
@@ -1103,6 +1103,7 @@ export async function listObjects(connectionId: string, database: string, schema
     limit,
     offset,
     catalog,
+    tableNameFilter,
   });
 }
 
