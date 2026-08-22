@@ -62,7 +62,17 @@ import {
   type DropPosition,
   type ReorderEntriesOptions,
 } from "@/lib/sidebar/sidebarLayout";
-import { buildConnectionConfigBundle, filterSidebarLayoutByConnectionIds, filterTunnelProfilesByIds, parseConnectionConfigObject, referencedTunnelProfileIds, selectConnectionConfigBundle, snapshotConnectionsForExport, type ConnectionConfigBundle } from "@/lib/connection/connectionConfigTransfer";
+import {
+  buildConnectionConfigBundle,
+  filterSidebarLayoutByConnectionIds,
+  filterTunnelProfilesByIds,
+  parseConnectionConfigObject,
+  referencedTunnelProfileIds,
+  selectConnectionConfigBundle,
+  snapshotConnectionsForExport,
+  type ConnectionConfigBundle,
+  type ConnectionExportProtection,
+} from "@/lib/connection/connectionConfigTransfer";
 import type { SqlCompletionColumn, SqlCompletionForeignKey, SqlCompletionObject, SqlCompletionTable } from "@/lib/sql/sqlCompletion";
 import { mergeSqlObjectNavigationType, sqlObjectNavigationTypeFromTableType } from "@/lib/sql/sqlNavigation";
 import * as api from "@/lib/backend/api";
@@ -7962,8 +7972,9 @@ export const useConnectionStore = defineStore("connection", () => {
     await refreshNodes(treeNodes.value);
   }
 
-  async function exportConnectionsToFile(passphrase: string, selectedConnectionIds?: Iterable<string>) {
-    const { encryptConfig } = await import("@/lib/backend/configCrypto");
+  async function exportConnectionsToFile(protection: ConnectionExportProtection, selectedConnectionIds?: Iterable<string>) {
+    if (protection.mode === "encrypted" && !protection.passphrase) throw new Error("passphrase_required");
+
     const tunnelProfileStore = useTunnelProfileStore();
     await tunnelProfileStore.init();
     // Older DBX versions ignore inheritance flags, so always include the
@@ -7974,8 +7985,14 @@ export const useConnectionStore = defineStore("connection", () => {
     });
     const exportData = buildConnectionConfigBundle(exportedConnections, sidebarLayout.value, tunnelProfileStore.profiles, selectedConnectionIds);
     const json = JSON.stringify(exportData);
-    const payload = await encryptConfig(json, passphrase);
-    const content = JSON.stringify(payload, null, 2);
+    let content: string;
+    if (protection.mode === "encrypted") {
+      const { encryptConfig } = await import("@/lib/backend/configCrypto");
+      const payload = await encryptConfig(json, protection.passphrase);
+      content = JSON.stringify(payload, null, 2);
+    } else {
+      content = JSON.stringify(exportData, null, 2);
+    }
 
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
@@ -7984,7 +8001,7 @@ export const useConnectionStore = defineStore("connection", () => {
         filters: [{ name: "JSON", extensions: ["json"] }],
         defaultPath: "dbx-connections.json",
       });
-      if (!path) return;
+      if (!path) return "cancelled" as const;
       await writeTextFile(path, content);
     } else {
       const blob = new Blob([content], { type: "application/json" });
@@ -7995,6 +8012,7 @@ export const useConnectionStore = defineStore("connection", () => {
       a.click();
       URL.revokeObjectURL(url);
     }
+    return "saved" as const;
   }
 
   function bytesToBase64(bytes: Uint8Array) {
