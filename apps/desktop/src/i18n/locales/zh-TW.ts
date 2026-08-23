@@ -6119,6 +6119,8 @@ export default withEnglishFallback({
     chooseTargetNamespace: "請選擇其他命名空間",
     targetGroup: "目標 Group（選填）",
     targetGroupPlaceholder: "與來源 Group 相同",
+    targetDataIds: "目標 Data ID（選填）",
+    targetDataIdsHint: "可逐項修改已選設定的 Data ID；留空則保留來源 Data ID。",
     copyKeepsSource: "同步採用單向複製，來源命名空間中的設定保持不變。",
     conflictPolicy: "衝突策略",
     policyABORT: "遇到衝突時終止",

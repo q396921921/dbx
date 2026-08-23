@@ -8353,6 +8353,8 @@ export default {
     chooseTargetNamespace: "Choose another namespace",
     targetGroup: "Target group (optional)",
     targetGroupPlaceholder: "Same as source group",
+    targetDataIds: "Target Data IDs (optional)",
+    targetDataIdsHint: "Selected configs can be renamed individually. Leave a field blank to keep its source Data ID.",
     copyKeepsSource: "Sync uses one-way copy semantics. Source namespace configs stay unchanged.",
     conflictPolicy: "Conflict policy",
     policyABORT: "Abort on conflict",

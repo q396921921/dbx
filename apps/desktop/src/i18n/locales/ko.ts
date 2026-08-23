@@ -7549,6 +7549,8 @@ export default withEnglishFallback({
     chooseTargetNamespace: "다른 네임스페이스 선택",
     targetGroup: "대상 그룹(선택 사항)",
     targetGroupPlaceholder: "원본 그룹과 동일",
+    targetDataIds: "대상 Data ID(선택 사항)",
+    targetDataIdsHint: "선택한 구성을 개별적으로 이름 변경할 수 있습니다. 비워 두면 원본 Data ID를 유지합니다.",
     copyKeepsSource: "동기화는 단방향 복사 의미를 사용합니다. 소스 네임스페이스 구성은 변경되지 않습니다.",
     conflictPolicy: "충돌 정책",
     policyABORT: "충돌 시 중단",

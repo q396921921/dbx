@@ -8334,6 +8334,8 @@ export default withEnglishFallback({
     chooseTargetNamespace: "请选择其他命名空间",
     targetGroup: "目标 Group（可选）",
     targetGroupPlaceholder: "与源 Group 相同",
+    targetDataIds: "目标 Data ID（可选）",
+    targetDataIdsHint: "可逐项修改已选配置的 Data ID；留空则保留源 Data ID。",
     copyKeepsSource: "同步采用单向复制语义，源命名空间中的配置保持不变。",
     conflictPolicy: "冲突策略",
     policyABORT: "遇冲突终止",

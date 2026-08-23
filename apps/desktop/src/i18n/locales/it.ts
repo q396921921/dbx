@@ -6810,6 +6810,8 @@ export default withEnglishFallback({
     chooseTargetNamespace: "Scegli un altro namespace",
     targetGroup: "Group di destinazione (facoltativo)",
     targetGroupPlaceholder: "Uguale al group di origine",
+    targetDataIds: "Data ID di destinazione (facoltativi)",
+    targetDataIdsHint: "Le configurazioni selezionate possono essere rinominate singolarmente. Lascia un campo vuoto per mantenere il Data ID di origine.",
     copyKeepsSource: "La sincronizzazione usa una copia unidirezionale. Le configurazioni del namespace di origine restano invariate.",
     conflictPolicy: "Strategia conflitti",
     policyABORT: "Interrompi in caso di conflitto",
