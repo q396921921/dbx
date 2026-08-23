@@ -23,7 +23,7 @@ describe("ObjectBrowser table clipboard context menu", () => {
 
   it("consumes only the clipboard used by a fully successful paste", () => {
     expect(objectBrowserSource).toMatch(
-      /async function confirmPasteTable\(\)[\s\S]*?const clipboardAtPasteStart = connectionStore\.treeClipboard[\s\S]*?const pasteFeedback = tablePasteFeedback\(successCount, pasteFailCount, firstPasteError\)[\s\S]*?if \(pasteFeedback\.failedCount === 0\)[\s\S]*?connectionStore\.treeClipboard === clipboardAtPasteStart[\s\S]*?connectionStore\.treeClipboard = null/,
+      /async function confirmPasteTable\(\)[\s\S]*?const clipboardAtPasteStart = connectionStore\.treeClipboard[\s\S]*?const pasteFeedback = tablePasteFeedback\(successCount, pasteFailCount, firstPasteError\)[\s\S]*?if \(pasteFailCount === 0\)[\s\S]*?connectionStore\.treeClipboard === clipboardAtPasteStart[\s\S]*?connectionStore\.treeClipboard = null/,
     );
   });
 

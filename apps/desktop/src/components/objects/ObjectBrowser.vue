@@ -2357,7 +2357,7 @@ async function confirmPasteTable() {
     return;
   }
   const pasteFeedback = tablePasteFeedback(successCount, pasteFailCount, firstPasteError);
-  if (pasteFeedback.failedCount === 0) {
+  if (pasteFailCount === 0) {
     if (connectionStore.treeClipboard === clipboardAtPasteStart) {
       connectionStore.treeClipboard = null;
     }
