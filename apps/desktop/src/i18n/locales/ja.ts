@@ -5445,6 +5445,7 @@ export default withEnglishFallback({
       index: "インデックス",
       foreignKey: "外部キー",
       trigger: "トリガー",
+      tableOption: "テーブルオプション",
     },
     noObjectsSelected: "デプロイするオブジェクトを選択してください",
     deploySuccess: "デプロイ成功",

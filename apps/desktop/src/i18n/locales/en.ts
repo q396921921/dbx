@@ -5702,6 +5702,7 @@ export default {
       index: "Index",
       foreignKey: "Foreign Key",
       trigger: "Trigger",
+      tableOption: "Table options",
     },
     noObjectsSelected: "Please select objects to deploy",
     deploySuccess: "Deploy Successful",
