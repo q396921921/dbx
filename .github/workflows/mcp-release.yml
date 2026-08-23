@@ -368,7 +368,7 @@ jobs:
           curl.exe --fail --location --retry 5 --retry-all-errors $env:PERL_ARCHIVE_URL --output $archive
           if ($LASTEXITCODE -ne 0) {
             throw "Unable to download the full Perl runtime."
-          fi
+          }
           $actualHash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $env:PERL_ARCHIVE_SHA256) {
             throw "Unexpected Perl archive SHA256: $actualHash"
@@ -586,7 +586,7 @@ jobs:
           curl.exe --fail --location --retry 5 --retry-all-errors $env:PERL_ARCHIVE_URL --output $archive
           if ($LASTEXITCODE -ne 0) {
             throw "Unable to download the full Perl runtime."
-          fi
+          }
           $actualHash = (Get-FileHash -Path $archive -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($actualHash -ne $env:PERL_ARCHIVE_SHA256) {
             throw "Unexpected Perl archive SHA256: $actualHash"
