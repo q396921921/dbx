@@ -117,11 +117,10 @@ jobs:
           const updateLockDependency = (dependency, packageDirectory) => {
             const escapedDependency = dependency.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             const dependencyPattern = new RegExp(`('${escapedDependency}':\\n\\s+specifier: )[^\\n]+(\\n\\s+version: )([^\\n]+)`);
-            const updated = lockfile.replace(dependencyPattern, `$1${version}$2link:../${packageDirectory}`);
-            if (updated === lockfile) {
+            if (!dependencyPattern.test(lockfile)) {
               throw new Error(`Unable to update ${dependency} in pnpm-lock.yaml.`);
             }
-            lockfile = updated;
+            lockfile = lockfile.replace(dependencyPattern, `$1${version}$2link:../${packageDirectory}`);
           };
           for (const dependency of Object.keys(mcpPackage.optionalDependencies ?? {})) {
             updateLockDependency(dependency, dependency.replace("@dbx-app/", ""));
