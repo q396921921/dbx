@@ -545,6 +545,11 @@ function activateSettingsPage() {
   driverStoreActive.value = false;
 }
 
+function activateQuerySurface() {
+  driverStoreActive.value = false;
+  settingsStore.settingsPageActive = false;
+}
+
 function closeSettingsPage() {
   settingsPageTabOpen.value = false;
   settingsStore.settingsPageActive = false;
@@ -750,8 +755,7 @@ watch(
       pendingTabHistoryNavigationId = null;
     }
     if (id) newQueryContextSource.value = "tab";
-    if (id && driverStoreActive.value) driverStoreActive.value = false;
-    if (id && settingsStore.settingsPageActive) settingsStore.settingsPageActive = false;
+    if (id) activateQuerySurface();
     selectedSql.value = "";
     activeOutputView.value = "result";
     if (id) queryStore.reloadEvictedTab(id);
@@ -2318,8 +2322,7 @@ function activateQueryTab(tabId: string): boolean {
   if (!queryStore.tabs.some((tab) => tab.id === tabId)) return false;
   dispatchBeforeTabSwitch(tabId);
   queryStore.activeTabId = tabId;
-  driverStoreActive.value = false;
-  settingsStore.settingsPageActive = false;
+  activateQuerySurface();
   return true;
 }
 
@@ -2706,6 +2709,7 @@ onMounted(async () => {
   window.addEventListener("blur", handleTabSwitcherWindowBlur);
   document.addEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
   window.addEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
+  window.addEventListener("dbx:activate-query-surface", activateQuerySurface);
   window.addEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
   if (isDesktop) {
     document.addEventListener("contextmenu", handleContextMenu);
@@ -2779,6 +2783,7 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
   tabSwitcherKeyboard.reset();
   window.removeEventListener("dbx-open-driver-store", openDriverStoreFromEvent);
+  window.removeEventListener("dbx:activate-query-surface", activateQuerySurface);
   window.removeEventListener("dbx-mcp-status-changed", handleMcpStatusChanged);
   document.removeEventListener("contextmenu", handleContextMenu);
   window.clearTimeout(sqlLibraryFlyAnimationTimer);
@@ -2854,10 +2859,7 @@ onUnmounted(() => {
                 @activate-driver-store="openDriverStorePage"
                 @activate-settings-page="activateSettingsPage"
                 @locate-tab="locateTabInSidebar"
-                @activate-tab="
-                  driverStoreActive = false;
-                  settingsStore.settingsPageActive = false;
-                "
+                @activate-tab="activateQuerySurface"
                 @close-driver-store="closeDriverStorePage"
                 @close-settings-page="closeSettingsPage"
                 @save-tab="handleSaveTab"

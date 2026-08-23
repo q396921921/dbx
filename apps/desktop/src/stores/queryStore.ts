@@ -84,6 +84,8 @@ import type { SqlExecutionTargetContext } from "@/lib/database/sqlExecutionTarge
 import type { DriverProfileWorkspaceScope } from "@/lib/database/driverProfileExtensions";
 import type { MultiDbExecutionTarget, MultiDbResultRunExecution } from "@/types/sqlExecution";
 
+const QUERY_SURFACE_ACTIVATION_EVENT = "dbx:activate-query-surface";
+
 const ORACLE_LIKE_METADATA_TYPES = new Set<string>(["oracle", "dameng", "oceanbase-oracle"]);
 const ORACLE_DEFERRED_LOB_TYPES = new Set<string>(["CLOB", "NCLOB", "BLOB", "BFILE", "XMLTYPE", "SYS.XMLTYPE"]);
 
@@ -1960,6 +1962,7 @@ export const useQueryStore = defineStore("query", () => {
   function switchTab(tabId: string) {
     activeTabId.value = tabId;
     settingsStore.settingsPageActive = false;
+    if (typeof window !== "undefined") window.dispatchEvent(new Event(QUERY_SURFACE_ACTIVATION_EVENT));
   }
 
   function openUserAdmin(connectionId: string) {
