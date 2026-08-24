@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 
+import { readFileSync } from "node:fs";
 import { nextTick } from "vue";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatch, findAll, findOne, hostText, mountComponent } from "./vueHostHarness";
@@ -98,6 +99,8 @@ import DataGridPagination from "@/components/grid/DataGridPagination.vue";
 import DataGridQueryControls from "@/components/grid/DataGridQueryControls.vue";
 import DataGridSearchBar from "@/components/grid/DataGridSearchBar.vue";
 
+const dataGridSource = readFileSync("apps/desktop/src/components/grid/DataGrid.vue", "utf8");
+
 function detail(patch: Partial<DataGridCellDetail> = {}): DataGridCellDetail {
   return {
     rowNumber: 1,
@@ -184,6 +187,42 @@ describe("DataGridSearchBar", () => {
 });
 
 describe("DataGridPagination", () => {
+  it("keeps drag summaries count-only and wires the derived average without materializing selected cells", () => {
+    const summaryStart = dataGridSource.indexOf("const selectionSummary = computed");
+    const pendingSummary = dataGridSource.indexOf("createPendingSelectionSummary(selectedCellCount.value, multiRowCount.value)", summaryStart);
+    const materializedSummary = dataGridSource.indexOf("summarizeSelection(selectedCells.value)", summaryStart);
+
+    expect(summaryStart).toBeGreaterThan(-1);
+    expect(pendingSummary).toBeGreaterThan(summaryStart);
+    expect(materializedSummary).toBeGreaterThan(pendingSummary);
+    expect(dataGridSource).toContain('const selectionSummaryAverageText = computed(() => {\n  if (isSelectingCells.value) return "…";');
+    expect(dataGridSource).toContain(':selection-summary-average-text="selectionSummaryAverageText"');
+  });
+
+  it("shows average beside the existing selection summary values", () => {
+    const mounted = mountComponent(DataGridPagination, {
+      selectionSummary: { cellCount: 4, rowCount: 2 },
+      selectionSummarySumText: "10",
+      selectionSummaryAverageText: "2.5",
+      loading: false,
+      infiniteScrollEnabled: false,
+      infiniteScrollAllLoaded: false,
+      pageSize: 100,
+      customPageSizeInput: "",
+      pageSizeMenuItems: [],
+      exportMenuItems: [],
+      currentPage: 1,
+      canGoNextPage: false,
+      canJumpLastPage: false,
+    });
+
+    const summaryText = hostText(mounted.root);
+    expect(summaryText).toContain("grid.selectionSum");
+    expect(summaryText).toContain("grid.selectionAverage");
+    expect(summaryText).toContain("grid.selectionCells");
+    expect(summaryText).toContain("grid.rows");
+  });
+
   it("enforces first/previous/next/last disabled boundaries", async () => {
     const firstPage = vi.fn();
     const previousPage = vi.fn();
@@ -192,6 +231,7 @@ describe("DataGridPagination", () => {
     const mounted = mountComponent(DataGridPagination, {
       selectionSummary: null,
       selectionSummarySumText: "",
+      selectionSummaryAverageText: "",
       loading: false,
       infiniteScrollEnabled: false,
       infiniteScrollAllLoaded: false,
@@ -236,6 +276,7 @@ describe("DataGridPagination", () => {
     const mounted = mountComponent(DataGridPagination, {
       selectionSummary: null,
       selectionSummarySumText: "",
+      selectionSummaryAverageText: "",
       loading: false,
       infiniteScrollEnabled: false,
       infiniteScrollAllLoaded: false,
@@ -278,6 +319,7 @@ describe("DataGridPagination", () => {
       paginationEnabled: false,
       selectionSummary: null,
       selectionSummarySumText: "",
+      selectionSummaryAverageText: "",
       loading: false,
       infiniteScrollEnabled: false,
       infiniteScrollAllLoaded: false,

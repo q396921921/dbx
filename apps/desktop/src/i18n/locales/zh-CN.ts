@@ -1527,6 +1527,7 @@ export default withEnglishFallback({
     copyColumnNamesPreview: "预览",
     copyAll: "复制全部 (TSV)",
     selectionSum: "SUM: {value}",
+    selectionAverage: "AVG: {value}",
     selectionCells: "{count} 个单元",
     clearSelection: "清除选区",
     export: "导出",

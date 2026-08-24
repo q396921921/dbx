@@ -1511,6 +1511,7 @@ export default withEnglishFallback({
     copyColumnNamesPreview: "プレビュー",
     copyAll: "すべてコピー (TSV)",
     selectionSum: "SUM: {value}",
+    selectionAverage: "AVG: {value}",
     selectionCells: "{count} 個のセル",
     clearSelection: "選択をクリア",
     export: "エクスポート",

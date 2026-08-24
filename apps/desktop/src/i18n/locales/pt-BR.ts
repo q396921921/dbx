@@ -1493,6 +1493,7 @@ export default withEnglishFallback({
     copyColumnNamesPreview: "Pré-visualização",
     copyAll: "Copiar Tudo (TSV)",
     selectionSum: "SUM: {value}",
+    selectionAverage: "AVG: {value}",
     selectionCells: "{count} células",
     clearSelection: "Limpar Seleção",
     export: "Exportar",

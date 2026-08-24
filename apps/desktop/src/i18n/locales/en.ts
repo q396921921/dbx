@@ -1603,6 +1603,7 @@ export default {
     copyColumnNamesPreview: "Preview",
     copyAll: "Copy All (TSV)",
     selectionSum: "SUM: {value}",
+    selectionAverage: "AVG: {value}",
     selectionCells: "{count} cells",
     clearSelection: "Clear Selection",
     export: "Export",

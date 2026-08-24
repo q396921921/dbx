@@ -1483,6 +1483,7 @@ export default withEnglishFallback({
     copyColumnNamesPreview: "미리보기",
     copyAll: "모두 복사 (TSV)",
     selectionSum: "합계: {value}",
+    selectionAverage: "평균: {value}",
     selectionCells: "{count}개 셀",
     clearSelection: "선택 해제",
     export: "내보내기",

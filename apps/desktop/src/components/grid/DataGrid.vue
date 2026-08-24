@@ -253,7 +253,7 @@ import { allNullColumnIndexes } from "@/lib/dataGrid/dataGridColumnVisibility";
 import { buildDataGridColumnLookupItems, dataGridColumnCommentFor, filterDataGridColumnLookupItems } from "@/lib/dataGrid/dataGridColumnLookup";
 import { uniqueDataGridColumnOrderKeys } from "@/lib/dataGrid/dataGridColumnOrder";
 import { dataGridColumnLayoutScopeKey, TABLE_DATA_GRID_COLUMN_ORDER_CHANGED_EVENT, tableDataGridColumnOrderScopeKey } from "@/lib/dataGrid/dataGridColumnLayoutStorage";
-import { summarizeSelection } from "@/lib/dataGrid/gridSelection";
+import { createPendingSelectionSummary, formatSelectionAggregate, formatSelectionAverage, summarizeSelection } from "@/lib/dataGrid/gridSelection";
 import { captureDataGridSelection, restoreDataGridSelection, type CaptureDataGridSelectionOptions, type PersistedDataGridSelection } from "@/lib/dataGrid/dataGridSelectionPersistence";
 import { dataGridFrameCoversRow, dataGridSelectionEdgeMask, dataGridSelectionFrameKindAtCell, dataGridSelectionUsesOuterFrame, resolveDataGridSelectionFrames } from "@/lib/dataGrid/dataGridSelectionFrames";
 import {
@@ -5554,12 +5554,7 @@ const multiRowCount = computed(() => {
 const selectionSummary = computed(() => {
   if (!hasCellSelection.value) return null;
   if (isSelectingCells.value) {
-    return {
-      cellCount: selectedCellCount.value,
-      rowCount: multiRowCount.value,
-      numericCount: 0,
-      sum: 0,
-    };
+    return createPendingSelectionSummary(selectedCellCount.value, multiRowCount.value);
   }
   return summarizeSelection(selectedCells.value);
 });
@@ -5567,8 +5562,11 @@ const selectionSummarySumText = computed(() => {
   if (isSelectingCells.value) return "…";
   const summary = selectionSummary.value;
   if (!summary) return "0";
-  const sum = Object.is(summary.sum, -0) ? 0 : summary.sum;
-  return Number.isInteger(sum) ? String(sum) : sum.toLocaleString(undefined, { maximumFractionDigits: 12 });
+  return formatSelectionAggregate(summary.sum);
+});
+const selectionSummaryAverageText = computed(() => {
+  if (isSelectingCells.value) return "…";
+  return formatSelectionAverage(selectionSummary.value?.average);
 });
 
 const isMultiRow = computed(() => multiRowCount.value > 1);
@@ -13587,6 +13585,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
         :pagination-enabled="paginationEnabled"
         :selection-summary="selectionSummary"
         :selection-summary-sum-text="selectionSummarySumText"
+        :selection-summary-average-text="selectionSummaryAverageText"
         :loading="gridPaginationBusy"
         :infinite-scroll-enabled="infiniteScrollEnabled"
         :infinite-scroll-all-loaded="infiniteScrollAllLoaded"
