@@ -6211,6 +6211,7 @@ export default withEnglishFallback({
     shortcutZoomOutUi: "Reducir interfaz",
     shortcutResetUiZoom: "Restablecer zoom de interfaz",
     shortcutRefreshData: "Actualizar datos",
+    shortcutToggleResultsPane: "Alternar panel de resultados",
     shortcutToggleTranspose: "Alternar vista transpuesta",
     shortcutCancelSearch: "Cancelar búsqueda",
     shortcutCopySidebarSelection: "Copiar selección de la barra lateral",

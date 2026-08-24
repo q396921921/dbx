@@ -5921,6 +5921,7 @@ export default withEnglishFallback({
     shortcutZoomOutUi: "UI 축소",
     shortcutResetUiZoom: "UI 확대/축소 재설정",
     shortcutRefreshData: "데이터 새로고침",
+    shortcutToggleResultsPane: "결과 창 전환",
     shortcutToggleTranspose: "전치 보기 전환",
     shortcutCancelSearch: "검색 취소",
     shortcutToggleSidebar: "사이드바 전환",

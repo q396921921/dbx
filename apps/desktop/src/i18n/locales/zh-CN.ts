@@ -6526,6 +6526,7 @@ export default withEnglishFallback({
     shortcutZoomOutUi: "缩小全局界面",
     shortcutResetUiZoom: "重置全局界面缩放",
     shortcutRefreshData: "刷新数据",
+    shortcutToggleResultsPane: "切换结果面板",
     shortcutToggleTranspose: "切换转置视图",
     shortcutCancelSearch: "取消搜索",
     shortcutCopySidebarSelection: "复制侧边栏选中项",

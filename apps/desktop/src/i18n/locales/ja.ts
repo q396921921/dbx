@@ -6224,6 +6224,7 @@ export default withEnglishFallback({
     shortcutZoomOutUi: "UIを縮小",
     shortcutResetUiZoom: "UIズームをリセット",
     shortcutRefreshData: "データを更新",
+    shortcutToggleResultsPane: "結果ペインを切替",
     shortcutToggleTranspose: "転置ビューを切替",
     shortcutCancelSearch: "検索をキャンセル",
     shortcutToggleSidebar: "サイドバーを切替",

@@ -56,6 +56,7 @@ export type ShortcutActionId =
   | "find"
   | "replace"
   | "refreshData"
+  | "toggleResultsPane"
   | "toggleTranspose"
   | "cancelSearch"
   | "toggleSidebar"
@@ -434,6 +435,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutRefreshData",
     scope: "global",
     defaultShortcut: "F5",
+  },
+  {
+    id: "toggleResultsPane",
+    labelKey: "settings.shortcutToggleResultsPane",
+    scope: "global",
+    defaultShortcut: "",
   },
   {
     id: "toggleTranspose",

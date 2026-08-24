@@ -154,6 +154,10 @@ export function isRefreshDataShortcut(event: ShortcutLikeEvent, shortcuts?: Part
   return matchesShortcut(event, actionShortcut("refreshData", shortcuts));
 }
 
+export function isToggleResultsPaneShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("toggleResultsPane", shortcuts));
+}
+
 export function isModRShortcut(event: ShortcutLikeEvent): boolean {
   return matchesShortcut(event, "Mod+R");
 }

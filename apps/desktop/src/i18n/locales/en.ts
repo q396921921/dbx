@@ -6539,6 +6539,7 @@ export default {
     shortcutZoomOutUi: "Zoom out UI",
     shortcutResetUiZoom: "Reset UI zoom",
     shortcutRefreshData: "Refresh data",
+    shortcutToggleResultsPane: "Toggle results pane",
     shortcutToggleTranspose: "Toggle transpose view",
     shortcutCancelSearch: "Cancel search",
     shortcutToggleSidebar: "Toggle sidebar",
