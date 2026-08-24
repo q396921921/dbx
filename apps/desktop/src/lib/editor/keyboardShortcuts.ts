@@ -211,6 +211,22 @@ export function isGoToColumnShortcut(event: ShortcutLikeEvent, shortcuts?: Parti
   return matchesShortcut(event, actionShortcut("goToColumn", shortcuts));
 }
 
+export function isGoToFirstPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("goToFirstPage", shortcuts));
+}
+
+export function isGoToPreviousPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("goToPreviousPage", shortcuts));
+}
+
+export function isGoToNextPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("goToNextPage", shortcuts));
+}
+
+export function isGoToLastPageShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("goToLastPage", shortcuts));
+}
+
 export function isCancelSearchShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
   return matchesShortcut(event, actionShortcut("cancelSearch", shortcuts));
 }

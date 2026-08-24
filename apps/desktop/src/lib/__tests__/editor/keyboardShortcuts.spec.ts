@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { eventToModifierOnlyShortcut, eventToShortcut, isExecuteSqlInNewResultTabShortcut, isGoToColumnShortcut, matchesModifierOnlyShortcut, matchesShortcut, tabSwitcherDirectionFromShortcut } from "@/lib/editor/keyboardShortcuts";
+import {
+  eventToModifierOnlyShortcut,
+  eventToShortcut,
+  isExecuteSqlInNewResultTabShortcut,
+  isGoToColumnShortcut,
+  isGoToFirstPageShortcut,
+  isGoToLastPageShortcut,
+  isGoToNextPageShortcut,
+  isGoToPreviousPageShortcut,
+  matchesModifierOnlyShortcut,
+  matchesShortcut,
+  tabSwitcherDirectionFromShortcut,
+} from "@/lib/editor/keyboardShortcuts";
 import { formatShortcutDisplay, isMacShortcutPlatform } from "@/lib/editor/shortcutDisplay";
 
 describe("keyboard shortcut matching", () => {
@@ -93,6 +105,21 @@ describe("keyboard shortcut matching", () => {
     expect(isGoToColumnShortcut({ key: "g", ctrlKey: true })).toBe(false);
     expect(isGoToColumnShortcut({ key: "g", ctrlKey: true }, { goToColumn: "" })).toBe(false);
     expect(isGoToColumnShortcut({ key: "g", ctrlKey: true, isComposing: true }, { goToColumn: "Mod+G" })).toBe(false);
+  });
+
+  it.each([
+    ["goToFirstPage", isGoToFirstPageShortcut, "F1"],
+    ["goToPreviousPage", isGoToPreviousPageShortcut, "F2"],
+    ["goToNextPage", isGoToNextPageShortcut, "F3"],
+    ["goToLastPage", isGoToLastPageShortcut, "F4"],
+  ] as const)("matches only the configured pagination shortcut for %s", (actionId, matcher, key) => {
+    const shortcuts = { [actionId]: `Alt+${key}` };
+
+    expect(matcher({ key, altKey: true }, shortcuts)).toBe(true);
+    expect(matcher({ key }, shortcuts)).toBe(false);
+    expect(matcher({ key: "F8", altKey: true }, shortcuts)).toBe(false);
+    expect(matcher({ key, altKey: true, isComposing: true }, shortcuts)).toBe(false);
+    expect(matcher({ key, altKey: true })).toBe(false);
   });
 });
 

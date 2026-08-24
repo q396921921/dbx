@@ -31,6 +31,10 @@ export type ShortcutActionId =
   | "copyCurrentRow"
   | "deleteCurrentRow"
   | "goToColumn"
+  | "goToFirstPage"
+  | "goToPreviousPage"
+  | "goToNextPage"
+  | "goToLastPage"
   | "newQuery"
   | "openSettings"
   | "closeTab"
@@ -284,6 +288,30 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
   {
     id: "goToColumn",
     labelKey: "settings.shortcutGoToColumn",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "goToFirstPage",
+    labelKey: "settings.shortcutGoToFirstPage",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "goToPreviousPage",
+    labelKey: "settings.shortcutGoToPreviousPage",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "goToNextPage",
+    labelKey: "settings.shortcutGoToNextPage",
+    scope: "grid",
+    defaultShortcut: "",
+  },
+  {
+    id: "goToLastPage",
+    labelKey: "settings.shortcutGoToLastPage",
     scope: "grid",
     defaultShortcut: "",
   },

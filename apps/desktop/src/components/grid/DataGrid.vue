@@ -182,7 +182,20 @@ import { temporalCellEditorConfig, type TemporalCellEditorConfig } from "@/lib/d
 import { BOOLEAN_CELL_EDITOR_VALUES, booleanCellEditorValue, isBooleanCellValue, isBooleanColumnType, isPointInBooleanCheckbox, nextBooleanCellValue, normalizeBooleanCellValue, parseBooleanCellEditorValue } from "@/lib/dataGrid/dataGridBooleanColumn";
 import { resolveDataGridColumnNullability, resolveDataGridColumnsByResultIndex } from "@/lib/dataGrid/dataGridColumnMetadata";
 import { resolveDataGridNewRowCellPlaceholder } from "@/lib/dataGrid/dataGridDefaultPlaceholder";
-import { isCancelSearchShortcut, isCopyCurrentRowShortcut, isDeleteCurrentRowShortcut, isFocusSearchShortcut, isGoToColumnShortcut, isModRShortcut, isSaveShortcut, isToggleTransposeShortcut } from "@/lib/editor/keyboardShortcuts";
+import {
+  isCancelSearchShortcut,
+  isCopyCurrentRowShortcut,
+  isDeleteCurrentRowShortcut,
+  isFocusSearchShortcut,
+  isGoToColumnShortcut,
+  isGoToFirstPageShortcut,
+  isGoToLastPageShortcut,
+  isGoToNextPageShortcut,
+  isGoToPreviousPageShortcut,
+  isModRShortcut,
+  isSaveShortcut,
+  isToggleTransposeShortcut,
+} from "@/lib/editor/keyboardShortcuts";
 import { dataGridHeaderContentWidth, scrollbarGutterWidth } from "@/lib/dataGrid/dataGridScrollGutter";
 import { canFetchNextDataGridSegment, canGoNextDataGridPage, dataGridTotalRowCountLabelKey, dataGridTruncationHintKey, hasCompleteLocalDataGridResult, resolveDataGridPaginationTotal, type DataGridInexactTotalRowCountMode } from "@/lib/dataGrid/dataGridPagination";
 import { dataGridCountQueryOptions } from "@/lib/dataGrid/dataGridQueryOptions";
@@ -3740,6 +3753,21 @@ async function lastPage() {
   if (hasKnownPaginationTotalRowCount.value) {
     jumpToCountedLastPage(paginationTotalRowCount.value ?? 0);
   }
+}
+
+function handleGridPaginationShortcut(event: KeyboardEvent): boolean {
+  if (!props.paginationEnabled || gridPaginationBusy.value || infiniteScrollEnabled.value) return false;
+  const shortcuts = settingsStore.editorSettings.shortcuts;
+  let navigate: (() => void) | undefined;
+  if (currentPage.value > 1 && isGoToFirstPageShortcut(event, shortcuts)) navigate = firstPage;
+  else if (currentPage.value > 1 && isGoToPreviousPageShortcut(event, shortcuts)) navigate = prevPage;
+  else if (canGoNextPage.value && isGoToNextPageShortcut(event, shortcuts)) navigate = nextPage;
+  else if (canJumpLastPage.value && isGoToLastPageShortcut(event, shortcuts)) navigate = lastPage;
+  if (!navigate) return false;
+  event.preventDefault();
+  event.stopPropagation();
+  void navigate();
+  return true;
 }
 
 async function buildCurrentCountTarget(): Promise<{ sql: string; schema?: string } | undefined> {
@@ -8987,6 +9015,7 @@ async function onGridKeydown(event: KeyboardEvent) {
     goToColumnOpen.value = true;
     return;
   }
+  if (!targetAllowsNativeClipboard && handleGridPaginationShortcut(event)) return;
   if (isFocusSearchShortcut(event)) {
     event.preventDefault();
     focusSearch();
