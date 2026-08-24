@@ -5981,6 +5981,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "有効にすると、セル編集や下部の空行入力はフォーカスが外れた時点でデータベースに保存されます。頻繁な入力に便利ですが、誤操作による書き込みのリスクがあります。",
     dataGridAutoTransposeSingleRow: "1 行のクエリ結果を自動で転置表示",
     dataGridAutoTransposeSingleRowDescription: "有効にすると、1 行かつ複数列の SQL クエリ結果が自動的に転置表示に切り替わります。",
+    dataGridCellDetailButtonVisible: "セル詳細ボタンを表示",
+    dataGridCellDetailButtonVisibleDescription: "セルにカーソルを合わせたときにセル詳細ボタンを表示します。",
     tableColumnTemplateFields: "新規テーブルのプリセット列",
     tableColumnTemplateFieldsDescription: "データベース種別を選択し、新規テーブル作成時に使うプリセット列の型を設定します。",
     tableColumnTemplateAdd: "列を追加",

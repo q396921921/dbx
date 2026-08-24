@@ -362,6 +362,7 @@ const slots = useSlots();
 const connectionStore = useConnectionStore();
 const queryStore = useQueryStore();
 const settingsStore = useSettingsStore();
+const cellDetailButtonEnabled = computed(() => settingsStore.editorSettings.dataGridCellDetailButtonVisible);
 const tableFontSize = computed(() => settingsStore.editorSettings.tableFontSize);
 const rowNumberWidth = ref(DATA_GRID_ROW_NUM_WIDTH);
 const largeValueResolutionVersion = ref(0);
@@ -7296,7 +7297,8 @@ const canvasDetailButtonCell = computed(() => {
   const visibleRight = viewportWidth > 0 ? Math.min(viewportWidth, rect.left + rect.width) : rect.left + rect.width;
   const canQuickDownload = canQuickDownloadCellValue(target.rowIndex, target.col);
   const foreignKey = canvasCellForeignKey(target.rowIndex, target.col);
-  const minWidth = canvasDataGridActionOverlayWidth(canQuickDownload, !!foreignKey) + 2;
+  if (!cellDetailButtonEnabled.value && !canQuickDownload && !foreignKey) return null;
+  const minWidth = canvasDataGridActionOverlayWidth(canQuickDownload, !!foreignKey, cellDetailButtonEnabled.value) + 2;
   if (rect.top < 0 || rect.top > viewportHeight - 1 || visibleRight - visibleLeft < minWidth) return null;
   return {
     rowIndex: target.rowIndex,
@@ -7311,7 +7313,7 @@ const canvasDetailButtonCell = computed(() => {
 const canvasDetailButtonStyle = computed(() => {
   const cell = canvasDetailButtonCell.value;
   if (!cell) return {};
-  const actionWidth = canvasDataGridActionOverlayWidth(cell.canQuickDownload, !!cell.foreignKey);
+  const actionWidth = canvasDataGridActionOverlayWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value);
   const edgeGap = 6;
   return {
     left: `${Math.max(rowNumberWidth.value, cell.rect.left + cell.rect.width - actionWidth - edgeGap)}px`,
@@ -7325,7 +7327,7 @@ const canvasRightAlignedActionCell = computed(() => {
   return {
     rowIndex: cell.rowIndex,
     visibleColIdx: cell.visibleColIdx,
-    reservedWidth: canvasDataGridActionReservedWidth(cell.canQuickDownload, !!cell.foreignKey),
+    reservedWidth: canvasDataGridActionReservedWidth(cell.canQuickDownload, !!cell.foreignKey, cellDetailButtonEnabled.value),
   };
 });
 
@@ -7412,6 +7414,7 @@ watch(
     hoveredDetailCell,
     detailCell,
     showCellDetail,
+    cellDetailButtonEnabled,
     editingCell,
     frozenColumnCount,
     saveError,
@@ -12083,6 +12086,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                             </template>
                           </LightDropdownMenu>
                           <button
+                            v-if="cellDetailButtonEnabled"
                             class="flex h-5 w-5 items-center justify-center rounded bg-background/90 text-muted-foreground shadow-sm ring-1 ring-border hover:text-foreground"
                             :title="t('grid.cellDetails')"
                             @mousedown.stop
@@ -12816,6 +12820,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                         <ArrowUpRight class="h-3 w-3" />
                       </button>
                       <button
+                        v-if="cellDetailButtonEnabled"
                         class="flex h-5 w-5 items-center justify-center rounded bg-background/90 text-muted-foreground shadow-sm ring-1 ring-border hover:text-foreground"
                         :title="t('grid.cellDetails')"
                         @mousedown.stop
@@ -13031,6 +13036,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                               </template>
                             </LightDropdownMenu>
                             <button
+                              v-if="cellDetailButtonEnabled"
                               class="flex h-5 w-5 items-center justify-center rounded bg-background/90 text-muted-foreground shadow-sm ring-1 ring-border hover:text-foreground"
                               :title="t('grid.cellDetails')"
                               @mousedown.stop

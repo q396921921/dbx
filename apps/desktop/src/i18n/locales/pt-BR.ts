@@ -5949,6 +5949,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "Quando ativado, editar uma célula ou preencher a linha vazia inferior salva no banco de dados assim que o foco sai. Ajuda na entrada frequente, mas pode causar gravações acidentais.",
     dataGridAutoTransposeSingleRow: "Transpor automaticamente resultados de consulta com uma única linha",
     dataGridAutoTransposeSingleRowDescription: "Quando ativado, os resultados de consultas SQL com exatamente uma linha e várias colunas alternam automaticamente para a visualização transposta.",
+    dataGridCellDetailButtonVisible: "Mostrar botão de detalhes da célula",
+    dataGridCellDetailButtonVisibleDescription: "Mostrar o botão de detalhes da célula ao passar o mouse sobre uma célula.",
     infiniteScroll: "Carregamento por rolagem infinita",
     autoCalculateTotalRows: "Calcular automaticamente o total de linhas",
     autoCalculateTotalRowsDescription: "Executa COUNT(*) automaticamente após cada consulta para mostrar o total de linhas correspondentes. Desativado por padrão para manter consultas grandes rápidas; você pode calculá-lo quando quiser no rodapé dos resultados.",

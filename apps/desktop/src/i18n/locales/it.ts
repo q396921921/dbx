@@ -5947,6 +5947,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "Se attivo, la modifica di una cella o la compilazione della riga vuota in fondo viene salvata nel database appena il focus esce. Utile per inserimenti frequenti, ma può causare scritture accidentali.",
     dataGridAutoTransposeSingleRow: "Trasponi automaticamente i risultati delle query a riga singola",
     dataGridAutoTransposeSingleRowDescription: "Quando è attivata, i risultati delle query SQL con esattamente una riga e più colonne passano automaticamente alla vista trasposta.",
+    dataGridCellDetailButtonVisible: "Mostra il pulsante dei dettagli della cella",
+    dataGridCellDetailButtonVisibleDescription: "Mostra il pulsante dei dettagli della cella al passaggio del mouse su una cella.",
     infiniteScroll: "Caricamento a scorrimento infinito",
     autoCalculateTotalRows: "Calcola automaticamente il totale delle righe",
     autoCalculateTotalRowsDescription: "Esegue COUNT(*) automaticamente dopo ogni query per mostrare il totale delle righe corrispondenti. Disattivato per impostazione predefinita per mantenere veloci le query grandi; puoi calcolarlo all'occorrenza dal piè di pagina dei risultati.",

@@ -5630,6 +5630,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "활성화하면 셀을 편집하거나 아래 빈 행을 채운 후 포커스가 벗어나는 즉시 데이터베이스에 저장합니다. 빈번한 입력에 유용하지만 실수로 쓰기를 유발할 수 있습니다.",
     dataGridAutoTransposeSingleRow: "단일 행 쿼리 결과 자동 전치",
     dataGridAutoTransposeSingleRowDescription: "활성화하면 정확히 한 행과 여러 열이 있는 SQL 쿼리 결과가 자동으로 전치 보기로 전환됩니다.",
+    dataGridCellDetailButtonVisible: "셀 세부 정보 버튼 표시",
+    dataGridCellDetailButtonVisibleDescription: "셀 위에 마우스를 올리면 셀 세부 정보 버튼을 표시합니다.",
     infiniteScroll: "무한 스크롤 로딩",
     autoCalculateTotalRows: "전체 행 수 자동 집계",
     autoCalculateTotalRowsDescription: "각 쿼리 후 자동으로 COUNT(*)를 실행하여 일치하는 전체 행 수를 표시합니다. 대규모 쿼리를 빠르게 유지하기 위해 기본적으로 꺼져 있으며, 결과 푸터에서 요청 시 집계할 수 있습니다.",

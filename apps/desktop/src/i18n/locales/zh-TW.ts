@@ -5266,6 +5266,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "開啟後，編輯儲存格或填寫底部空白列並離焦會立即儲存到資料庫。適合高頻輸入，但有誤操作風險。",
     dataGridAutoTransposeSingleRow: "自動轉置單行查詢結果",
     dataGridAutoTransposeSingleRowDescription: "開啟後，SQL 查詢結果只有一行且包含多個欄位時，會自動切換為轉置檢視。",
+    dataGridCellDetailButtonVisible: "顯示儲存格詳細資料按鈕",
+    dataGridCellDetailButtonVisibleDescription: "游標懸停在儲存格上時顯示儲存格詳細資料按鈕。",
     infiniteScroll: "無限滾動載入",
     autoCalculateTotalRows: "自動統計總筆數",
     autoCalculateTotalRowsDescription: "每次查詢後自動執行 COUNT(*) 顯示符合的總筆數。預設關閉以確保大型查詢速度 —— 可在結果列按需手動統計。",

@@ -6211,6 +6211,8 @@ export default withEnglishFallback({
     dataGridQuickEntryDescription: "开启后，编辑单元格或填写底部空行并离焦会立即保存到数据库。便于高频录入，但存在误操作风险。",
     dataGridAutoTransposeSingleRow: "自动转置单行查询结果",
     dataGridAutoTransposeSingleRowDescription: "开启后，SQL 查询结果只有一行且包含多列时，自动切换为转置视图。",
+    dataGridCellDetailButtonVisible: "显示单元格详情按钮",
+    dataGridCellDetailButtonVisibleDescription: "鼠标悬停在单元格上时显示单元格详情按钮。",
     infiniteScroll: "无限滚动加载",
     autoCalculateTotalRows: "自动统计总行数",
     autoCalculateTotalRowsDescription: "每次查询后自动执行 COUNT(*) 显示匹配的总行数。默认关闭以保证大查询速度 —— 可在结果栏按需手动统计。",

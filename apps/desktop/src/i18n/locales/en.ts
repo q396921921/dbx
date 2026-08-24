@@ -6227,6 +6227,8 @@ export default {
     dataGridQuickEntryDescription: "When enabled, editing a cell or filling the bottom blank row saves to the database as soon as focus leaves. Useful for frequent entry, but it can cause accidental writes.",
     dataGridAutoTransposeSingleRow: "Auto-transpose single-row query results",
     dataGridAutoTransposeSingleRowDescription: "When enabled, SQL query results with exactly one row and multiple columns automatically switch to transpose view.",
+    dataGridCellDetailButtonVisible: "Show cell detail button",
+    dataGridCellDetailButtonVisibleDescription: "Show the cell detail button when hovering over a cell.",
     infiniteScroll: "Infinite scroll loading",
     autoCalculateTotalRows: "Auto-calculate total row count",
     autoCalculateTotalRowsDescription: "Run COUNT(*) automatically after each query to show the total matching rows. Off by default to keep large queries fast — calculate it on demand from the result footer.",
