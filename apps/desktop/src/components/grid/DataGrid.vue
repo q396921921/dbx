@@ -141,6 +141,8 @@ import {
   canDownloadBinaryCellValue,
   downloadBinaryCellPayload,
   formatBinaryCellByteSize,
+  binaryCellUtf8Text,
+  isBlobCellColumnType,
   isBinaryCellColumnType,
   openBinaryCellFile,
   parseBinaryCellBytes,
@@ -4120,8 +4122,8 @@ function cellEditContentNeedsExpandedEditor(options: { displayText: string; edit
 function cellEditorTextForValue(value: CellValue | undefined, columnIndex: number): string {
   return dataGridCellEditorText({
     value: value ?? null,
-    databaseType: props.databaseType,
-    columnInfo: tableColumnForGridColumn(columnIndex),
+    databaseType: resolvedDatabaseType.value,
+    columnInfo: tableColumnForGridColumn(columnIndex) ?? resultColumnInfoForGridColumn(columnIndex),
   });
 }
 
@@ -4185,7 +4187,7 @@ function isIoTDBTimestampColumn(columnIndex: number): boolean {
 }
 
 function inlineCellEditorText(value: CellValue, columnIndex: number): string {
-  const columnInfo = tableColumnForGridColumn(columnIndex);
+  const columnInfo = tableColumnForGridColumn(columnIndex) ?? resultColumnInfoForGridColumn(columnIndex);
   const columnType = props.result.column_types?.[columnIndex] ?? columnInfo?.data_type;
   return (
     formatIoTDBTimestampEditorValue(value, resolvedDatabaseType.value, columnType, resolvedConnectionConfig.value?.url_params) ??
@@ -6054,8 +6056,8 @@ watch(activeCellDetail, (detail) => {
   }
   const value = dataGridCellEditorText({
     value: detail.value,
-    databaseType: props.databaseType,
-    columnInfo: tableColumnForGridColumn(detail.colIndex),
+    databaseType: resolvedDatabaseType.value,
+    columnInfo: tableColumnForGridColumn(detail.colIndex) ?? resultColumnInfoForGridColumn(detail.colIndex),
   });
   detailEditValue.value = value;
   detailEditOriginalValue.value = value;
@@ -9100,7 +9102,7 @@ async function copyDetailValue() {
   if (!initialDetail || !(await hydrateLargeValueCell(initialDetail.rowId, initialDetail.colIndex))) return;
   const detail = activeCellDetail.value;
   if (!detail) return;
-  const text = detail.value === null ? "" : displayCellValue(detail.value);
+  const text = detail.value === null ? "" : isBlobCellColumnType(detail.type) ? (binaryCellUtf8Text(detail.value, detail.type, resolvedDatabaseType.value) ?? displayCellValue(detail.value)) : displayCellValue(detail.value);
   copyText(text);
 }
 
@@ -13356,6 +13358,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                 :import-binary-value="importDetailBinaryValue"
                 :open-image-preview="openImagePreview"
                 :can-copy-sql-condition="canCopyPreparedDetailSqlCondition"
+                :database-type="resolvedDatabaseType"
                 @start-edit="startDetailEdit"
                 @compact-json="compactDetailJson"
                 @toggle-formatted="toggleCellDetailJsonFormatted"
@@ -13545,6 +13548,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
       :download-binary-value="downloadDetailBinaryValue"
       :can-import-binary-value="canImportDetailBinaryValue"
       :import-binary-value="importDetailBinaryValue"
+      :database-type="resolvedDatabaseType"
       @edit="openDialogCellInSidePanel"
     />
 
