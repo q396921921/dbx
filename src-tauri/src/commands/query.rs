@@ -26,7 +26,7 @@ struct ExecuteMultiProgress {
 #[derive(Debug, serde::Serialize)]
 #[serde(untagged)]
 pub enum ManualTransactionCommandError {
-    Structured(BackendError),
+    Structured(Box<BackendError>),
     Legacy(String),
 }
 
@@ -476,9 +476,9 @@ pub async fn execute_in_manual_transaction(
     .await
     .map_err(|error| {
         if dbx_core::query::is_manual_transaction_session_expired_error(&error) {
-            ManualTransactionCommandError::Structured(BackendError::from_manual_transaction_session_expired(
+            ManualTransactionCommandError::Structured(Box::new(BackendError::from_manual_transaction_session_expired(
                 dbx_core::query::MANUAL_TRANSACTION_IDLE_TIMEOUT_SECS,
-            ))
+            )))
         } else {
             ManualTransactionCommandError::Legacy(error)
         }
