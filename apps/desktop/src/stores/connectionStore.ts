@@ -1951,13 +1951,23 @@ export const useConnectionStore = defineStore("connection", () => {
     return supportsPackageMemberExpansion(databaseType) ? markPackageNodesExpandable(children) : children;
   }
 
-  function tableInfosToCompletionTables(tables: readonly TableInfo[], schema?: string): SqlCompletionTable[] {
-    return tables.map((table) => ({
-      name: table.name,
-      schema,
-      type: sqlObjectNavigationTypeFromTableType(table.table_type),
-      ...completionStableTableType(table.table_type),
-    }));
+  function completionTableDetail(comment: string | null | undefined): string | undefined {
+    const normalized = comment?.trim();
+    return normalized ? `→ ${normalized}` : undefined;
+  }
+
+  function tableInfosToCompletionTables(tables: readonly TableInfo[], schema?: string, catalog?: string): SqlCompletionTable[] {
+    return tables.map((table) => {
+      const detail = completionTableDetail(table.comment);
+      return {
+        name: table.name,
+        catalog,
+        schema,
+        type: sqlObjectNavigationTypeFromTableType(table.table_type),
+        ...(detail ? { detail } : {}),
+        ...completionStableTableType(table.table_type),
+      };
+    });
   }
 
   function completionStableTableType(tableType: string | null | undefined): Partial<Pick<SqlCompletionTable, "tableType">> {
@@ -6907,16 +6917,19 @@ export const useConnectionStore = defineStore("connection", () => {
     return candidates
       .filter((candidate) => candidate.kind === "table" || candidate.kind === "view")
       .map((candidate) => {
+        const detail = completionTableDetail(candidate.comment);
         const table: SqlCompletionTable = {
           name: candidate.name,
           schema: candidate.schema ?? undefined,
           type: sqlObjectNavigationTypeFromTableType(candidate.data_type || candidate.kind),
+          ...(detail ? { detail } : {}),
           ...completionStableTableType(candidate.data_type),
         };
         if (!withOracleMetadata) return table;
+        const metadataDetail = candidate.schema ? `${candidate.schema} · ${(candidate.data_type || candidate.kind).toLowerCase()}` : candidate.kind;
         return {
           ...table,
-          detail: candidate.schema ? `${candidate.schema} · ${(candidate.data_type || candidate.kind).toLowerCase()}` : candidate.kind,
+          detail: table.detail ? `${metadataDetail}  ${table.detail}` : metadataDetail,
           applyName: completionCandidateApplyName(candidate.name, candidate.schema, preferredSchema),
           boost: completionCandidateSchemaBoost(candidate.schema, preferredSchema),
         };
@@ -7506,13 +7519,7 @@ export const useConnectionStore = defineStore("connection", () => {
             } catch {
               if (schema) {
                 const tables = await listCompletionTableMetadata(connectionId, database, schema, trimmedFilter, limit, catalog);
-                results = tables.map((table) => ({
-                  name: table.name,
-                  catalog,
-                  schema,
-                  type: sqlObjectNavigationTypeFromTableType(table.table_type),
-                  ...completionStableTableType(table.table_type),
-                }));
+                results = tableInfosToCompletionTables(tables, schema, catalog);
               } else {
                 results = lookupLocalCompletionTables(connectionId, database, normalizedFilter, limit, undefined, catalog);
               }
@@ -7527,13 +7534,7 @@ export const useConnectionStore = defineStore("connection", () => {
               } else if (schema) {
                 try {
                   const tables = await listCompletionTableMetadata(connectionId, database, schema, relaxedFilter, expandedCompletionLimit(limit), catalog);
-                  results = tables.map((table) => ({
-                    name: table.name,
-                    catalog,
-                    schema,
-                    type: sqlObjectNavigationTypeFromTableType(table.table_type),
-                    ...completionStableTableType(table.table_type),
-                  }));
+                  results = tableInfosToCompletionTables(tables, schema, catalog);
                 } catch {
                   results = [];
                 }
@@ -7552,13 +7553,7 @@ export const useConnectionStore = defineStore("connection", () => {
           let scopedTables: SqlCompletionTable[];
           if (schema) {
             const tables = await listCompletionTableMetadata(connectionId, database, schema, undefined, undefined, catalog);
-            scopedTables = tables.map((table) => ({
-              name: table.name,
-              catalog,
-              schema,
-              type: sqlObjectNavigationTypeFromTableType(table.table_type),
-              ...completionStableTableType(table.table_type),
-            }));
+            scopedTables = tableInfosToCompletionTables(tables, schema, catalog);
           } else {
             scopedTables = lookupLocalCompletionTables(connectionId, database, normalizedFilter, limit, undefined, catalog);
           }
@@ -7575,12 +7570,7 @@ export const useConnectionStore = defineStore("connection", () => {
           tables = await listCompletionTableMetadata(connectionId, database, querySchema, relaxedFilter, expandedCompletionLimit(limit), catalog);
         }
         if (requestRevision !== completionCacheRevision(connectionId, database)) return listCompletionTables(connectionId, database, filter, limit, schema, globalSearch, currentSchema, catalog, options);
-        completionTablesCache.value[cacheKey] = tables.map((table) => ({
-          name: table.name,
-          catalog,
-          type: sqlObjectNavigationTypeFromTableType(table.table_type),
-          ...completionStableTableType(table.table_type),
-        }));
+        completionTablesCache.value[cacheKey] = tableInfosToCompletionTables(tables, undefined, catalog);
         completionTablesCache.value[cacheKey] = limit ? completionTablesCache.value[cacheKey].slice(0, limit) : completionTablesCache.value[cacheKey];
         indexCompletionTables(connectionId, database, schema, completionTablesCache.value[cacheKey], catalog);
         evictOldestCacheEntries(completionTablesCache.value, COMPLETION_CACHE_MAX);
@@ -7609,7 +7599,13 @@ export const useConnectionStore = defineStore("connection", () => {
       if (existingIndex != null) {
         const existing = deduped[existingIndex];
         // Loaded tree metadata can distinguish materialized views even when an older completion endpoint only reports VIEW.
-        deduped[existingIndex] = { ...table, ...existing, type: mergeSqlObjectNavigationType(existing.type, table.type) };
+        const detail = existing.detail ?? table.detail;
+        deduped[existingIndex] = {
+          ...table,
+          ...existing,
+          ...(detail ? { detail } : {}),
+          type: mergeSqlObjectNavigationType(existing.type, table.type),
+        };
         continue;
       }
       indexByKey.set(key, deduped.length);
