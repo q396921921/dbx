@@ -2324,6 +2324,7 @@ export default {
     selectedConnections: "Selected {count}",
     exitMultiSelect: "Exit selection",
     renameGroup: "Rename Group",
+    closeConnections: "Close Connections in Group ({count})",
     deleteGroup: "Delete Group",
     deleteSelectedGroups: "Delete {count} Selected Groups",
     moveToGroup: "Move to Group",

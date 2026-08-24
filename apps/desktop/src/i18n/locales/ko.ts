@@ -2158,6 +2158,7 @@ export default withEnglishFallback({
     selectedConnections: "{count}개 선택",
     exitMultiSelect: "선택 종료",
     renameGroup: "그룹 이름 변경",
+    closeConnections: "그룹 내 연결 {count}개 닫기",
     deleteGroup: "그룹 삭제",
     deleteSelectedGroups: "선택한 그룹 {count}개 삭제",
     moveToGroup: "그룹으로 이동",

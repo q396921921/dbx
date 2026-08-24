@@ -2278,6 +2278,7 @@ export default withEnglishFallback({
     createGroup: "新しいグループ",
     groupNamePlaceholder: "グループ名",
     renameGroup: "グループ名を変更",
+    closeConnections: "グループ内の接続を閉じる（{count}）",
     deleteGroup: "グループを削除",
     deleteSelectedGroups: "選択した {count} 個のグループを削除",
     moveToGroup: "グループに移動",

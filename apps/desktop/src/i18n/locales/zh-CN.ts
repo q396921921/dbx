@@ -2248,6 +2248,7 @@ export default withEnglishFallback({
     selectedConnections: "已选 {count}",
     exitMultiSelect: "退出多选",
     renameGroup: "重命名分组",
+    closeConnections: "关闭分组内连接（{count}）",
     deleteGroup: "删除分组",
     deleteSelectedGroups: "删除选中的 {count} 个分组",
     moveToGroup: "移至分组",
