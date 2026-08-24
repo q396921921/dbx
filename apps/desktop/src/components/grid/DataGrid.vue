@@ -2541,6 +2541,7 @@ const {
 } = useDataGridColumnLayoutState({
   columns: computed(() => props.result.columns),
   sourceColumns: computed(() => props.sourceColumns),
+  columnComments: () => props.resultColumnComments,
   commentByColumn: columnCommentMap,
   displayableColumnIndexes,
   allNullColumnIndexes: allNullColumnIndexesForResult,
@@ -2557,6 +2558,7 @@ const goToColumnItems = computed(() =>
   buildDataGridColumnLookupItems({
     columns: props.result.columns,
     sourceColumns: props.sourceColumns,
+    columnComments: props.resultColumnComments,
     displayableIndexes: displayableColumnIndexes.value,
     commentByColumn: columnCommentMap.value,
   }),
