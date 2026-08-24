@@ -8096,26 +8096,43 @@ function batchAppendPasteError(reason: string): string {
   return t(messages[reason] ?? "grid.batchAppendPasteInvalidTarget");
 }
 
-function pasteTextIntoGrid(text: string): boolean {
-  const targetRowId = batchAppendPasteTargetRowId();
-  if (targetRowId !== null) {
-    const result = appendPastedRowsToNewRow(targetRowId, parseDataGridClipboard(text), visibleColumnIndexes.value);
-    if (!result.ok) {
-      if (result.reason === "invalid-target" || result.reason === "target-not-empty") {
-        batchAppendPasteRowId.value = null;
-      }
-      toast(batchAppendPasteError(result.reason), 5000);
-      return false;
-    }
-    batchAppendPasteRowId.value = null;
-    toast(t("grid.pasted"));
-    return true;
-  }
-  return pasteTextIntoSelection(text);
+function blankCellBatchAppendPasteTarget(pastedRows: readonly (readonly (string | null)[])[]): { rowId: number; columnIndexes: number[] } | null {
+  if (pastedRows.length <= 1) return null;
+  const range = selectedRange.value;
+  if (!range || range.startRow !== range.endRow || range.startCol !== range.endCol) return null;
+  const item = displayItemAt(range.startRow);
+  if ((!item?.isNew && !item?.isDraft) || item.isDeleted || item.data.some((value) => value !== null && (typeof value !== "string" || value.trim() !== ""))) return null;
+  const columnIndex = visibleColumnIndexes.value[range.startCol];
+  if (columnIndex === undefined || !canEditCellItem(item, columnIndex)) return null;
+  return { rowId: item.id, columnIndexes: visibleColumnIndexes.value.slice(range.startCol) };
 }
 
-function pasteTextIntoSelection(text: string): boolean {
+function appendParsedRowsToBlankTarget(targetRowId: number, rows: readonly (readonly (string | null)[])[], columnIndexes: readonly number[]): boolean {
+  const result = appendPastedRowsToNewRow(targetRowId, rows, columnIndexes);
+  if (!result.ok) {
+    if (result.reason === "invalid-target" || result.reason === "target-not-empty") {
+      batchAppendPasteRowId.value = null;
+    }
+    toast(batchAppendPasteError(result.reason), 5000);
+    return false;
+  }
+  batchAppendPasteRowId.value = null;
+  toast(t("grid.pasted"));
+  return true;
+}
+
+function pasteTextIntoGrid(text: string): boolean {
   const rows = parseDataGridClipboard(text);
+  const targetRowId = batchAppendPasteTargetRowId();
+  if (targetRowId !== null) {
+    return appendParsedRowsToBlankTarget(targetRowId, rows, visibleColumnIndexes.value);
+  }
+  const cellTarget = blankCellBatchAppendPasteTarget(rows);
+  if (cellTarget) return appendParsedRowsToBlankTarget(cellTarget.rowId, rows, cellTarget.columnIndexes);
+  return pasteRowsIntoSelection(rows);
+}
+
+function pasteRowsIntoSelection(rows: readonly (readonly (string | null)[])[]): boolean {
   const allowDraftSelectionValue = selectedRangeTargetsOnlyDraftRow();
 
   if (rows.length === 1 && rows[0]?.length === 1 && fillSelectionWithValue(rows[0][0])) {
