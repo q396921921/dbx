@@ -3902,6 +3902,14 @@ onUnmounted(() => {
                 </div>
               </div>
 
+              <!-- Live Preview -->
+              <div class="space-y-2">
+                <Label>{{ t("settings.preview") }}</Label>
+                <div class="rounded-md border overflow-auto max-w-full" :class="editTheme === 'vscode-light' || editTheme === 'duotone-light' || editTheme === 'xcode' ? 'border-border' : 'border-border/50'">
+                  <div ref="previewRef" style="min-width: 100%" />
+                </div>
+              </div>
+
               <Separator />
 
               <div class="grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -4227,16 +4235,6 @@ onUnmounted(() => {
                     </div>
                     <Switch :id="`sql-var-syntax-${key}`" :model-value="sqlVariableSyntaxToggle(key)" :disabled="!editSqlVariableSubstitutionEnabled" class="mt-0.5 shrink-0" @update:model-value="(value) => setSqlVariableSyntaxToggle(key, value as boolean)" />
                   </div>
-                </div>
-              </div>
-
-              <Separator />
-
-              <!-- Live Preview -->
-              <div class="space-y-2">
-                <Label>{{ t("settings.preview") }}</Label>
-                <div class="rounded-md border overflow-auto max-w-full" :class="editTheme === 'vscode-light' || editTheme === 'duotone-light' || editTheme === 'xcode' ? 'border-border' : 'border-border/50'">
-                  <div ref="previewRef" style="min-width: 100%" />
                 </div>
               </div>
             </section>
