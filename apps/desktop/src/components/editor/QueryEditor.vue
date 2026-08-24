@@ -24,7 +24,7 @@ import { canFormatSqlForDatabaseType, formatSqlForEditing, compressSqlText, type
 import { detectAndFormatStructured } from "@/lib/sql/autoFormat";
 import { enabledSqlParameterSyntaxes, resolveSqlVariableSyntaxToggles } from "@/lib/sql/sqlVariableSyntax";
 import { blankLineDeletionChanges, replaceSelectedEditorText } from "@/lib/editor/queryEditorTextEdits";
-import { createQueryEditorExecutionViewportOwnership } from "@/lib/editor/queryEditorExecutionViewport";
+import { createQueryEditorExecutionViewportOwnership, isQueryEditorPositionVisible } from "@/lib/editor/queryEditorExecutionViewport";
 import { joinQueryEditorLines } from "@/lib/editor/queryEditorJoinLines";
 import { insertQueryEditorNewline } from "@/lib/editor/queryEditorNewline";
 import { createSqlSignatureTooltipDom } from "@/lib/editor/sqlSignatureTooltip";
@@ -6018,15 +6018,17 @@ function openReplace(): boolean {
 
 function scrollCursorIntoView() {
   const preserveViewport = executionViewportOwnership.consumeCompletionPreservation();
-  if (!view.value || !editorViewModule || !editorIsActive || preserveViewport) return;
-  const pos = view.value.state.selection.main.head;
+  const currentView = view.value;
+  if (!currentView || !editorViewModule || !editorIsActive || preserveViewport) return;
+  const pos = currentView.state.selection.main.head;
+  if (isQueryEditorPositionVisible(pos, currentView.visibleRanges, currentView.viewport)) return;
   // Use "center" rather than "nearest": by the time this runs, the results pane has already
   // opened/resized and shrunk the editor viewport, so the cursor's old position is often no
   // longer visible. "nearest" then pins it right at the new viewport's edge (Fixes #5281: in a
   // long multi-statement file, the just-executed statement lands flush against the results pane
   // divider), which is exactly where it's hardest to see and re-click. Centering keeps it
   // comfortably visible so the user doesn't have to scroll to find/re-run it.
-  view.value.dispatch({
+  currentView.dispatch({
     effects: editorViewModule.EditorView.scrollIntoView(pos, { y: "center" }),
   });
 }
