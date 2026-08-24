@@ -2429,7 +2429,7 @@ export const useQueryStore = defineStore("query", () => {
     if (pendingBatchCloseTabIds.value) {
       return pendingBatchCloseTabIds.value
         .map((id) => tabs.value.find((tab) => tab.id === id))
-        .filter((tab): tab is QueryTab => !!tab && isTabDirty(tab))
+        .filter((tab): tab is QueryTab => !!tab && shouldConfirmTabClose(tab))
         .map((tab) => tab.id);
     }
     const pendingTab = pendingCloseTabId.value ? tabs.value.find((tab) => tab.id === pendingCloseTabId.value) : undefined;
@@ -2579,9 +2579,31 @@ export const useQueryStore = defineStore("query", () => {
       onComplete?.();
       return;
     }
-    pendingBatchCloseTabIds.value = uniqueIds;
-    pendingBatchCloseFinalActiveTabId.value = finalActiveTabId;
-    pendingBatchCloseComplete = onComplete ?? null;
+
+    const existingIds = pendingBatchCloseTabIds.value;
+    if (existingIds) {
+      // Sidebar bulk disconnects settle independently, so later scopes must join the open dialog instead of replacing it.
+      const combinedIds = [...new Set([...existingIds, ...uniqueIds])];
+      const preferredFinalActiveTabId = finalActiveTabId !== undefined ? finalActiveTabId : pendingBatchCloseFinalActiveTabId.value;
+      pendingBatchCloseTabIds.value = combinedIds;
+      pendingBatchCloseFinalActiveTabId.value = preferredFinalActiveTabId && combinedIds.includes(preferredFinalActiveTabId) ? activeTabAfterClosing(combinedIds, preferredFinalActiveTabId) : preferredFinalActiveTabId;
+      if (onComplete) {
+        const previousComplete = pendingBatchCloseComplete;
+        pendingBatchCloseComplete = previousComplete
+          ? () => {
+              try {
+                previousComplete();
+              } finally {
+                onComplete();
+              }
+            }
+          : onComplete;
+      }
+    } else {
+      pendingBatchCloseTabIds.value = uniqueIds;
+      pendingBatchCloseFinalActiveTabId.value = finalActiveTabId;
+      pendingBatchCloseComplete = onComplete ?? null;
+    }
     continuePendingBatchClose();
   }
 
@@ -2757,6 +2779,17 @@ export const useQueryStore = defineStore("query", () => {
     return tabs.value.find((tab) => !closingIds.has(tab.id))?.id ?? null;
   }
 
+  function activeTabAfterClosing(ids: string[], preferredActiveTabId = activeTabId.value) {
+    const closingIds = new Set(ids);
+    if (preferredActiveTabId && !closingIds.has(preferredActiveTabId) && tabs.value.some((tab) => tab.id === preferredActiveTabId)) {
+      return preferredActiveTabId;
+    }
+    const preferredIndex = preferredActiveTabId ? tabs.value.findIndex((tab) => tab.id === preferredActiveTabId) : -1;
+    const remainingTabs = tabs.value.filter((tab) => !closingIds.has(tab.id));
+    if (preferredIndex < 0) return remainingTabs[0]?.id ?? null;
+    return remainingTabs[Math.min(preferredIndex, remainingTabs.length - 1)]?.id ?? null;
+  }
+
   function closeOtherRegularTabs(id: string) {
     const tab = tabs.value.find((item) => item.id === id);
     if (!tab || tab.pinned) return;
@@ -2905,12 +2938,21 @@ export const useQueryStore = defineStore("query", () => {
     }
   }
 
-  function closeConnectionTabs(connectionId: string) {
-    closeTabsWhere((tab) => tab.connectionId === connectionId);
+  function closeScopedTabsWhere(predicate: (tab: QueryTab) => boolean, options: { force?: boolean } = {}) {
+    const ids = tabs.value.filter((tab) => predicate(tab)).map((tab) => tab.id);
+    if (options.force) {
+      closeTabsWhere(predicate);
+      return;
+    }
+    beginBatchClose(ids, activeTabAfterClosing(ids));
+  }
+
+  function closeConnectionTabs(connectionId: string, options?: { force?: boolean }) {
+    closeScopedTabsWhere((tab) => tab.connectionId === connectionId, options);
   }
 
   function closeDatabaseTabs(connectionId: string, database: string) {
-    closeTabsWhere((tab) => tab.connectionId === connectionId && tab.database === database);
+    closeScopedTabsWhere((tab) => tab.connectionId === connectionId && tab.database === database);
   }
 
   function tabMatchesDroppedTableObject(tab: QueryTab, target: DroppedTableObjectTarget): boolean {
