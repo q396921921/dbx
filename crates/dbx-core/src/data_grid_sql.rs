@@ -3057,7 +3057,7 @@ pub(crate) fn data_grid_qualified_table_name(
 }
 
 fn column_filter_ref(database_type: Option<DatabaseType>, column_name: &str, identifier_quote: Option<&str>) -> String {
-    let quoted = data_grid_identifier(database_type, column_name, identifier_quote);
+    let quoted = predicate_ident(database_type, column_name, identifier_quote);
     if database_type == Some(DatabaseType::Neo4j) {
         format!("n.{quoted}")
     } else {
@@ -4081,6 +4081,33 @@ mod tests {
             .as_deref(),
             Some("[active] = 0")
         );
+    }
+
+    #[test]
+    fn builds_oracle_synthetic_rowid_context_filter_conditions() {
+        let equals = |database_type, column_name: &str, value| {
+            build_data_grid_context_filter_condition(DataGridContextFilterConditionOptions {
+                database_type,
+                identifier_quote: None,
+                column_name: column_name.to_string(),
+                mode: DataGridContextFilterMode::Equals,
+                value,
+                values: Vec::new(),
+                end_value: None,
+                column_info: None,
+            })
+        };
+
+        for database_type in [DatabaseType::Oracle, DatabaseType::OceanbaseOracle] {
+            assert_eq!(
+                equals(Some(database_type), DBX_ROWID_COLUMN, json!("AAAFd1AAFAAAABSAA/")),
+                Some("ROWIDTOCHAR(ROWID) = 'AAAFd1AAFAAAABSAA/'".to_string())
+            );
+        }
+        assert_eq!(equals(Some(DatabaseType::Oracle), "REPORT_ID", json!(7)), Some("\"REPORT_ID\" = 7".to_string()));
+        assert_eq!(equals(Some(DatabaseType::Neo4j), "score", json!(7)), Some("n.`score` = 7".to_string()));
+        assert_eq!(equals(None, DBX_ROWID_COLUMN, json!("row-id")), Some("\"__DBX_ROWID\" = 'row-id'".to_string()));
+        assert_eq!(equals(Some(DatabaseType::VictoriaMetrics), DBX_ROWID_COLUMN, json!("row-id")), None);
     }
 
     #[test]
