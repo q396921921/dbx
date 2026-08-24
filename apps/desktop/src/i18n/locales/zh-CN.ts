@@ -5081,6 +5081,7 @@ export default withEnglishFallback({
     collectionValuePlaceholder: "输入 JSON 数组或逗号分隔值",
     preview: "SQL 预览",
     execute: "执行",
+    useRawForAll: "全部使用原始 SQL",
     kind: {
       string: "字符串",
       number: "数字",

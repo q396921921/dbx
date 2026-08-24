@@ -4531,6 +4531,7 @@ export default withEnglishFallback({
     collectionValuePlaceholder: "JSON 배열 또는 쉼표로 구분된 값 입력",
     preview: "SQL 미리보기",
     execute: "실행",
+    useRawForAll: "모두 원시 SQL로 설정",
     kind: {
       string: "문자열",
       number: "숫자",

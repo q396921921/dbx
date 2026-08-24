@@ -5096,6 +5096,7 @@ export default {
     collectionValuePlaceholder: "Enter a JSON array or comma-separated values",
     preview: "SQL Preview",
     execute: "Execute",
+    useRawForAll: "Use Raw SQL for All",
     kind: {
       string: "String",
       number: "Number",

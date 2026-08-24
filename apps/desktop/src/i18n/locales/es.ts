@@ -4860,6 +4860,7 @@ export default withEnglishFallback({
     collectionValuePlaceholder: "Introduce un array JSON o valores separados por comas",
     preview: "Vista previa SQL",
     execute: "Ejecutar",
+    useRawForAll: "Usar SQL sin procesar para todos",
     kind: {
       string: "Cadena",
       number: "Número",
