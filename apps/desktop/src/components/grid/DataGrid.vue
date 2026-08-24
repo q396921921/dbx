@@ -151,6 +151,7 @@ import {
 } from "@/lib/dataGrid/binaryCellDownload";
 import { buildBinaryHexViewRows } from "@/lib/dataGrid/binaryHexViewer";
 import { canFormatCellDetailJson, cellDetailEditorText, compactJsonText, defaultCellDetailTab, formatJsonText, isGeometryColumnType, linkedCellDetailTarget, looksLikeJsonContainerText, valueEditorActions, visibleCellDetailTabs, type CellDetailTab } from "@/lib/dataGrid/cellDetailPresentation";
+import { createJsonValueDiffSnapshot, isJsonValueDiffAvailable, type JsonValueDiffContext, type JsonValueDiffSnapshot } from "@/lib/dataGrid/jsonValueDiff";
 import {
   buildDataGridCellDetail,
   buildDataGridColumnDetail,
@@ -361,6 +362,7 @@ dayjs.extend(timezone);
 const SqlPreviewPanel = defineAsyncComponent(() => import("@/components/editor/SqlPreviewPanel.vue"));
 const ImagePreviewDialog = defineAsyncComponent(() => import("@/components/grid/ImagePreviewDialog.vue"));
 const DataGridCellDetailDialog = defineAsyncComponent(() => import("@/components/grid/DataGridCellDetailDialog.vue"));
+const DataGridValueDiffDialog = defineAsyncComponent(() => import("@/components/grid/DataGridValueDiffDialog.vue"));
 const DataGridMongoJsonPreview = defineAsyncComponent(() => import("@/components/grid/DataGridMongoJsonPreview.vue"));
 const DataGridDetailDialogs = defineAsyncComponent(() => import("@/components/grid/DataGridDetailDialogs.vue"));
 const DataGridBulkEditDialog = defineAsyncComponent(() => import("@/components/grid/DataGridBulkEditDialog.vue"));
@@ -5972,7 +5974,25 @@ watch(activeCellDetailTab, (tab) => {
 const detailEditValue = ref("");
 const detailEditOriginalValue = ref("");
 const isEditingDetail = ref(false);
+const detailValueDiffOpen = ref(false);
+const detailValueDiffSnapshot = ref<Readonly<JsonValueDiffSnapshot> | null>(null);
 const hasPendingDetailEditorDraft = computed(() => isEditingDetail.value && detailEditValue.value !== detailEditOriginalValue.value);
+const detailJsonDiffContext = computed<JsonValueDiffContext | null>(() => {
+  const detail = activeCellDetail.value;
+  if (!detail) return null;
+  return {
+    columnName: detail.column,
+    columnType: detail.type,
+    originalValue: detailEditOriginalValue.value,
+    isEditable: detail.isEditable,
+    isEditing: isEditingDetail.value,
+  };
+});
+const showDetailJsonCompare = computed(() => {
+  const context = detailJsonDiffContext.value;
+  return !!context && isJsonValueDiffAvailable(context);
+});
+const canCompareDetailJson = computed(() => showDetailJsonCompare.value && hasPendingDetailEditorDraft.value);
 const hasPendingInlineEditorDraft = computed(() => {
   const cell = editingCell.value;
   if (!cell) return false;
@@ -6141,7 +6161,9 @@ watch(valueEditorContainer, async (el) => {
         detailEditValue.value = v;
       },
       onEscape: () => restoreDetailOriginalValue(),
-      onBlur: () => commitValueEditorEdit(),
+      onBlur: () => {
+        if (!detailValueDiffOpen.value) commitValueEditorEdit();
+      },
       editorTheme: editorThemeAccessor,
       appAppearance: editorAppAppearance,
       appPalette: editorAppPalette,
@@ -6314,6 +6336,15 @@ function compactDetailJson() {
   if (!detail || !canFormatCellDetailJson(detailEditValue.value, detail.type)) return;
   detailEditValue.value = compactJsonText(detailEditValue.value) ?? detailEditValue.value;
   syncEditorFromDetailEdit();
+}
+
+function openDetailJsonCompare() {
+  const context = detailJsonDiffContext.value;
+  if (!context) return;
+  const snapshot = createJsonValueDiffSnapshot({ ...context, currentValue: detailEditValue.value });
+  if (!snapshot) return;
+  detailValueDiffSnapshot.value = snapshot;
+  detailValueDiffOpen.value = true;
 }
 
 function setDetailNull() {
@@ -13420,6 +13451,8 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                 :side-json-view="sideDetailJsonView"
                 :show-compact-json="showCompactDetailJson"
                 :can-compact-json="canCompactDetailJson"
+                :show-compare-json="showDetailJsonCompare"
+                :can-compare-json="canCompareDetailJson"
                 :type-color-class="typeColorClass"
                 :can-download-binary-value="canDownloadDetailBinaryValue"
                 :download-binary-value="downloadDetailBinaryValue"
@@ -13430,6 +13463,7 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                 :database-type="resolvedDatabaseType"
                 @start-edit="startDetailEdit"
                 @compact-json="compactDetailJson"
+                @compare-json="openDetailJsonCompare"
                 @toggle-formatted="toggleCellDetailJsonFormatted"
                 @copy-value="copyDetailCurrentValue"
                 @commit="commitDetailEdit"
@@ -13505,6 +13539,9 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
                   </Button>
                   <Button v-if="activeValueEditorActions.includes('compactJson')" variant="outline" size="sm" class="h-6 text-xs" @mousedown.prevent @click="compactDetailJson">
                     {{ t("grid.compactJson") }}
+                  </Button>
+                  <Button v-if="showDetailJsonCompare" variant="outline" size="sm" class="h-6 text-xs" :disabled="!canCompareDetailJson" @mousedown.prevent @click="openDetailJsonCompare">
+                    {{ t("grid.compareJson") }}
                   </Button>
                   <Button v-if="activeValueEditorActions.includes('setNull')" variant="outline" size="sm" class="h-6 text-xs" @mousedown.prevent @click="setValueEditorNull">
                     {{ t("grid.setNull") }}
@@ -13621,6 +13658,8 @@ function currentGridContextMenuItems(): ContextMenuItem[] {
       :database-type="resolvedDatabaseType"
       @edit="openDialogCellInSidePanel"
     />
+
+    <DataGridValueDiffDialog v-if="detailValueDiffSnapshot" v-model:open="detailValueDiffOpen" :snapshot="detailValueDiffSnapshot" />
 
     <DataGridDetailDialogs
       v-if="detailDialogsMounted"

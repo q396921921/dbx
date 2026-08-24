@@ -28,6 +28,7 @@ vi.mock("@lucide/vue", async () => {
     ChevronsRight: icon,
     Download: icon,
     Filter: icon,
+    FileDiff: icon,
     Loader2: icon,
     FileUp: icon,
     Upload: icon,
@@ -1433,6 +1434,49 @@ describe("cell detail surfaces", () => {
     doubleClickCapture({ target: lineTarget, clientX: 160, clientY: 30 });
     doubleClickCapture({ target: { closest: () => null }, clientX: 60, clientY: 80 });
     expect(startEdit).toHaveBeenCalledTimes(4);
+  });
+
+  it("only enables JSON comparison for changed drafts and prevents editor blur on pointer down", async () => {
+    const compareJson = vi.fn();
+    const mounted = mountComponent(DataGridCellDetailPanel, {
+      detail: detail(),
+      panelIsBottom: true,
+      metadataCollapsed: false,
+      valueFillsHeight: true,
+      editing: true,
+      sideJsonView: false,
+      showCompactJson: true,
+      canCompactJson: true,
+      showCompareJson: true,
+      canCompareJson: false,
+      typeColorClass: () => "",
+      canDownloadBinaryValue: () => false,
+      downloadBinaryValue: vi.fn(),
+      canImportBinaryValue: () => false,
+      importBinaryValue: vi.fn(),
+      openImagePreview: vi.fn(),
+      canCopySqlCondition: () => true,
+      onCompareJson: compareJson,
+    });
+
+    const disabledCompare = findOne(mounted.root, (node) => node.props.title === "grid.compareJson");
+    expect(disabledCompare.props.disabled).toBe(true);
+    dispatch(disabledCompare, "click");
+    expect(compareJson).not.toHaveBeenCalled();
+
+    await mounted.setProps({ canCompareJson: true });
+    const enabledCompare = findOne(mounted.root, (node) => node.props.title === "grid.compareJson");
+    expect(dispatch(enabledCompare, "mousedown").defaultPrevented).toBe(true);
+    dispatch(enabledCompare, "click");
+    expect(compareJson).toHaveBeenCalledOnce();
+  });
+
+  it("snapshots comparison values before opening and suppresses modal-induced blur commits", () => {
+    expect(dataGridSource).toContain("detailValueDiffSnapshot.value = snapshot;");
+    expect(dataGridSource).toContain("detailValueDiffOpen.value = true;");
+    expect(dataGridSource).toContain("if (!detailValueDiffOpen.value) commitValueEditorEdit();");
+    expect(dataGridSource).toContain(':disabled="!canCompareDetailJson" @mousedown.prevent @click="openDetailJsonCompare"');
+    expect(dataGridSource).toContain('v-model:open="detailValueDiffOpen" :snapshot="detailValueDiffSnapshot"');
   });
 });
 
