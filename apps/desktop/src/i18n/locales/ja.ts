@@ -1610,6 +1610,8 @@ export default withEnglishFallback({
     filterBuilderNotBetween: "範囲外",
     filterBuilderIsNull: "NULLである",
     filterBuilderIsNotNull: "NULLでない",
+    filterBuilderIsBlank: "空（NULLまたは空文字）",
+    filterBuilderIsNotBlank: "空でない（NULLでも空文字でもない）",
     columnActions: "列の操作",
     localFilter: "ローカル値フィルター",
     localFilterFor: "'{column}'のローカル値",

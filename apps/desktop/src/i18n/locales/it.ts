@@ -1592,6 +1592,8 @@ export default withEnglishFallback({
     filterBuilderNotBetween: "Fuori intervallo",
     filterBuilderIsNull: "È NULL",
     filterBuilderIsNotNull: "Non è NULL",
+    filterBuilderIsBlank: "È vuoto (NULL o stringa vuota)",
+    filterBuilderIsNotBlank: "Non è vuoto (né NULL né stringa vuota)",
     columnActions: "Azioni colonna",
     localFilter: "Filtro valori locale",
     localFilterFor: "Valori locali per '{column}'",

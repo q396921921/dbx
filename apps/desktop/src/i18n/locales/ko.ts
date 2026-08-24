@@ -1587,6 +1587,8 @@ export default withEnglishFallback({
     filterBuilderNotBetween: "범위 외",
     filterBuilderIsNull: "NULL임",
     filterBuilderIsNotNull: "NULL이 아님",
+    filterBuilderIsBlank: "비어 있음(NULL 또는 빈 문자열)",
+    filterBuilderIsNotBlank: "비어 있지 않음(NULL도 빈 문자열도 아님)",
     columnActions: "컬럼 작업",
     localFilter: "로컬 값 필터",
     localFilterFor: "'{column}' 로컬 값",

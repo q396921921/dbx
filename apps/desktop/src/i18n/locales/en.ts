@@ -1711,6 +1711,8 @@ export default {
     filterBuilderNotBetween: "Outside range",
     filterBuilderIsNull: "Is NULL",
     filterBuilderIsNotNull: "Is not NULL",
+    filterBuilderIsBlank: "Is blank (NULL or empty)",
+    filterBuilderIsNotBlank: "Is not blank (not NULL and not empty)",
     columnActions: "Column actions",
     localFilter: "Local value filter",
     localFilterFor: "Local Values For '{column}'",

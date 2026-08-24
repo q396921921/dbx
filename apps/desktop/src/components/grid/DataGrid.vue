@@ -1036,6 +1036,8 @@ const allFilterModeOptions: Array<{ value: FilterMode; labelKey: string }> = [
   { value: "not-between", labelKey: "grid.filterBuilderNotBetween" },
   { value: "is-null", labelKey: "grid.filterBuilderIsNull" },
   { value: "is-not-null", labelKey: "grid.filterBuilderIsNotNull" },
+  { value: "is-blank", labelKey: "grid.filterBuilderIsBlank" },
+  { value: "is-not-blank", labelKey: "grid.filterBuilderIsNotBlank" },
 ];
 const filterModeOptions = computed(() => allFilterModeOptions.filter((option) => filterModeIsSupportedForDatabase(option.value, resolvedDatabaseType.value)));
 const filterBuilderColumnOptions = computed(() => filterBuilderColumns.value.map((column) => column.name));
@@ -6372,7 +6374,7 @@ async function contextFilterCondition(target: ContextFilterTarget, mode: FilterM
   const { columnName, sourceResult, sourceIndex, sourceValue, requiresHydration } = target;
   // CustomContextMenu closes before invoking its action. Keep the target
   // stable across hydration after the close lifecycle clears contextCell.
-  if (mode !== "is-null" && mode !== "is-not-null") {
+  if (filterModeNeedsValue(mode)) {
     if (!(await hydrateLargeValueCell(target.rowId, target.col))) return null;
   }
   if (props.result !== sourceResult) return null;
