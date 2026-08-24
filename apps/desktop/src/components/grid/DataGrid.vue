@@ -452,6 +452,7 @@ interface DataGridProps {
   countTotalRows?: () => Promise<number | undefined>;
   loading?: boolean;
   cacheKey?: string;
+  columnWidthCacheKey?: string;
   pendingStateKey?: string;
   exportSql?: string;
   onExecuteSql?: (sql: string) => Promise<void>;
@@ -2714,7 +2715,7 @@ function scrollToColumnIndex(columnIndex: number) {
 // --- Column resize composable ---
 const columnWidthDensity = computed(() => settingsStore.editorSettings.columnWidthDensity);
 const tableFontFamily = computed(() => settingsStore.editorSettings.tableFontFamily);
-const columnWidthCacheKey = computed(() => props.cacheKey?.trim() || undefined);
+const columnWidthCacheKey = computed(() => props.columnWidthCacheKey?.trim() || props.cacheKey?.trim() || undefined);
 const columnStructureSignature = computed(() => createDataGridColumnStructureSignature(props.result.columns, props.result.column_types));
 // Bumped once the configured header font is ready, so widths measured against a temporary fallback
 // font get re-measured without reacting to unrelated fonts loaded elsewhere in the application.
