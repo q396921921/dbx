@@ -2105,6 +2105,9 @@ export default withEnglishFallback({
       contractInvalid: "資料庫 Agent 回傳了無效的錯誤契約。",
       legacyFailure: "資料庫 Agent 回傳了未分類錯誤。",
     },
+    transaction: {
+      sessionExpired: "手動交易因 {timeoutSecs} 秒無操作而過期並回滾，DBX 將自動開始新的交易。",
+    },
     legacy: "後端回傳了錯誤。",
     unknown: "發生未預期的後端錯誤。",
   },

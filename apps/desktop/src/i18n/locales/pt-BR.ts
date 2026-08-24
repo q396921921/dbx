@@ -2106,6 +2106,9 @@ export default withEnglishFallback({
       contractInvalid: "O Agent do banco retornou um contrato de erro inválido.",
       legacyFailure: "O Agent do banco retornou um erro não classificado.",
     },
+    transaction: {
+      sessionExpired: "A transação manual expirou após {timeoutSecs} segundos de inatividade e foi revertida. Uma nova transação será iniciada automaticamente.",
+    },
     legacy: "O backend retornou um erro.",
     unknown: "Ocorreu um erro inesperado no backend.",
   },

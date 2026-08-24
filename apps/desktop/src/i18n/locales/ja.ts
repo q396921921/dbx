@@ -2131,6 +2131,9 @@ export default withEnglishFallback({
       contractInvalid: "データベース Agent が無効なエラー契約を返しました。",
       legacyFailure: "データベース Agent が分類できないエラーを返しました。",
     },
+    transaction: {
+      sessionExpired: "手動トランザクションは {timeoutSecs} 秒間操作がなかったため期限切れとなり、ロールバックされました。新しいトランザクションを自動的に開始します。",
+    },
     legacy: "バックエンドがエラーを返しました。",
     unknown: "予期しないバックエンドエラーが発生しました。",
   },

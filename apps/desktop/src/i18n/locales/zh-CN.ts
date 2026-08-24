@@ -2095,6 +2095,9 @@ export default withEnglishFallback({
       contractInvalid: "数据库 Agent 返回了无效的错误契约。",
       legacyFailure: "数据库 Agent 返回了未分类错误。",
     },
+    transaction: {
+      sessionExpired: "手动事务因 {timeoutSecs} 秒无操作已过期并回滚，DBX 将自动开始新事务。",
+    },
     legacy: "后端返回了错误。",
     unknown: "发生了未预期的后端错误。",
   },

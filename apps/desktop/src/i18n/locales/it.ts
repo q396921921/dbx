@@ -2104,6 +2104,9 @@ export default withEnglishFallback({
       contractInvalid: "L'agente del database ha restituito un contratto di errore non valido.",
       legacyFailure: "L'agente del database ha restituito un errore non classificato.",
     },
+    transaction: {
+      sessionExpired: "La transazione manuale è scaduta dopo {timeoutSecs} secondi di inattività ed è stata annullata. Verrà avviata automaticamente una nuova transazione.",
+    },
     legacy: "Il backend ha restituito un errore.",
     unknown: "Si è verificato un errore backend imprevisto.",
   },

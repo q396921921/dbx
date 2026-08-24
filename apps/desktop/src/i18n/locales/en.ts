@@ -2171,6 +2171,9 @@ export default {
       contractInvalid: "Database agent returned an invalid error contract.",
       legacyFailure: "Database agent returned an unclassified error.",
     },
+    transaction: {
+      sessionExpired: "The manual transaction expired after {timeoutSecs} seconds of inactivity and was rolled back. A new transaction will be started automatically.",
+    },
     legacy: "Backend returned an error.",
     unknown: "An unexpected backend error occurred.",
   },

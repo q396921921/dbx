@@ -2005,6 +2005,9 @@ export default withEnglishFallback({
       contractInvalid: "데이터베이스 Agent가 잘못된 오류 계약을 반환했습니다.",
       legacyFailure: "데이터베이스 Agent가 분류되지 않은 오류를 반환했습니다.",
     },
+    transaction: {
+      sessionExpired: "수동 트랜잭션이 {timeoutSecs}초 동안 활동이 없어 만료되고 롤백되었습니다. 새 트랜잭션을 자동으로 시작합니다.",
+    },
     legacy: "백엔드에서 오류를 반환했습니다.",
     unknown: "예상하지 못한 백엔드 오류가 발생했습니다.",
   },
