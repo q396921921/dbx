@@ -1935,11 +1935,11 @@ public final class DbxJdbcPlugin {
         }
         String catalog = metadataCatalog(database, quirks);
         String schemaPattern = resolveSchemaPattern(meta, database, schema, quirks);
-        appendTables(result, meta, catalog, schemaPattern, types);
-        if (result.isEmpty() && catalog != null) {
-            appendTables(result, meta, null, schemaPattern, types);
+        boolean catalogHadTables = appendTables(result, meta, catalog, schemaPattern, types, filter, limit, offset);
+        if (!catalogHadTables && catalog != null) {
+            appendTables(result, meta, null, schemaPattern, types, filter, limit, offset);
         }
-        return filterMetadataNodes(result, filter, limit, offset, objectTypes, "table_type", true);
+        return result;
     }
 
     private static JsonNode listObjects(
@@ -2200,22 +2200,41 @@ public final class DbxJdbcPlugin {
         }
     }
 
-    private static void appendTables(
+    private static boolean appendTables(
         ArrayNode result,
         DatabaseMetaData meta,
         String catalog,
         String schema,
-        String[] types
+        String[] types,
+        String filter,
+        int limit,
+        int offset
     ) throws SQLException {
+        String normalizedFilter = filter == null ? "" : filter.trim().toLowerCase(Locale.ROOT);
+        int skipped = 0;
+        int max = limit <= 0 ? Integer.MAX_VALUE : limit;
+        boolean found = false;
         try (ResultSet rs = meta.getTables(catalog, schema, "%", types)) {
             while (rs.next()) {
+                found = true;
+                String name = rs.getString("TABLE_NAME");
+                if (!metadataNameMatches(name, normalizedFilter)) {
+                    continue;
+                }
+                if (skipped++ < Math.max(0, offset)) {
+                    continue;
+                }
                 ObjectNode item = MAPPER.createObjectNode();
-                item.put("name", rs.getString("TABLE_NAME"));
+                item.put("name", name);
                 item.put("table_type", rs.getString("TABLE_TYPE"));
                 putNullable(item, "comment", rs.getString("REMARKS"));
                 result.add(item);
+                if (result.size() >= max) {
+                    break;
+                }
             }
         }
+        return found;
     }
 
     static String[] jdbcTableTypes(DatabaseMetaData meta) throws SQLException {
