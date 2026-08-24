@@ -2515,6 +2515,34 @@ function createHoverDom(title: string, detail: string, sqlContent?: string, rows
   let handleCopy: ((event: ClipboardEvent) => void) | null = null;
 
   if (sqlContent) {
+    heading.className = "flex items-center justify-between gap-3 font-medium";
+
+    const copyButton = document.createElement("button");
+    copyButton.type = "button";
+    copyButton.className = "rounded border border-border/60 px-1.5 py-0.5 text-[11px] leading-none text-muted-foreground hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    copyButton.textContent = t("grid.copyDdl");
+    copyButton.title = t("grid.copyDdl");
+    copyButton.setAttribute("aria-label", t("grid.copyDdl"));
+    copyButton.addEventListener("pointerdown", (event) => {
+      // Keep CodeMirror's editor gestures from dismissing the tooltip before
+      // the click can reach the copy action.
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    copyButton.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void (async () => {
+        try {
+          await copyToClipboard(normalizeAlignedSqlWhitespace(sqlContent));
+          toast(t("contextMenu.ddlCopied"), 2000);
+        } catch (error: any) {
+          toast(t("grid.copyFailed", { message: error?.message || String(error) }), 5000);
+        }
+      })();
+    });
+    heading.appendChild(copyButton);
+
     const separator = document.createElement("div");
     separator.className = "mt-2 border-t border-border/60";
     dom.appendChild(separator);
