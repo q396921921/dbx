@@ -6518,6 +6518,7 @@ export default {
     shortcutExtendSelection: "Extend selection",
     shortcutCopyCurrentRow: "Copy current data row",
     shortcutDeleteCurrentRow: "Delete current data row",
+    shortcutGoToColumn: "Go to column",
     shortcutNewQuery: "New query",
     shortcutOpenSettings: "Open settings",
     shortcutCloseTab: "Close tab",

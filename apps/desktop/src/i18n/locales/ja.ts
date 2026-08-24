@@ -6203,6 +6203,7 @@ export default withEnglishFallback({
     shortcutExtendSelection: "選択範囲を拡張",
     shortcutCopyCurrentRow: "現在のデータ行をコピー",
     shortcutDeleteCurrentRow: "現在のデータ行を削除",
+    shortcutGoToColumn: "列へ移動",
     shortcutNewQuery: "新しいクエリ",
     shortcutOpenSettings: "設定を開く",
     shortcutCloseTab: "タブを閉じる",

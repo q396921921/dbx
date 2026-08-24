@@ -5496,6 +5496,7 @@ export default withEnglishFallback({
     shortcutExtendSelection: "擴展選取範圍",
     shortcutCopyCurrentRow: "複製目前資料列",
     shortcutDeleteCurrentRow: "刪除目前資料列",
+    shortcutGoToColumn: "跳轉欄",
     shortcutNewQuery: "建立查詢",
     shortcutOpenSettings: "開啟設定",
     shortcutCloseTab: "關閉分頁",

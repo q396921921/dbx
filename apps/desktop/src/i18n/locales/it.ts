@@ -6189,6 +6189,7 @@ export default withEnglishFallback({
     shortcutExtendSelection: "Estendi selezione",
     shortcutCopyCurrentRow: "Copia riga dati corrente",
     shortcutDeleteCurrentRow: "Elimina riga dati corrente",
+    shortcutGoToColumn: "Vai alla colonna",
     shortcutNewQuery: "Nuova query",
     shortcutOpenSettings: "Apri impostazioni",
     shortcutCloseTab: "Chiudi scheda",

@@ -6189,6 +6189,7 @@ export default withEnglishFallback({
     shortcutExtendSelection: "Ampliar selección",
     shortcutCopyCurrentRow: "Copiar fila de datos actual",
     shortcutDeleteCurrentRow: "Eliminar fila de datos actual",
+    shortcutGoToColumn: "Ir a la columna",
     shortcutNewQuery: "Nueva consulta",
     shortcutOpenSettings: "Abrir configuración",
     shortcutCloseTab: "Cerrar pestaña",

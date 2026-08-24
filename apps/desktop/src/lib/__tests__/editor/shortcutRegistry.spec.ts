@@ -25,6 +25,31 @@ describe("shortcutRegistry editor actions", () => {
   ];
   const sidebarShortcutActionIds: ShortcutActionId[] = ["copySidebarSelection", "pasteSidebarSelection", "editSidebarConnection", "viewTableDdl"];
 
+  it("registers go to column as an unassigned grid shortcut", () => {
+    const definition = SHORTCUT_DEFINITIONS.find((item) => item.id === "goToColumn");
+
+    expect(definition).toMatchObject({
+      labelKey: "settings.shortcutGoToColumn",
+      scope: "grid",
+      defaultShortcut: "",
+    });
+    expect(DEFAULT_SHORTCUT_SETTINGS.goToColumn).toBe("");
+  });
+
+  it("normalizes missing, legacy, cleared, and configured go-to-column settings", () => {
+    expect(normalizeShortcutSettings().goToColumn).toBe("");
+    expect(normalizeShortcutSettings({ executeSql: "Mod+Shift+Enter" }).goToColumn).toBe("");
+    expect(normalizeShortcutSettings({ goToColumn: "" }).goToColumn).toBe("");
+    expect(normalizeShortcutSettings({ goToColumn: "Mod+G" }).goToColumn).toBe("Mod+G");
+  });
+
+  it("detects go-to-column conflicts only within the grid scope", () => {
+    const shortcuts = normalizeShortcutSettings({ goToColumn: "Mod+D" });
+
+    expect(findShortcutConflict("goToColumn", shortcuts.goToColumn, shortcuts)).toBe("copyCurrentRow");
+    expect(findShortcutConflict("goToColumn", "Mod+F", shortcuts)).toBeNull();
+  });
+
   it("registers the new-data-tab mouse modifier as a configurable sidebar shortcut", () => {
     const definition = SHORTCUT_DEFINITIONS.find((item) => item.id === "openDataInNewTab");
 

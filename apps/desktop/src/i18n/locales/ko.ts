@@ -5900,6 +5900,7 @@ export default withEnglishFallback({
     shortcutSelectAll: "모두 선택",
     shortcutCopyCurrentRow: "현재 데이터 행 복사",
     shortcutDeleteCurrentRow: "현재 데이터 행 삭제",
+    shortcutGoToColumn: "컬럼으로 이동",
     shortcutNewQuery: "새 쿼리",
     shortcutOpenSettings: "설정 열기",
     shortcutCloseTab: "탭 닫기",

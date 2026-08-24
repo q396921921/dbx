@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { eventToModifierOnlyShortcut, eventToShortcut, isExecuteSqlInNewResultTabShortcut, matchesModifierOnlyShortcut, matchesShortcut, tabSwitcherDirectionFromShortcut } from "@/lib/editor/keyboardShortcuts";
+import { eventToModifierOnlyShortcut, eventToShortcut, isExecuteSqlInNewResultTabShortcut, isGoToColumnShortcut, matchesModifierOnlyShortcut, matchesShortcut, tabSwitcherDirectionFromShortcut } from "@/lib/editor/keyboardShortcuts";
 import { formatShortcutDisplay, isMacShortcutPlatform } from "@/lib/editor/shortcutDisplay";
 
 describe("keyboard shortcut matching", () => {
@@ -81,6 +81,18 @@ describe("keyboard shortcut matching", () => {
   it("matches legacy plus-key shortcuts saved with plus as a separator", () => {
     expect(matchesShortcut({ key: "+", ctrlKey: true }, "Mod++", "Win32")).toBe(true);
     expect(matchesShortcut({ key: "+", ctrlKey: true, shiftKey: true }, "Shift+Mod++", "Win32")).toBe(true);
+  });
+
+  it("matches only the configured go-to-column shortcut", () => {
+    expect(isGoToColumnShortcut({ key: "g", ctrlKey: true }, { goToColumn: "Mod+G" })).toBe(true);
+    expect(isGoToColumnShortcut({ key: "g", ctrlKey: true, shiftKey: true }, { goToColumn: "Mod+G" })).toBe(false);
+    expect(isGoToColumnShortcut({ key: "j", ctrlKey: true }, { goToColumn: "Mod+G" })).toBe(false);
+  });
+
+  it("does not match an empty or composing go-to-column shortcut", () => {
+    expect(isGoToColumnShortcut({ key: "g", ctrlKey: true })).toBe(false);
+    expect(isGoToColumnShortcut({ key: "g", ctrlKey: true }, { goToColumn: "" })).toBe(false);
+    expect(isGoToColumnShortcut({ key: "g", ctrlKey: true, isComposing: true }, { goToColumn: "Mod+G" })).toBe(false);
   });
 });
 

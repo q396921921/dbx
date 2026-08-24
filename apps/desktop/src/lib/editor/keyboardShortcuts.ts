@@ -207,6 +207,10 @@ export function isDeleteCurrentRowShortcut(event: ShortcutLikeEvent, shortcuts?:
   return matchesShortcut(event, actionShortcut("deleteCurrentRow", shortcuts));
 }
 
+export function isGoToColumnShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
+  return matchesShortcut(event, actionShortcut("goToColumn", shortcuts));
+}
+
 export function isCancelSearchShortcut(event: ShortcutLikeEvent, shortcuts?: Partial<ShortcutSettings>): boolean {
   return matchesShortcut(event, actionShortcut("cancelSearch", shortcuts));
 }

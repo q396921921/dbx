@@ -30,6 +30,7 @@ export type ShortcutActionId =
   | "toggleFold"
   | "copyCurrentRow"
   | "deleteCurrentRow"
+  | "goToColumn"
   | "newQuery"
   | "openSettings"
   | "closeTab"
@@ -279,6 +280,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     labelKey: "settings.shortcutDeleteCurrentRow",
     scope: "grid",
     defaultShortcut: "Delete",
+  },
+  {
+    id: "goToColumn",
+    labelKey: "settings.shortcutGoToColumn",
+    scope: "grid",
+    defaultShortcut: "",
   },
   {
     id: "newQuery",
