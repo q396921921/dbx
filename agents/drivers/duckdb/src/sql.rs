@@ -243,6 +243,13 @@ pub fn rewrite_duckdb_current_date_literal_arithmetic(sql: &str) -> std::borrow:
                 index = (index + 2).min(bytes.len());
                 continue;
             }
+            b'$' if !in_single && !in_double => {
+                if let Some(end) = dollar_quote_end(bytes, index) {
+                    index = end;
+                    continue;
+                }
+                index += 1;
+            }
             _ if !in_single && !in_double && matches_keyword_at(bytes, index, KEYWORD) => {
                 let word_end = index + KEYWORD.len();
                 let preceded_by_dot = index > 0 && bytes[index - 1] == b'.';
@@ -483,5 +490,31 @@ mod tests {
         ] {
             assert_eq!(rewrite_duckdb_current_date_literal_arithmetic(sql), sql, "should not rewrite: {sql}");
         }
+    }
+
+    #[test]
+    fn leaves_dollar_quoted_current_date_arithmetic_untouched() {
+        assert_eq!(
+            rewrite_duckdb_current_date_literal_arithmetic(
+                "SELECT $$CURRENT_DATE - 4$$ AS source, CURRENT_DATE - 1 AS actual"
+            ),
+            "SELECT $$CURRENT_DATE - 4$$ AS source, current_date() - 1 AS actual"
+        );
+        assert_eq!(
+            rewrite_duckdb_current_date_literal_arithmetic(
+                "SELECT $body_1$CURRENT_DATE + 2$body_1$ AS source, CURRENT_DATE + 3 AS actual"
+            ),
+            "SELECT $body_1$CURRENT_DATE + 2$body_1$ AS source, current_date() + 3 AS actual"
+        );
+        assert_eq!(
+            rewrite_duckdb_current_date_literal_arithmetic(
+                "SELECT $outer$CURRENT_DATE - 4 $inner$ CURRENT_DATE + 2 $inner$$outer$ AS source"
+            ),
+            "SELECT $outer$CURRENT_DATE - 4 $inner$ CURRENT_DATE + 2 $inner$$outer$ AS source"
+        );
+        assert_eq!(
+            rewrite_duckdb_current_date_literal_arithmetic("SELECT $body$CURRENT_DATE - 4"),
+            "SELECT $body$CURRENT_DATE - 4"
+        );
     }
 }
