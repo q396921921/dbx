@@ -94,6 +94,8 @@ pub struct ConnectionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_databases: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visible_database_patterns: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub visible_schemas: Option<HashMap<String, Vec<String>>>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub show_system_schemas: bool,
@@ -525,6 +527,8 @@ struct ConnectionConfigData {
     #[serde(default)]
     pub visible_databases: Option<Vec<String>>,
     #[serde(default)]
+    pub visible_database_patterns: Option<Vec<String>>,
+    #[serde(default)]
     pub visible_schemas: Option<HashMap<String, Vec<String>>>,
     #[serde(default)]
     pub show_system_schemas: bool,
@@ -626,6 +630,7 @@ impl From<ConnectionConfigData> for ConnectionConfig {
             database: data.database,
             default_schema: data.default_schema,
             visible_databases: data.visible_databases,
+            visible_database_patterns: data.visible_database_patterns,
             visible_schemas: data.visible_schemas,
             show_system_schemas: data.show_system_schemas,
             attached_databases: data.attached_databases,
@@ -2642,6 +2647,7 @@ mod tests {
             database: database.map(str::to_string),
             default_schema: None,
             visible_databases: None,
+            visible_database_patterns: None,
             visible_schemas: None,
             show_system_schemas: false,
             attached_databases: Vec::new(),
