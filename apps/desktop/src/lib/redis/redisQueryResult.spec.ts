@@ -40,4 +40,35 @@ describe("redisCommandResultToQueryResult", () => {
       ["age", "30"],
     ]);
   });
+
+  it("does not pair when a non-sorted-set command merely contains WITHSCORES in a key", () => {
+    const flat = ["a", "b", "c"];
+    const result = redisCommandResultToQueryResult(flat, 5, "LRANGE my:WITHSCORES:list 0 -1");
+    expect(result.columns).toEqual(["(index)", "value"]);
+    expect(result.rows).toEqual([
+      [1, "a"],
+      [2, "b"],
+      [3, "c"],
+    ]);
+  });
+
+  it("does not pair SMEMBERS when WITHSCORES appears as an argument", () => {
+    const flat = ["x", "y"];
+    const result = redisCommandResultToQueryResult(flat, 5, "SMEMBERS WITHSCORES");
+    expect(result.columns).toEqual(["(index)", "value"]);
+    expect(result.rows).toEqual([
+      [1, "x"],
+      [2, "y"],
+    ]);
+  });
+
+  it("pairs member/score rows for ZRANGEBYSCORE ... WITHSCORES", () => {
+    const flat = ["alice", "1", "bob", "2"];
+    const result = redisCommandResultToQueryResult(flat, 5, "ZRANGEBYSCORE myzset -inf +inf WITHSCORES");
+    expect(result.columns).toEqual(["member", "score"]);
+    expect(result.rows).toEqual([
+      ["alice", "1"],
+      ["bob", "2"],
+    ]);
+  });
 });

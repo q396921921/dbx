@@ -2,6 +2,8 @@ import type { QueryResult } from "@/types/database";
 import { formatRedisCommandResult } from "@/lib/redis/redisValuePresentation";
 
 const KEY_VALUE_COMMANDS = new Set(["HGETALL"]);
+// Sorted-set commands whose WITHSCORES modifier returns a flat member/score array.
+const WITHSCORES_COMMANDS = new Set(["ZRANGE", "ZREVRANGE", "ZRANGEBYSCORE", "ZREVRANGEBYSCORE", "ZRANDMEMBER", "ZDIFF", "ZINTER", "ZUNION"]);
 const WITHSCORES_MODIFIER = /\bWITHSCORES\b/i;
 
 function commandHead(command: string): string {
@@ -14,9 +16,10 @@ function isKeyValueCommand(command: string): boolean {
 
 // ZRANGE/ZREVRANGE/ZRANGEBYSCORE/ZDIFF/ZINTER/ZUNION/... with a WITHSCORES modifier
 // return a flat [member1, score1, member2, score2, ...] array — pair it up instead of
-// dumping each element as its own row.
+// dumping each element as its own row. Gate on the command head so a key or argument
+// that merely contains the token WITHSCORES cannot trigger pairing.
 function hasWithScoresModifier(command: string): boolean {
-  return WITHSCORES_MODIFIER.test(command);
+  return WITHSCORES_COMMANDS.has(commandHead(command)) && WITHSCORES_MODIFIER.test(command);
 }
 
 export function redisCommandResultToQueryResult(value: unknown, elapsedMs: number, command?: string): QueryResult {
@@ -40,7 +43,7 @@ export function redisCommandResultToQueryResult(value: unknown, elapsedMs: numbe
     return {
       columns: ["member", "score"],
       rows,
-      affected_rows: value.length / 2,
+      affected_rows: rows.length,
       execution_time_ms: Math.max(0, Math.round(elapsedMs)),
     };
   }
