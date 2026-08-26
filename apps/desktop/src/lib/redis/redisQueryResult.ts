@@ -2,9 +2,21 @@ import type { QueryResult } from "@/types/database";
 import { formatRedisCommandResult } from "@/lib/redis/redisValuePresentation";
 
 const KEY_VALUE_COMMANDS = new Set(["HGETALL"]);
+const WITHSCORES_MODIFIER = /\bWITHSCORES\b/i;
+
+function commandHead(command: string): string {
+  return command.trim().split(/\s+/, 1)[0]?.toUpperCase() ?? "";
+}
 
 function isKeyValueCommand(command: string): boolean {
-  return KEY_VALUE_COMMANDS.has(command.toUpperCase().trim());
+  return KEY_VALUE_COMMANDS.has(commandHead(command));
+}
+
+// ZRANGE/ZREVRANGE/ZRANGEBYSCORE/ZDIFF/ZINTER/ZUNION/... with a WITHSCORES modifier
+// return a flat [member1, score1, member2, score2, ...] array — pair it up instead of
+// dumping each element as its own row.
+function hasWithScoresModifier(command: string): boolean {
+  return WITHSCORES_MODIFIER.test(command);
 }
 
 export function redisCommandResultToQueryResult(value: unknown, elapsedMs: number, command?: string): QueryResult {
@@ -15,6 +27,18 @@ export function redisCommandResultToQueryResult(value: unknown, elapsedMs: numbe
     }
     return {
       columns: ["field", "value"],
+      rows,
+      affected_rows: value.length / 2,
+      execution_time_ms: Math.max(0, Math.round(elapsedMs)),
+    };
+  }
+  if (Array.isArray(value) && command && hasWithScoresModifier(command)) {
+    const rows: (string | number | boolean | null)[][] = [];
+    for (let i = 0; i + 1 < value.length; i += 2) {
+      rows.push([formatRedisCommandResult(value[i]), formatRedisCommandResult(value[i + 1])]);
+    }
+    return {
+      columns: ["member", "score"],
       rows,
       affected_rows: value.length / 2,
       execution_time_ms: Math.max(0, Math.round(elapsedMs)),
