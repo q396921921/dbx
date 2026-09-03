@@ -4051,6 +4051,7 @@ export const useConnectionStore = defineStore("connection", () => {
     const idx = connections.value.findIndex((c) => c.id === config.id);
     if (idx < 0) return;
     const previousConfig = normalizeConnection(connections.value[idx]);
+    const previousDatabase = previousConfig.database ?? "";
     const runtimeConfigChanged = connectionConfigFingerprint(previousConfig) !== connectionConfigFingerprint(config);
     const shouldReconnectPlugin = runtimeConfigChanged && previousConfig.db_type === "plugin" && config.db_type === "plugin" && connectedIds.value.has(config.id);
     const nextConnections = [...connections.value];
@@ -4062,6 +4063,11 @@ export const useConnectionStore = defineStore("connection", () => {
     rebuildTreeNodes();
     if (!runtimeConfigChanged) return;
     clearEtcdAccessCapabilities(config.id);
+    // Tabs opened before this edit keep whatever database they were created
+    // with (queryStore snapshots it onto the tab); re-point the ones still on
+    // the old default so their query executor stops running against it (#7905).
+    const { useQueryStore } = await import("@/stores/queryStore");
+    useQueryStore().syncTabsDatabaseForConnectionEdit(config.id, previousDatabase, config.database ?? "");
     clearPrimaryVisibleObjectNames(config.id);
     connectedIds.value.delete(config.id);
     clearSidebarStorageCaches(config.id);
