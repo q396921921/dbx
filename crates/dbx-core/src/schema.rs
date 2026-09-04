@@ -1865,6 +1865,28 @@ fn dameng_object_statistics_rows_only_sql(schema: &str) -> String {
     )
 }
 
+/// One attempt of an object-statistics fallback chain: a log label, the SQL to
+/// run, and whether an empty (but successful) result should be accepted instead
+/// of falling through to the next attempt.
+type ObjectStatisticsAttempt = (&'static str, String, bool);
+
+fn oracle_object_statistics_query_plan(schema: &str) -> Vec<ObjectStatisticsAttempt> {
+    vec![
+        ("all-segments", oracle_object_statistics_sql(schema), true),
+        ("dba-segments", oracle_object_statistics_dba_segments_sql(schema), true),
+        ("user-segments", oracle_object_statistics_user_segments_sql(schema), false),
+        ("rows-only", oracle_object_statistics_rows_only_sql(schema), true),
+    ]
+}
+
+fn dameng_object_statistics_query_plan(schema: &str) -> Vec<ObjectStatisticsAttempt> {
+    vec![
+        ("dba-segments", dameng_object_statistics_dba_segments_sql(schema), true),
+        ("user-segments", dameng_object_statistics_user_segments_sql(schema), false),
+        ("rows-only", dameng_object_statistics_rows_only_sql(schema), true),
+    ]
+}
+
 fn gbase8a_object_statistics_sql(database: &str) -> String {
     format!(
         "SELECT TABLE_NAME, TABLE_SCHEMA, TABLE_ROWS, \
@@ -2071,44 +2093,54 @@ async fn load_oracle_table_comments_for_objects(
     Ok(())
 }
 
+/// Runs an object-statistics fallback chain against an arbitrary query
+/// transport, so the agent drivers and generic JDBC connections
+/// (`PoolKind::ExternalDriver`) can share the same vendor SQL and the same
+/// "try the next catalog view" behaviour.
+async fn object_statistics_from_query_plan<F, Fut>(
+    vendor: &str,
+    schema: &str,
+    plan: Vec<ObjectStatisticsAttempt>,
+    mut run: F,
+) -> Result<Vec<db::ObjectStatistics>, String>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<db::QueryResult, String>>,
+{
+    let mut last_error = None;
+    for (source, sql, accept_empty) in plan {
+        match run(sql).await {
+            Ok(result) if accept_empty || !result.rows.is_empty() => {
+                return Ok(oracle_object_statistics_from_query_result(result));
+            }
+            Ok(_) => {
+                log::debug!("[schema][{vendor}:list_object_statistics:empty-fallback] schema={schema} source={source}");
+            }
+            Err(error) => {
+                log::debug!(
+                    "[schema][{vendor}:list_object_statistics:fallback-failed] schema={schema} source={source} error={error}"
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| format!("{vendor} object statistics are unavailable")))
+}
+
 async fn oracle_agent_list_object_statistics(
     client: Arc<db::agent_driver::PooledAgentClient>,
     database: &str,
     schema: &str,
     timeout_duration: Option<Duration>,
 ) -> Result<Vec<db::ObjectStatistics>, String> {
-    let mut client = client.lock().await;
-    let queries = [
-        ("all-segments", oracle_object_statistics_sql(schema), true),
-        ("dba-segments", oracle_object_statistics_dba_segments_sql(schema), true),
-        ("user-segments", oracle_object_statistics_user_segments_sql(schema), false),
-        ("rows-only", oracle_object_statistics_rows_only_sql(schema), true),
-    ];
-    let mut last_error = None;
-    for (source, sql, accept_empty) in queries {
-        match agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await {
-            Ok(result) if accept_empty || !result.rows.is_empty() => {
-                return Ok(oracle_object_statistics_from_query_result(result));
-            }
-            Ok(_) => {
-                log::debug!(
-                    "[schema][oracle:list_object_statistics:empty-fallback] schema={} source={}",
-                    schema,
-                    source
-                );
-            }
-            Err(error) => {
-                log::debug!(
-                    "[schema][oracle:list_object_statistics:fallback-failed] schema={} source={} error={}",
-                    schema,
-                    source,
-                    error
-                );
-                last_error = Some(error);
-            }
+    object_statistics_from_query_plan("Oracle", schema, oracle_object_statistics_query_plan(schema), |sql| {
+        let client = client.clone();
+        async move {
+            let mut client = client.lock().await;
+            agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await
         }
-    }
-    Err(last_error.unwrap_or_else(|| "Oracle object statistics are unavailable".to_string()))
+    })
+    .await
 }
 
 async fn dameng_agent_list_object_statistics(
@@ -2117,37 +2149,14 @@ async fn dameng_agent_list_object_statistics(
     schema: &str,
     timeout_duration: Option<Duration>,
 ) -> Result<Vec<db::ObjectStatistics>, String> {
-    let mut client = client.lock().await;
-    let queries = [
-        ("dba-segments", dameng_object_statistics_dba_segments_sql(schema), true),
-        ("user-segments", dameng_object_statistics_user_segments_sql(schema), false),
-        ("rows-only", dameng_object_statistics_rows_only_sql(schema), true),
-    ];
-    let mut last_error = None;
-    for (source, sql, accept_empty) in queries {
-        match agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await {
-            Ok(result) if accept_empty || !result.rows.is_empty() => {
-                return Ok(oracle_object_statistics_from_query_result(result));
-            }
-            Ok(_) => {
-                log::debug!(
-                    "[schema][dameng:list_object_statistics:empty-fallback] schema={} source={}",
-                    schema,
-                    source
-                );
-            }
-            Err(error) => {
-                log::debug!(
-                    "[schema][dameng:list_object_statistics:fallback-failed] schema={} source={} error={}",
-                    schema,
-                    source,
-                    error
-                );
-                last_error = Some(error);
-            }
+    object_statistics_from_query_plan("Dameng", schema, dameng_object_statistics_query_plan(schema), |sql| {
+        let client = client.clone();
+        async move {
+            let mut client = client.lock().await;
+            agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await
         }
-    }
-    Err(last_error.unwrap_or_else(|| "Dameng object statistics are unavailable".to_string()))
+    })
+    .await
 }
 
 async fn agent_list_object_statistics(
@@ -2160,6 +2169,101 @@ async fn agent_list_object_statistics(
     let mut client = client.lock().await;
     let result = agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await?;
     Ok(oracle_object_statistics_from_query_result(result))
+}
+
+/// Vendors whose object statistics can be collected over a generic JDBC
+/// connection (`PoolKind::ExternalDriver`).
+///
+/// The bundled JDBC plugin exposes no `listObjectStatistics` RPC, but the
+/// vendor statistics SQL is plain SQL that runs fine through `executeQuery`, so
+/// the only missing piece is recognising which database sits behind the JDBC
+/// URL. The prefixes mirror `DbxJdbcPlugin.driverQuirks`, which picks its own
+/// metadata dialect the same way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExternalDriverStatisticsDialect {
+    Oracle,
+    Dameng,
+    Kingbase,
+}
+
+fn external_driver_statistics_dialect(config: &ConnectionConfig) -> Option<ExternalDriverStatisticsDialect> {
+    // `is_oracle_external_driver_config` (added alongside the JDBC Oracle DDL
+    // fix) checks both the `jdbc:oracle:` URL prefix and the driver class, so
+    // it recognises more real-world configs than a URL-only sniff would.
+    if config.db_type == DatabaseType::Oracle || is_oracle_external_driver_config(config) {
+        return Some(ExternalDriverStatisticsDialect::Oracle);
+    }
+    match config.db_type {
+        DatabaseType::Dameng => return Some(ExternalDriverStatisticsDialect::Dameng),
+        DatabaseType::Kingbase => return Some(ExternalDriverStatisticsDialect::Kingbase),
+        // Generic JDBC connections carry no vendor in `db_type`; sniff the URL.
+        DatabaseType::Jdbc => {}
+        _ => return None,
+    }
+    let url = config.connection_string.as_deref().map(str::trim).filter(|url| !url.is_empty())?.to_ascii_lowercase();
+    if url.starts_with("jdbc:dm:") {
+        Some(ExternalDriverStatisticsDialect::Dameng)
+    } else if url.starts_with("jdbc:kingbase") {
+        Some(ExternalDriverStatisticsDialect::Kingbase)
+    } else {
+        None
+    }
+}
+
+fn external_driver_statistics_query_plan(
+    dialect: ExternalDriverStatisticsDialect,
+    schema: &str,
+) -> Vec<ObjectStatisticsAttempt> {
+    match dialect {
+        ExternalDriverStatisticsDialect::Oracle => oracle_object_statistics_query_plan(schema),
+        ExternalDriverStatisticsDialect::Dameng => dameng_object_statistics_query_plan(schema),
+        ExternalDriverStatisticsDialect::Kingbase => {
+            vec![("catalog", kingbase::object_statistics_sql(schema), true)]
+        }
+    }
+}
+
+fn external_driver_statistics_vendor(dialect: ExternalDriverStatisticsDialect) -> &'static str {
+    match dialect {
+        ExternalDriverStatisticsDialect::Oracle => "Oracle",
+        ExternalDriverStatisticsDialect::Dameng => "Dameng",
+        ExternalDriverStatisticsDialect::Kingbase => "Kingbase",
+    }
+}
+
+async fn external_driver_list_object_statistics(
+    session: Arc<crate::plugins::PluginDriverSession>,
+    config: &ConnectionConfig,
+    dialect: ExternalDriverStatisticsDialect,
+    database: &str,
+    schema: &str,
+) -> Result<Vec<db::ObjectStatistics>, String> {
+    let timeout_duration = agent_metadata_timeout(Some(config));
+    object_statistics_from_query_plan(
+        external_driver_statistics_vendor(dialect),
+        schema,
+        external_driver_statistics_query_plan(dialect, schema),
+        |sql| {
+            let session = session.clone();
+            async move {
+                session
+                    .invoke_with_timeout(
+                        "executeQuery",
+                        serde_json::json!({
+                            "connection": config,
+                            "database": database,
+                            "schema": schema,
+                            "sql": sql,
+                            "maxRows": 10_000,
+                            "fetchSize": 1000,
+                        }),
+                        timeout_duration,
+                    )
+                    .await
+            }
+        },
+    )
+    .await
 }
 
 async fn agent_object_statistics_query(
@@ -3061,12 +3165,13 @@ mod tests {
     use super::{
         clickhouse_metadata_database, dameng_object_statistics_dba_segments_sql,
         dameng_object_statistics_rows_only_sql, dameng_object_statistics_user_segments_sql, deduplicate_column_infos,
-        ephemeral_agent_metadata_session_id, external_driver_uses_mysql_ddl, filter_mongodb_agent_collections,
-        filter_mysql_system_databases_for_config, filter_object_infos, filter_table_infos, filter_visible_schema_names,
-        finalize_object_source, gaussdb_m_view_object_source_sql, gbase8a_object_statistics_sql,
-        is_agent_postgres_metadata_fallback_config, is_mysql_external_driver_config, is_oracle_external_driver_config,
-        is_retryable_metadata_error, metadata_error_action, metadata_name_or_comment_matches,
-        mysql_database_list_timeout, mysql_external_driver_ddl_from_query_result, mysql_external_driver_ddl_sql,
+        ephemeral_agent_metadata_session_id, external_driver_statistics_dialect, external_driver_statistics_query_plan,
+        external_driver_uses_mysql_ddl, filter_mongodb_agent_collections, filter_mysql_system_databases_for_config,
+        filter_object_infos, filter_table_infos, filter_visible_schema_names, finalize_object_source,
+        gaussdb_m_view_object_source_sql, gbase8a_object_statistics_sql, is_agent_postgres_metadata_fallback_config,
+        is_mysql_external_driver_config, is_oracle_external_driver_config, is_retryable_metadata_error,
+        metadata_error_action, metadata_name_or_comment_matches, mysql_database_list_timeout,
+        mysql_external_driver_ddl_from_query_result, mysql_external_driver_ddl_sql,
         mysql_object_source_ddl_column_index, mysql_object_source_sql, mysql_table_list_source_for_config,
         mysql_table_metadata_catalog, normalize_information_schema_table_type, oracle_columns_from_query_result,
         oracle_columns_sql, oracle_columns_sql_for_resolved_owner, oracle_current_schema_from_query_result,
@@ -3079,9 +3184,10 @@ mod tests {
         reference_key_columns_from_indexes, reference_keys_from_indexes, replace_metadata_runtime,
         should_query_oracle_columns_via_sql_first, table_comments_from_query_result, table_name_filter_matches,
         tdengine_table_comment_like_pattern, tdengine_table_comment_sql, tdengine_table_comments_sql,
-        uses_mongodb_agent_collection_listing, visible_schema_filter, MetadataErrorAction, MysqlTableListSource,
-        OracleObjectRef, OracleSynonymResolver, ReferenceKeyInfo, TableNameFilter, ORACLE_CURRENT_SCHEMA_SQL,
-        ORACLE_SYNONYM_MAX_DEPTH, TDENGINE_COMMENT_SEARCH_TIMEOUT, TDENGINE_LIKE_PATTERN_MAX_BYTES,
+        uses_mongodb_agent_collection_listing, visible_schema_filter, ExternalDriverStatisticsDialect,
+        MetadataErrorAction, MysqlTableListSource, OracleObjectRef, OracleSynonymResolver, ReferenceKeyInfo,
+        TableNameFilter, ORACLE_CURRENT_SCHEMA_SQL, ORACLE_SYNONYM_MAX_DEPTH, TDENGINE_COMMENT_SEARCH_TIMEOUT,
+        TDENGINE_LIKE_PATTERN_MAX_BYTES,
     };
     use super::{list_databases_core, list_tables_core};
     use super::{
@@ -3494,6 +3600,48 @@ mod tests {
 
         config.db_type = DatabaseType::Oracle;
         assert!(!is_oracle_external_driver_config(&config));
+    }
+
+    #[test]
+    fn external_driver_statistics_dialect_matches_jdbc_url_vendor() {
+        let mut config = test_connection_config(DatabaseType::Jdbc);
+        config.connection_string = Some(" JDBC:Oracle:thin:@127.0.0.1:1521:XE ".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), Some(ExternalDriverStatisticsDialect::Oracle));
+
+        config.connection_string = Some("jdbc:dm://127.0.0.1:5236".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), Some(ExternalDriverStatisticsDialect::Dameng));
+
+        config.connection_string = Some("jdbc:kingbase8://127.0.0.1:54321/app".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), Some(ExternalDriverStatisticsDialect::Kingbase));
+
+        // Vendors without statistics SQL keep the previous "no statistics" behaviour.
+        config.connection_string = Some("jdbc:hive2://127.0.0.1:10000/default".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), None);
+
+        config.connection_string = None;
+        assert_eq!(external_driver_statistics_dialect(&config), None);
+
+        // A vendor-typed connection routed through an external driver keeps its dialect.
+        let oracle = test_connection_config(DatabaseType::Oracle);
+        assert_eq!(external_driver_statistics_dialect(&oracle), Some(ExternalDriverStatisticsDialect::Oracle));
+    }
+
+    #[test]
+    fn external_driver_statistics_query_plan_reuses_vendor_sql() {
+        let oracle = external_driver_statistics_query_plan(ExternalDriverStatisticsDialect::Oracle, "dbx_test");
+        assert_eq!(
+            oracle.iter().map(|(source, ..)| *source).collect::<Vec<_>>(),
+            vec!["all-segments", "dba-segments", "user-segments", "rows-only"]
+        );
+        assert_eq!(oracle[0].1, oracle_object_statistics_sql("dbx_test"));
+        assert!(oracle[0].1.contains("t.OWNER = 'DBX_TEST'"));
+
+        let dameng = external_driver_statistics_query_plan(ExternalDriverStatisticsDialect::Dameng, "dbx_test");
+        assert_eq!(dameng[0].1, dameng_object_statistics_dba_segments_sql("dbx_test"));
+
+        let kingbase = external_driver_statistics_query_plan(ExternalDriverStatisticsDialect::Kingbase, "public");
+        assert_eq!(kingbase.len(), 1);
+        assert!(kingbase[0].1.contains("sys_catalog.sys_class"));
     }
 
     #[test]
@@ -5742,6 +5890,15 @@ async fn list_object_statistics_once(
     let db_config = connection_config(state, connection_id).await;
     let pool_handle = state.pool_handle(&pool_key).await;
     try_sqlserver!(pool_handle, list_object_statistics, schema);
+    if let Some(PoolKind::ExternalDriver { config, session, .. }) = pool_handle.as_ref() {
+        // Generic JDBC connections have no `listObjectStatistics` RPC, so the
+        // vendor statistics SQL is issued over the plugin's query channel.
+        if let Some(dialect) = external_driver_statistics_dialect(config.as_ref()) {
+            let config = config.clone();
+            let session = session.clone();
+            return external_driver_list_object_statistics(session, config.as_ref(), dialect, database, schema).await;
+        }
+    }
     if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
         if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Oracle) {
             return oracle_agent_list_object_statistics(
