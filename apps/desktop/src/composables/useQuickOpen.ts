@@ -209,17 +209,24 @@ export function matchQuickOpenText(query: string, text: string): QuickOpenMatch 
   // matching the ordered-subsequence behavior every other pinyin call site in the app already has.
   if (isPinyinQuery) {
     const pinyinLetters = pinyinFirstLetters(text);
+    const positions = pinyinLetterPositions(text);
     const letterIndices: number[] = [];
     let letterQueryIndex = 0;
-    for (let index = 0; index < pinyinLetters.length && letterQueryIndex < lowerQuery.length; index++) {
-      if (pinyinLetters[index] !== lowerQuery[letterQueryIndex]) continue;
-      letterIndices.push(index);
-      letterQueryIndex++;
+    let letterCount = 0;
+    // Iterate the initials by code point, keeping letterCount aligned with
+    // positions: unmapped supplementary-plane Han characters occupy two code
+    // units in pinyinLetters but still correspond to exactly one position.
+    for (const letter of pinyinLetters) {
+      if (letterQueryIndex >= lowerQuery.length) break;
+      if (letter === lowerQuery[letterQueryIndex]) {
+        letterIndices.push(positions[letterCount] ?? letterCount);
+        letterQueryIndex += 1;
+      }
+      letterCount += 1;
     }
     if (letterQueryIndex === lowerQuery.length) {
-      const positions = pinyinLetterPositions(text);
       const pinyinSpan = letterIndices[letterIndices.length - 1] - letterIndices[0] + 1;
-      return { kind: "fuzzy", score: 500 + Math.min(pinyinSpan - lowerQuery.length, 99), indices: letterIndices.map((index) => positions[index]) };
+      return { kind: "fuzzy", score: 500 + Math.min(pinyinSpan - lowerQuery.length, 99), indices: letterIndices };
     }
   }
 

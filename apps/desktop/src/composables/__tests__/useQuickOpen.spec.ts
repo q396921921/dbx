@@ -127,6 +127,12 @@ describe("useQuickOpen", () => {
       expect(match?.indices.map((index) => "总租金"[index]).join("")).toBe("总租金".slice(0, 1) + "总租金".slice(2, 3));
     });
 
+    it("keeps pinyin-initials highlight indices aligned across unmapped supplementary-plane characters", () => {
+      const match = matchQuickOpenText("bx", "𠮷表x");
+      expect(match?.kind).toBe("fuzzy");
+      expect(match?.indices).toEqual([2, 3]);
+    });
+
     it("prefers a literal prefix match over pinyin-initials for mixed Han+Latin names", () => {
       const literal = matchQuickOpenText("abc", "abc表");
       expect(literal?.kind).toBe("prefix");
