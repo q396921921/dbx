@@ -232,12 +232,14 @@ const { toast } = useToast();
 const DEFAULT_QUERY_RESULTS_PANE_SIZE = 68;
 
 onMounted(() => {
-  const preload = () => preloadDataGridComponent();
-  if ("requestIdleCallback" in window) {
-    window.requestIdleCallback(preload, { timeout: 1500 });
-  } else {
-    setTimeout(preload, 300);
-  }
+  // Deliberately not preloading DataGrid here for every tab: evaluating that
+  // chunk is expensive (large component graph) and previously ran
+  // unconditionally shortly after any tab mounted, including source-only
+  // tabs (e.g. viewing a large object's DDL) that never need a grid. That
+  // turned a "warm the cache" optimization into a multi-second main-thread
+  // freeze right when the user was trying to read the newly-opened tab (see
+  // issue #8103). The watcher below still preloads it eagerly for tabs that
+  // actually need one.
   window.addEventListener("dbx-refresh-active-kv-browser", onRefreshActiveKvBrowser);
   window.addEventListener("resize", updateStandaloneResultToolbarDimensions);
   window.visualViewport?.addEventListener("resize", updateStandaloneResultToolbarDimensions);
