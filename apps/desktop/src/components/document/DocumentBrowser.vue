@@ -405,14 +405,19 @@ function sameGridColumns(left: string[], right: string[]): boolean {
 function commitLoadedDocuments(nextDocuments: JsonRecord[], nextCopyDocuments: JsonRecord[], hasTypePreservingCopyDocuments: boolean, append: boolean, kind: DocumentStoreKind) {
   const previousDocumentCount = documents.value.length;
   const combinedDocuments = append ? [...documents.value, ...nextDocuments] : nextDocuments;
-  const nextColumns = combinedDocuments.length > 0 ? documentGridColumns(combinedDocuments) : lastGridColumns.value;
+  // A collection that has never returned any document (as opposed to one that
+  // returned documents before and is now empty) would otherwise keep
+  // `lastGridColumns` at its initial `[]` forever, which the grid reads as
+  // "no query has completed" and renders without a toolbar/refresh button.
+  const hasEstablishedColumns = lastGridColumns.value.length > 0;
+  const nextColumns = combinedDocuments.length > 0 || !hasEstablishedColumns ? documentGridColumns(combinedDocuments) : lastGridColumns.value;
   const canAppendGridRows = append && gridRows.value.length === previousDocumentCount && sameGridColumns(lastGridColumns.value, nextColumns);
 
   documents.value = combinedDocuments;
   copyDocuments.value = append ? [...copyDocuments.value, ...nextCopyDocuments] : nextCopyDocuments;
   mongoCopyDocumentsAvailable.value = append ? mongoCopyDocumentsAvailable.value && hasTypePreservingCopyDocuments : hasTypePreservingCopyDocuments;
 
-  if (combinedDocuments.length > 0) {
+  if (combinedDocuments.length > 0 || !hasEstablishedColumns) {
     lastGridColumns.value = nextColumns;
     lastGridColumnTypes.value = kind === "mongodb" ? mongoDocumentGridColumnTypes(combinedDocuments, nextColumns) : [];
   }
