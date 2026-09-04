@@ -5021,6 +5021,8 @@ export default withEnglishFallback({
     status_done: "가져오기 완료",
     status_error: "가져오기 실패",
     status_cancelled: "가져오기 취소됨",
+    targetColumnsTimeout: "대상 테이블 필드를 로드하는 시간이 초과되었습니다. 연결을 확인한 후 다시 시도하십시오.",
+    retry: "재시도",
   },
   dataGenerate: {
     title: "데이터 생성",

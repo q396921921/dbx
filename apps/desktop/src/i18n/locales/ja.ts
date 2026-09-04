@@ -5360,6 +5360,8 @@ export default withEnglishFallback({
     titleRow: "ヘッダー行（0 はなし）",
     dataStartRow: "データ開始行",
     lastDataRow: "データ終了行（0 は末尾まで）",
+    targetColumnsTimeout: "ターゲットテーブルのフィールド読み込みがタイムアウトしました。接続を確認して再試行してください。",
+    retry: "再試行",
   },
   dataGenerate: {
     title: "データ生成",

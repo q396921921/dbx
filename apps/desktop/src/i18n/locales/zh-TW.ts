@@ -4647,6 +4647,8 @@ export default withEnglishFallback({
     status_done: "匯入完成",
     status_error: "匯入失敗",
     status_cancelled: "匯入已取消",
+    targetColumnsTimeout: "載入目標資料表欄位逾時，請檢查連線後重試。",
+    retry: "重試",
   },
   dataGenerate: {
     title: "資料生成",
