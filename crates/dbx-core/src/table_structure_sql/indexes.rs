@@ -56,6 +56,43 @@ pub(super) fn build_index_sql(options: &TableStructureSqlOptions, warnings: &mut
                 warnings.push(format!("Primary index \"{}\" cannot be edited from this editor.", original.name));
                 continue;
             }
+            // Dameng implements a unique index as the backing object of a unique constraint:
+            // neither DROP INDEX nor CREATE [OR REPLACE] INDEX is permitted against it (#7959,
+            // "no permission to drop index ... " even for the owning user). The constraint has
+            // to be dropped and, if the edit keeps the index unique, re-added via ALTER TABLE
+            // ... ADD CONSTRAINT ... UNIQUE instead of any index-level DDL.
+            if options.database_type == Some(DatabaseType::Dameng) && original.is_unique {
+                statements
+                    .push(format!("ALTER TABLE {table} DROP CONSTRAINT {};", quote_ident(dialect, &original.name)));
+                if index.is_unique {
+                    let cols = index
+                        .columns
+                        .iter()
+                        .map(|column| clean(column))
+                        .filter(|column| !column.is_empty())
+                        .map(|column| quote_ident(dialect, &column))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    statements.push(format!(
+                        "ALTER TABLE {table} ADD CONSTRAINT {} UNIQUE ({cols});",
+                        quote_ident(dialect, &clean(&index.name))
+                    ));
+                } else {
+                    statements.extend(build_create_index_statements(
+                        options.database_type,
+                        dialect,
+                        &table,
+                        index,
+                        warnings,
+                        options.schema.as_deref(),
+                        &options.table_name,
+                        false,
+                        capabilities.index_concurrent,
+                        false,
+                    ));
+                }
+                continue;
+            }
             let or_replace =
                 options.database_type == Some(DatabaseType::Dameng) && clean(&index.name) == clean(&original.name);
             if !or_replace {

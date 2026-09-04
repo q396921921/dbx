@@ -284,16 +284,43 @@ fn dameng_replaces_same_name_index_before_validating_uniqueness() {
 }
 
 #[test]
-fn dameng_replaces_same_name_unique_index_with_normal_index() {
+fn dameng_unique_index_column_change_drops_and_readds_constraint() {
+    // #7959: the original index is already unique, i.e. it backs a real unique constraint in
+    // Dameng. Editing its columns while keeping it unique must go through
+    // ALTER TABLE ... DROP/ADD CONSTRAINT, not CREATE OR REPLACE UNIQUE INDEX — Dameng rejects
+    // that with "no permission to drop index" because the index is constraint-owned.
     let mut changed = existing_index("IDX_USERS_EMAIL", &["EMAIL"], true);
-    changed.is_unique = false;
+    changed.columns = vec!["EMAIL".to_string(), "TENANT_ID".to_string()];
 
     let result = build_table_structure_change_sql(index_change_options(DatabaseType::Dameng, Some("APP"), changed));
 
     assert_eq!(result.warnings, Vec::<String>::new());
     assert_eq!(
         result.statements,
-        vec!["CREATE OR REPLACE INDEX \"IDX_USERS_EMAIL\" ON \"APP\".\"USERS\" (\"EMAIL\");"]
+        vec![
+            "ALTER TABLE \"APP\".\"USERS\" DROP CONSTRAINT \"IDX_USERS_EMAIL\";",
+            "ALTER TABLE \"APP\".\"USERS\" ADD CONSTRAINT \"IDX_USERS_EMAIL\" UNIQUE (\"EMAIL\", \"TENANT_ID\");",
+        ]
+    );
+}
+
+#[test]
+fn dameng_replaces_same_name_unique_index_with_normal_index() {
+    let mut changed = existing_index("IDX_USERS_EMAIL", &["EMAIL"], true);
+    changed.is_unique = false;
+
+    let result = build_table_structure_change_sql(index_change_options(DatabaseType::Dameng, Some("APP"), changed));
+
+    // The original index backs a unique constraint (#7959): downgrading it to a plain index
+    // has to drop that constraint first, then create an ordinary index — `CREATE OR REPLACE
+    // INDEX` against a constraint-backed index is rejected by Dameng.
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"APP\".\"USERS\" DROP CONSTRAINT \"IDX_USERS_EMAIL\";",
+            "CREATE INDEX \"IDX_USERS_EMAIL\" ON \"APP\".\"USERS\" (\"EMAIL\");",
+        ]
     );
 }
 
@@ -353,6 +380,26 @@ fn dameng_renamed_index_keeps_drop_then_create_path() {
         vec![
             "DROP INDEX \"APP\".\"IDX_USERS_EMAIL\";",
             "CREATE INDEX \"IDX_USERS_LOGIN\" ON \"APP\".\"USERS\" (\"EMAIL\");",
+        ]
+    );
+}
+
+#[test]
+fn dameng_renamed_unique_index_uses_constraint_ddl_not_drop_index() {
+    // Same root cause as #7959: a renamed unique index still has to go through
+    // DROP/ADD CONSTRAINT rather than DROP INDEX, since DROP INDEX against a
+    // constraint-backed index is rejected by Dameng regardless of whether the name changes.
+    let mut changed = existing_index("IDX_USERS_EMAIL", &["EMAIL"], true);
+    changed.name = "IDX_USERS_LOGIN".to_string();
+
+    let result = build_table_structure_change_sql(index_change_options(DatabaseType::Dameng, Some("APP"), changed));
+
+    assert_eq!(result.warnings, Vec::<String>::new());
+    assert_eq!(
+        result.statements,
+        vec![
+            "ALTER TABLE \"APP\".\"USERS\" DROP CONSTRAINT \"IDX_USERS_EMAIL\";",
+            "ALTER TABLE \"APP\".\"USERS\" ADD CONSTRAINT \"IDX_USERS_LOGIN\" UNIQUE (\"EMAIL\");",
         ]
     );
 }
