@@ -537,7 +537,7 @@ async function loadTargetColumns() {
   loadingTarget.value = true;
   errorMessage.value = "";
   try {
-    await withTimeout(store.ensureConnected(props.prefillConnectionId), TARGET_COLUMNS_TIMEOUT_MS);
+    await store.ensureConnected(props.prefillConnectionId);
     const columns = await withTimeout(api.getColumns(props.prefillConnectionId, props.prefillDatabase, targetSchema.value, tableName), TARGET_COLUMNS_TIMEOUT_MS);
     if (requestId !== targetColumnsRequestId) return;
     targetColumns.value = columns;
