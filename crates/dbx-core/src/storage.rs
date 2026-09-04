@@ -36,6 +36,7 @@ const APP_STATE_OPEN_TABS_KEY: &str = "open_tabs";
 const APP_STATE_SAVED_SQL_EDITOR_POSITIONS_KEY: &str = "saved_sql_editor_positions";
 const APP_STATE_TRANSFER_TASK_LIBRARY_KEY: &str = "transfer_task_library";
 const MCP_GLOBAL_POLICY_KEY: &str = "mcp_global_policy";
+const MCP_HTTP_SERVER_SETTINGS_KEY: &str = "mcp_http_server_settings";
 const MAX_RETRIES_KEY: &str = "max_retries";
 const APP_STATE_AI_GLOBAL_INSTRUCTIONS_KEY: &str = "ai_global_custom_instructions";
 const APP_STATE_AI_CHAT_SELECTION_KEY: &str = "ai_chat_selection_v1";
@@ -45,11 +46,20 @@ const USER_DATA_TABLES: &[&str] = &[
     "connections",
     "connection_secrets",
     "history",
+    "ai_config",
+    "ai_provider_configs",
     "ai_conversations",
     "ai_runs",
+    "sidebar_layout",
+    "app_settings",
+    "app_state",
+    "tunnel_profiles",
     "mq_token_records",
     "saved_sql_folders",
     "saved_sql_files",
+    "ai_configs",
+    "state_store",
+    "prompt_templates",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +234,130 @@ pub struct McpGlobalPolicy {
     #[serde(default)]
     pub allow_dangerous_sql: bool,
     pub allowed_connection_ids: Option<Vec<String>>,
+    /// `None` exposes every built-in MCP tool. A list is an explicit
+    /// allowlist and is enforced independently of connection permissions.
+    #[serde(default)]
+    pub allowed_tool_names: Option<Vec<String>>,
+    /// Per-connection execution defaults and database overrides. Rules without
+    /// the current execution policy version remain legacy ceilings.
+    #[serde(default)]
+    pub connection_policies: Vec<McpConnectionPolicy>,
+    #[serde(default)]
+    pub query_timeout_secs: Option<u64>,
+}
+
+fn default_mcp_connection_execution_mode_configured() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpConnectionPolicy {
+    pub connection_id: String,
+    /// When true, this connection is read-only even if the MCP-wide policy
+    /// permits writes.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Enables high-risk SQL for this connection. Legacy rules require this
+    /// to remain within the global ceiling; versioned rules use it as the
+    /// connection default and still honor independent connection protections.
+    #[serde(default)]
+    pub allow_dangerous_sql: bool,
+    /// Whether the operation ceiling is explicitly overridden for this
+    /// connection. Missing on older saved policies defaults to true for
+    /// deserialization compatibility; the version marker determines whether
+    /// those fields use legacy ceiling or current override semantics.
+    #[serde(default = "default_mcp_connection_execution_mode_configured")]
+    pub execution_mode_configured: bool,
+    /// Rules without this marker retain the legacy ceiling behavior. New UI
+    /// writes use version 1 for scoped override semantics.
+    #[serde(default)]
+    pub execution_mode_policy_version: Option<u8>,
+    /// Limits which databases below this connection can be reached by MCP.
+    /// The default preserves existing installations: all databases remain
+    /// available until a user explicitly narrows the scope.
+    #[serde(default)]
+    pub database_scope: McpDatabaseScope,
+    /// Exact database names allowed when `database_scope` is `selected`.
+    /// An empty selected list intentionally denies every database.
+    #[serde(default)]
+    pub allowed_databases: Vec<String>,
+    /// Optional per-database execution settings. A missing entry inherits the
+    /// connection default, while a present entry takes priority over it.
+    #[serde(default)]
+    pub database_policies: Vec<McpDatabasePolicy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpDatabasePolicy {
+    /// Exact database name matched after the connection scope has admitted it.
+    pub database_name: String,
+    /// When true, this database rejects writes regardless of the connection
+    /// and global defaults.
+    #[serde(default)]
+    pub read_only: bool,
+    /// Enables high-risk SQL for this database. Connection read-only,
+    /// production protection, scope, and database credentials remain hard limits.
+    #[serde(default)]
+    pub allow_dangerous_sql: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum McpDatabaseScope {
+    #[default]
+    All,
+    Selected,
+    None,
+}
+
+/// Configuration for the optional MCP Streamable HTTP server managed by the
+/// desktop application. Credentials deliberately do not live here: the
+/// desktop service stores its token in a private file under the DBX data dir.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpHttpServerSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_mcp_http_host")]
+    pub host: String,
+    #[serde(default = "default_mcp_http_port")]
+    pub port: u16,
+    #[serde(default = "default_mcp_http_path")]
+    pub path: String,
+    #[serde(default)]
+    pub allow_remote: bool,
+    #[serde(default)]
+    pub allowed_hosts: Vec<String>,
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+}
+
+impl Default for McpHttpServerSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: default_mcp_http_host(),
+            port: default_mcp_http_port(),
+            path: default_mcp_http_path(),
+            allow_remote: false,
+            allowed_hosts: Vec::new(),
+            allowed_origins: Vec::new(),
+        }
+    }
+}
+
+fn default_mcp_http_host() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_mcp_http_port() -> u16 {
+    5225
+}
+
+fn default_mcp_http_path() -> String {
+    "/mcp".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +367,12 @@ pub struct McpGlobalPolicyState {
     pub read_only: bool,
     pub allow_dangerous_sql: bool,
     pub allowed_connection_ids: Option<Vec<String>>,
+    #[serde(default)]
+    pub allowed_tool_names: Option<Vec<String>>,
+    #[serde(default)]
+    pub connection_policies: Vec<McpConnectionPolicy>,
+    #[serde(default)]
+    pub query_timeout_secs: Option<u64>,
 }
 
 impl McpGlobalPolicyState {
@@ -241,6 +381,186 @@ impl McpGlobalPolicyState {
             read_only: self.read_only,
             allow_dangerous_sql: self.allow_dangerous_sql,
             allowed_connection_ids: self.allowed_connection_ids.clone(),
+            allowed_tool_names: self.allowed_tool_names.clone(),
+            connection_policies: self.connection_policies.clone(),
+            query_timeout_secs: self.query_timeout_secs,
+        }
+    }
+}
+
+impl McpGlobalPolicy {
+    /// Produces the single fail-closed representation persisted by the MCP
+    /// policy API. This protects the policy boundary even when a caller does
+    /// not use the desktop settings form (for example, a Web API client).
+    pub fn normalized(&self) -> Self {
+        let allowed_connection_ids = self.allowed_connection_ids.as_ref().map(|ids| {
+            let mut ids =
+                ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).map(ToOwned::to_owned).collect::<Vec<_>>();
+            ids.sort();
+            ids.dedup();
+            ids
+        });
+        let allowed_tool_names = self.allowed_tool_names.as_ref().map(|tools| {
+            let mut tools = tools
+                .iter()
+                .map(|tool| tool.trim())
+                .filter(|tool| !tool.is_empty())
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>();
+            tools.sort();
+            tools.dedup();
+            tools
+        });
+
+        let mut policies = HashMap::<String, McpConnectionPolicy>::new();
+        for rule in &self.connection_policies {
+            let connection_id = rule.connection_id.trim();
+            if connection_id.is_empty() {
+                continue;
+            }
+            policies
+                .entry(connection_id.to_string())
+                .and_modify(|current| {
+                    // Multiple rules are treated as a conjunction: any
+                    // read-only rule wins and high-risk access requires every
+                    // duplicate rule to explicitly permit it.
+                    if rule.execution_mode_configured {
+                        if current.execution_mode_configured {
+                            current.read_only |= rule.read_only;
+                            current.allow_dangerous_sql &= rule.allow_dangerous_sql;
+                        } else {
+                            current.read_only = rule.read_only;
+                            current.allow_dangerous_sql = rule.allow_dangerous_sql;
+                        }
+                        current.execution_mode_configured = true;
+                    }
+                    current.execution_mode_policy_version =
+                        match (current.execution_mode_policy_version, rule.execution_mode_policy_version) {
+                            (Some(left), Some(right))
+                                if left == crate::mcp_policy::MCP_EXECUTION_POLICY_VERSION && right == left =>
+                            {
+                                Some(left)
+                            }
+                            _ => None,
+                        };
+                    let (scope, databases) = intersect_mcp_database_scopes(
+                        current.database_scope,
+                        &current.allowed_databases,
+                        rule.database_scope,
+                        &rule.allowed_databases,
+                    );
+                    current.database_scope = scope;
+                    current.allowed_databases = databases;
+                    current.database_policies =
+                        merge_mcp_database_policies(&current.database_policies, &rule.database_policies);
+                })
+                .or_insert_with(|| McpConnectionPolicy {
+                    connection_id: connection_id.to_string(),
+                    read_only: rule.read_only,
+                    allow_dangerous_sql: rule.allow_dangerous_sql,
+                    execution_mode_configured: rule.execution_mode_configured,
+                    execution_mode_policy_version: rule.execution_mode_policy_version,
+                    database_scope: rule.database_scope,
+                    allowed_databases: normalize_mcp_database_names(&rule.allowed_databases),
+                    database_policies: normalize_mcp_database_policies(&rule.database_policies),
+                });
+        }
+        let mut connection_policies = policies.into_values().collect::<Vec<_>>();
+        connection_policies.sort_by(|left, right| left.connection_id.cmp(&right.connection_id));
+        for rule in &mut connection_policies {
+            if rule.read_only {
+                rule.allow_dangerous_sql = false;
+            }
+            rule.allowed_databases = normalize_mcp_database_names(&rule.allowed_databases);
+            if rule.database_scope != McpDatabaseScope::Selected {
+                rule.allowed_databases.clear();
+                rule.database_policies.clear();
+            } else {
+                rule.database_policies
+                    .retain(|policy| rule.allowed_databases.binary_search(&policy.database_name).is_ok());
+            }
+        }
+
+        Self {
+            read_only: self.read_only,
+            allow_dangerous_sql: !self.read_only && self.allow_dangerous_sql,
+            allowed_connection_ids,
+            allowed_tool_names,
+            connection_policies,
+            query_timeout_secs: self.query_timeout_secs,
+        }
+    }
+}
+
+fn normalize_mcp_database_names(databases: &[String]) -> Vec<String> {
+    let mut databases = databases
+        .iter()
+        .map(|database| database.trim())
+        .filter(|database| !database.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    databases.sort();
+    databases.dedup();
+    databases
+}
+
+fn normalize_mcp_database_policies(policies: &[McpDatabasePolicy]) -> Vec<McpDatabasePolicy> {
+    let mut normalized = HashMap::<String, McpDatabasePolicy>::new();
+    for policy in policies {
+        let database_name = policy.database_name.trim();
+        if database_name.is_empty() {
+            continue;
+        }
+        normalized
+            .entry(database_name.to_string())
+            .and_modify(|current| {
+                // Duplicate entries represent independently supplied limits,
+                // so combine them as the strictest possible policy.
+                current.read_only |= policy.read_only;
+                current.allow_dangerous_sql &= policy.allow_dangerous_sql;
+            })
+            .or_insert_with(|| McpDatabasePolicy {
+                database_name: database_name.to_string(),
+                read_only: policy.read_only,
+                allow_dangerous_sql: !policy.read_only && policy.allow_dangerous_sql,
+            });
+    }
+    let mut normalized = normalized.into_values().collect::<Vec<_>>();
+    normalized.sort_by(|left, right| left.database_name.cmp(&right.database_name));
+    for policy in &mut normalized {
+        if policy.read_only {
+            policy.allow_dangerous_sql = false;
+        }
+    }
+    normalized
+}
+
+fn merge_mcp_database_policies(left: &[McpDatabasePolicy], right: &[McpDatabasePolicy]) -> Vec<McpDatabasePolicy> {
+    let mut policies = Vec::with_capacity(left.len() + right.len());
+    policies.extend_from_slice(left);
+    policies.extend_from_slice(right);
+    normalize_mcp_database_policies(&policies)
+}
+
+fn intersect_mcp_database_scopes(
+    left_scope: McpDatabaseScope,
+    left_databases: &[String],
+    right_scope: McpDatabaseScope,
+    right_databases: &[String],
+) -> (McpDatabaseScope, Vec<String>) {
+    use McpDatabaseScope::{All, None, Selected};
+    match (left_scope, right_scope) {
+        (None, _) | (_, None) => (None, Vec::new()),
+        (All, All) => (All, Vec::new()),
+        (All, Selected) => (Selected, normalize_mcp_database_names(right_databases)),
+        (Selected, All) => (Selected, normalize_mcp_database_names(left_databases)),
+        (Selected, Selected) => {
+            let right = normalize_mcp_database_names(right_databases);
+            let databases = normalize_mcp_database_names(left_databases)
+                .into_iter()
+                .filter(|database| right.binary_search(database).is_ok())
+                .collect();
+            (Selected, databases)
         }
     }
 }
@@ -495,8 +815,15 @@ impl Storage {
         // operation, so a transient failure here (e.g. another process
         // racing to open the same brand-new database file) must never stop
         // the app from starting.
+        // Restrict as soon as the file exists, so the guarantee does not
+        // depend on the journal-mode switch or the schema pass succeeding.
+        restrict_db_file_permissions(&storage.path);
         storage.enable_wal_mode().await;
-        storage.init_schema().await?;
+        let schema = storage.init_schema().await;
+        // Second pass: the journal sidecars only appear once something has
+        // written to the database, and this runs on the failure path too.
+        restrict_db_file_permissions(&storage.path);
+        schema?;
         Ok(storage)
     }
 
@@ -673,6 +1000,74 @@ fn remove_sqlite_db_files(db_path: &Path) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Every file that can hold database contents: the database itself plus the
+/// rollback journal, WAL, and shared-memory sidecars. SQLite derives these by
+/// appending to the database filename, so they are built the same way rather
+/// than through `Path::with_extension`, which would depend on the database
+/// being named `*.db`.
+///
+/// Master journals (`<database>-mjXXXXXXXX`) are only written for a
+/// transaction spanning several attached databases, which the storage handle
+/// never performs.
+#[cfg(unix)]
+fn sqlite_file_set(db_path: &Path) -> [PathBuf; 4] {
+    let sidecar = |suffix: &str| {
+        let mut name = db_path.as_os_str().to_os_string();
+        name.push(suffix);
+        PathBuf::from(name)
+    };
+    [db_path.to_path_buf(), sidecar("-journal"), sidecar("-wal"), sidecar("-shm")]
+}
+
+/// Restrict the SQLite files to the sharing model declared by the data
+/// directory itself.
+///
+/// `connection_secrets` stores connection passwords in plaintext, so the file
+/// mode is what keeps other local accounts out of the credential store on
+/// platforms whose per-user data directory is world-traversable: most Linux
+/// desktops create `~/.local/share` as 0755, unlike `~/Library` on macOS.
+///
+/// A data directory that several local accounts share — the portable layout
+/// documented on `Storage::open` and `enable_wal_mode` — has to be
+/// group-writable for those accounts to use it at all, so that is taken as
+/// the operator opting into group access: world bits are dropped and group
+/// bits are preserved. Any other directory is treated as single-user and its
+/// files become owner-only. World-readable is never a supported sharing
+/// model, because it cannot be narrowed to a set of accounts.
+///
+/// Deliberately best-effort: a portable data directory can live on a
+/// filesystem without POSIX modes, and a file owned by another user fails
+/// `chmod` with `EPERM` instead of being re-permissioned behind that user's
+/// back. Neither case should stop the app from starting.
+#[cfg(unix)]
+fn restrict_db_file_permissions(db_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    // S_IWGRP on the directory: the operator made it writable by a group, so
+    // group members are expected to reach the database through it.
+    let group_shared = db_path
+        .parent()
+        .and_then(|dir| std::fs::metadata(dir).ok())
+        .is_some_and(|dir| dir.permissions().mode() & 0o020 != 0);
+    let keep = if group_shared { 0o770 } else { 0o700 };
+
+    for path in sqlite_file_set(db_path) {
+        let Ok(metadata) = std::fs::metadata(&path) else { continue };
+        let mode = metadata.permissions().mode() & 0o777;
+        // Owner bits, and group bits in a shared directory, are preserved.
+        let restricted = mode & keep;
+        if mode == restricted {
+            continue;
+        }
+        if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(restricted)) {
+            log::debug!("Could not restrict permissions on {}: {err}", path.display());
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_db_file_permissions(_db_path: &Path) {}
 
 fn ensure_history_columns_sync(conn: &Connection) -> Result<(), String> {
     const COLUMNS: &[(&str, &str)] = &[
@@ -1639,6 +2034,9 @@ impl Storage {
                         read_only: policy.read_only,
                         allow_dangerous_sql: policy.allow_dangerous_sql,
                         allowed_connection_ids: policy.allowed_connection_ids,
+                        allowed_tool_names: policy.allowed_tool_names,
+                        connection_policies: policy.connection_policies,
+                        query_timeout_secs: policy.query_timeout_secs,
                     });
                 };
                 let settings = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&json)
@@ -1650,15 +2048,22 @@ impl Storage {
                         read_only: policy.read_only,
                         allow_dangerous_sql: policy.allow_dangerous_sql,
                         allowed_connection_ids: policy.allowed_connection_ids,
+                        allowed_tool_names: policy.allowed_tool_names,
+                        connection_policies: policy.connection_policies,
+                        query_timeout_secs: policy.query_timeout_secs,
                     });
                 };
                 let policy = serde_json::from_value::<McpGlobalPolicy>(value.clone())
-                    .map_err(|e| format!("invalid MCP policy: {e}"))?;
+                    .map_err(|e| format!("invalid MCP policy: {e}"))?
+                    .normalized();
                 Ok(McpGlobalPolicyState {
                     configured: true,
                     read_only: policy.read_only,
                     allow_dangerous_sql: policy.allow_dangerous_sql,
                     allowed_connection_ids: policy.allowed_connection_ids,
+                    allowed_tool_names: policy.allowed_tool_names,
+                    connection_policies: policy.connection_policies,
+                    query_timeout_secs: policy.query_timeout_secs,
                 })
             })
             .await;
@@ -1666,7 +2071,7 @@ impl Storage {
     }
 
     pub async fn save_mcp_global_policy(&self, policy: &McpGlobalPolicy) -> Result<(), String> {
-        let policy = serde_json::to_value(policy).map_err(|e| format!("MCP_POLICY_UNAVAILABLE: {e}"))?;
+        let policy = serde_json::to_value(policy.normalized()).map_err(|e| format!("MCP_POLICY_UNAVAILABLE: {e}"))?;
         self.with_conn(move |conn| {
             let current: Option<String> = conn
                 .query_row("SELECT settings_json FROM app_settings WHERE id = 1", [], |row| row.get(0))
@@ -1685,6 +2090,22 @@ impl Storage {
         })
         .await
         .map_err(|e| format!("MCP_POLICY_UNAVAILABLE: {e}"))
+    }
+
+    pub async fn load_mcp_http_server_settings(&self) -> Result<McpHttpServerSettings, String> {
+        let settings = self.load_app_settings_json().await?;
+        match settings.get(MCP_HTTP_SERVER_SETTINGS_KEY) {
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|error| format!("invalid MCP HTTP server settings: {error}")),
+            None => Ok(McpHttpServerSettings::default()),
+        }
+    }
+
+    pub async fn save_mcp_http_server_settings(&self, settings: &McpHttpServerSettings) -> Result<(), String> {
+        let mut app_settings = self.load_app_settings_json().await?;
+        let value = serde_json::to_value(settings).map_err(|error| error.to_string())?;
+        app_settings.insert(MCP_HTTP_SERVER_SETTINGS_KEY.to_string(), value);
+        self.save_app_settings_json(&app_settings).await
     }
 
     pub async fn save_desktop_settings(&self, desktop_settings: &DesktopSettings) -> Result<(), String> {
@@ -2611,7 +3032,8 @@ fn load_mcp_global_policy_in_tx(tx: &rusqlite::Transaction<'_>) -> Result<McpGlo
                 .map_err(|e| format!("MCP_POLICY_UNAVAILABLE: invalid app settings JSON: {e}"))?;
             match settings.get(MCP_GLOBAL_POLICY_KEY) {
                 Some(value) => serde_json::from_value::<McpGlobalPolicy>(value.clone())
-                    .map_err(|e| format!("MCP_POLICY_UNAVAILABLE: invalid MCP policy: {e}"))?,
+                    .map_err(|e| format!("MCP_POLICY_UNAVAILABLE: invalid MCP policy: {e}"))?
+                    .normalized(),
                 None => McpGlobalPolicy::default(),
             }
         }
@@ -4691,11 +5113,112 @@ mod tests {
     };
     use crate::saved_sql::SavedSqlFile;
     use rusqlite::{Connection, TransactionBehavior};
+    use std::collections::BTreeMap;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn temp_db_path(name: &str) -> std::path::PathBuf {
         let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
         std::env::temp_dir().join(format!("dbx-storage-{name}-{}-{stamp}.db", std::process::id()))
+    }
+
+    /// Data directory with an explicit mode. The process temp directory is
+    /// group-writable on Linux (`/tmp` is 1777), which would otherwise be read
+    /// as the shared-directory sharing model.
+    #[cfg(unix)]
+    fn temp_data_dir_with_mode(name: &str, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_data_dir(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn file_mode(path: &std::path::Path) -> Option<u32> {
+        use std::os::unix::fs::PermissionsExt;
+
+        std::fs::metadata(path).ok().map(|metadata| metadata.permissions().mode() & 0o777)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_restricts_the_database_and_its_journals_to_the_owner() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_data_dir_with_mode("permission-single-user", 0o755);
+        let path = dir.join("dbx.db");
+        drop(Storage::open(&path).await.unwrap());
+
+        // Stand in for an installation created before this hardening existed,
+        // including a rollback journal left behind by an interrupted write.
+        let journal = dir.join("dbx.db-journal");
+        std::fs::write(&journal, b"").unwrap();
+        for file in [&path, &journal] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        drop(Storage::open(&path).await.unwrap());
+
+        for name in ["dbx.db", "dbx.db-journal", "dbx.db-wal", "dbx.db-shm"] {
+            let Some(mode) = file_mode(&dir.join(name)) else { continue };
+            assert_eq!(mode & 0o077, 0, "{name} kept group/other bits ({mode:o})");
+            assert_ne!(mode & 0o600, 0, "{name} lost owner access ({mode:o})");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_preserves_group_access_in_a_shared_data_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Group-writable: the layout the portable notes on `Storage::open` and
+        // `enable_wal_mode` describe, where several local accounts share one
+        // data directory.
+        let dir = temp_data_dir_with_mode("permission-group-shared", 0o770);
+        let path = dir.join("dbx.db");
+        drop(Storage::open(&path).await.unwrap());
+
+        let journal = dir.join("dbx.db-journal");
+        std::fs::write(&journal, b"").unwrap();
+        for file in [&path, &journal] {
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o664)).unwrap();
+        }
+
+        drop(Storage::open(&path).await.unwrap());
+
+        for name in ["dbx.db", "dbx.db-journal"] {
+            let Some(mode) = file_mode(&dir.join(name)) else { continue };
+            assert_eq!(mode & 0o007, 0, "{name} stayed world-accessible ({mode:o})");
+            assert_ne!(mode & 0o060, 0, "{name} lost the group access it is shared through ({mode:o})");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn open_restricts_the_database_even_when_schema_initialization_fails() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_data_dir_with_mode("permission-init-failure", 0o755);
+        let path = dir.join("dbx.db");
+        drop(Storage::open(&path).await.unwrap());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // A read-only directory keeps the database file itself writable while
+        // denying the journal SQLite needs, so the schema pass fails.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = Storage::open(&path).await;
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(result.is_err(), "expected schema initialization to fail on a read-only directory");
+        let mode = file_mode(&path).expect("database file still exists");
+        assert_eq!(mode & 0o077, 0, "database kept group/other bits after a failed open ({mode:o})");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn temp_data_dir(name: &str) -> std::path::PathBuf {
@@ -5512,16 +6035,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn import_user_data_db_recognizes_settings_and_snippets_as_user_data() {
+        let source_dir = temp_data_dir("import-settings-only-source");
+        let source_storage = Storage::open(&source_dir.join("dbx.db")).await.unwrap();
+        source_storage
+            .save_desktop_settings(&DesktopSettings { debug_logging_enabled: true, ..DesktopSettings::default() })
+            .await
+            .unwrap();
+        source_storage
+            .save_editor_settings(&serde_json::json!({
+                "snippets": [{ "id": "custom", "prefix": "selc", "body": "SELECT 42" }]
+            }))
+            .await
+            .unwrap();
+        drop(source_storage);
+        let target_dir = temp_data_dir("import-settings-only-target");
+
+        let result = maybe_import_user_data_db(&target_dir, Some(&source_dir)).unwrap();
+
+        assert_eq!(result, DataDbImportResult::Imported);
+        let storage = Storage::open(&target_dir.join("dbx.db")).await.unwrap();
+        assert!(storage.load_desktop_settings().await.unwrap().debug_logging_enabled);
+        assert_eq!(storage.load_editor_settings().await.unwrap().unwrap()["snippets"][0]["body"], "SELECT 42");
+    }
+
+    #[tokio::test]
+    async fn import_user_data_db_does_not_overwrite_target_with_settings() {
+        let source_dir =
+            create_data_dir_with_connection("import-source-settings-target", "source-connection", "source-token").await;
+        let target_dir = temp_data_dir("import-target-settings-only");
+        let target_storage = Storage::open(&target_dir.join("dbx.db")).await.unwrap();
+        target_storage
+            .save_editor_settings(&serde_json::json!({
+                "snippets": [{ "id": "target", "prefix": "tgt", "body": "SELECT 7" }]
+            }))
+            .await
+            .unwrap();
+        drop(target_storage);
+
+        let result = maybe_import_user_data_db(&target_dir, Some(&source_dir)).unwrap();
+
+        assert_eq!(result, DataDbImportResult::SkippedTargetHasData);
+        let storage = Storage::open(&target_dir.join("dbx.db")).await.unwrap();
+        assert_eq!(storage.load_editor_settings().await.unwrap().unwrap()["snippets"][0]["body"], "SELECT 7");
+    }
+
+    #[tokio::test]
     async fn import_user_data_db_replaces_empty_target_schema() {
         let source_dir =
             create_data_dir_with_connection("import-source-empty-target", "source-connection", "source-token").await;
         let target_dir = temp_data_dir("import-empty-target");
-        let target_storage = Storage::open(&target_dir.join("dbx.db")).await.unwrap();
-        target_storage
-            .save_desktop_settings(&DesktopSettings { debug_logging_enabled: true, ..DesktopSettings::default() })
-            .await
-            .unwrap();
-        drop(target_storage);
+        let _target_storage = Storage::open(&target_dir.join("dbx.db")).await.unwrap();
 
         let result = maybe_import_user_data_db(&target_dir, Some(&source_dir)).unwrap();
 
@@ -6020,6 +6584,9 @@ mod tests {
                 read_only: false,
                 allow_dangerous_sql: false,
                 allowed_connection_ids: None,
+                allowed_tool_names: None,
+                connection_policies: Vec::new(),
+                query_timeout_secs: None,
             }
         );
 
@@ -6029,6 +6596,8 @@ mod tests {
                 read_only: true,
                 allow_dangerous_sql: true,
                 allowed_connection_ids: Some(vec!["conn-1".to_string(), "conn-2".to_string()]),
+                query_timeout_secs: Some(120),
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -6038,15 +6607,19 @@ mod tests {
             McpGlobalPolicyState {
                 configured: true,
                 read_only: true,
-                allow_dangerous_sql: true,
+                allow_dangerous_sql: false,
                 allowed_connection_ids: Some(vec!["conn-1".to_string(), "conn-2".to_string()]),
+                allowed_tool_names: None,
+                connection_policies: Vec::new(),
+                query_timeout_secs: Some(120),
             }
         );
         assert_eq!(storage.load_password_hash().await.unwrap().as_deref(), Some("preserved"));
         let settings = storage.load_app_settings_json().await.unwrap();
         assert_eq!(settings[MCP_GLOBAL_POLICY_KEY]["readOnly"], true);
-        assert_eq!(settings[MCP_GLOBAL_POLICY_KEY]["allowDangerousSql"], true);
+        assert_eq!(settings[MCP_GLOBAL_POLICY_KEY]["allowDangerousSql"], false);
         assert_eq!(settings[MCP_GLOBAL_POLICY_KEY]["allowedConnectionIds"][0], "conn-1");
+        assert_eq!(settings[MCP_GLOBAL_POLICY_KEY]["queryTimeoutSecs"], 120);
         assert!(settings[MCP_GLOBAL_POLICY_KEY].get("configured").is_none());
 
         storage.save_desktop_settings(&DesktopSettings::default()).await.unwrap();
@@ -6119,6 +6692,7 @@ mod tests {
         let policy = storage.load_mcp_global_policy().await.unwrap();
         assert!(policy.configured);
         assert!(!policy.allow_dangerous_sql);
+        assert_eq!(policy.query_timeout_secs, None);
     }
 
     #[tokio::test]
@@ -6134,6 +6708,8 @@ mod tests {
                 read_only: false,
                 allow_dangerous_sql: false,
                 allowed_connection_ids: Some(vec![kept.id.clone()]),
+                query_timeout_secs: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -6157,6 +6733,8 @@ mod tests {
                 read_only: true,
                 allow_dangerous_sql: false,
                 allowed_connection_ids: None,
+                query_timeout_secs: None,
+                ..Default::default()
             })
             .await
             .unwrap();
@@ -6665,12 +7243,47 @@ mod tests {
                 selection: AiEffortSelection::Enum("high".to_string()),
             }],
             default_mode: Some(AiAssistantMode::Agent),
+            default_templates_by_db_type: BTreeMap::from([("postgresql".to_string(), vec!["tpl-1".to_string()])]),
+            last_used_templates_by_db_type: BTreeMap::from([("mysql".to_string(), vec!["tpl-2".to_string()])]),
         };
 
         storage.save_ai_chat_selection(&selection).await.unwrap();
 
         assert_eq!(storage.load_ai_chat_selection().await.unwrap(), Some(selection));
         assert_eq!(storage.load_app_settings_json().await.unwrap().get("ai_chat_selection_v1"), None);
+    }
+
+    // Selection JSON written before per-db-type prompt template defaults existed
+    // must still deserialize; the new maps fall back to empty.
+    #[tokio::test]
+    async fn ai_chat_selection_loads_legacy_payload_without_template_defaults() {
+        let path = temp_db_path("ai-chat-selection-legacy");
+        let storage = Storage::open(&path).await.unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "active": { "configId": "config-1", "modelId": "model-1" },
+            "effortPreferences": [],
+            "defaultMode": "ask"
+        });
+        storage.save_app_state_value(super::APP_STATE_AI_CHAT_SELECTION_KEY, &legacy).await.unwrap();
+
+        let loaded = storage.load_ai_chat_selection().await.unwrap().unwrap();
+        assert_eq!(
+            loaded.active,
+            Some(AiActiveModelSelection { config_id: "config-1".to_string(), model_id: "model-1".to_string() })
+        );
+        assert!(loaded.default_templates_by_db_type.is_empty());
+        assert!(loaded.last_used_templates_by_db_type.is_empty());
+    }
+
+    // Serialization must omit the per-db-type maps while empty so the payload
+    // stays identical to the pre-defaults format for users without picks.
+    #[test]
+    fn ai_chat_selection_serialization_omits_empty_template_maps() {
+        let json = serde_json::to_value(AiChatSelectionState::default()).unwrap();
+        let object = json.as_object().unwrap();
+        assert!(!object.contains_key("defaultTemplatesByDbType"));
+        assert!(!object.contains_key("lastUsedTemplatesByDbType"));
     }
 
     #[tokio::test]
@@ -6964,10 +7577,12 @@ mod tests {
                 model: "gpt-4o".to_string(),
                 models: Vec::new(),
                 api_style: AiApiStyle::Completions,
+                custom_headers: Default::default(),
                 proxy_enabled: false,
                 proxy_url: String::new(),
                 enable_thinking: true,
                 reasoning_level: AiReasoningLevel::Default,
+                max_output_tokens: None,
                 runtime_effort: None,
                 context_window: None,
                 max_retries: None,

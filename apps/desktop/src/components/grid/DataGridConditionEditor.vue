@@ -55,6 +55,9 @@ const suggestionPosition = ref({ left: 0, top: 0, width: 180 });
 const historyPreview = ref<{ value: string; left: number; top: number; maxWidth: number; arrowTop: number; side: "left" | "right" } | null>(null);
 const pointerMovedSuggestionIndex = ref(-1);
 const editorFocused = ref(false);
+const conditionUndoStack = ref<string[]>([]);
+const conditionRedoStack = ref<string[]>([]);
+let conditionLastValue = modelValue.value;
 let collapseTimer: ReturnType<typeof setTimeout> | undefined;
 let resizeObserver: ResizeObserver | undefined;
 let expandAfterComposition = false;
@@ -117,13 +120,14 @@ const previewStyle = computed<CSSProperties>(() => {
 });
 const previewArrowStyle = computed<CSSProperties>(() => ({ top: `${historyPreview.value?.arrowTop ?? 0}px` }));
 
-function createTextProbe(input: HTMLTextAreaElement, wrap: boolean, options: { width?: number; textIndent?: number } = {}) {
+function createTextProbe(input: HTMLTextAreaElement, wrap: boolean, options: { width?: number; paddingLeft?: number; paddingRight?: number } = {}) {
   const probe = document.createElement(wrap ? "div" : "span");
   const style = window.getComputedStyle(input);
   const width = options.width ?? input.clientWidth;
-  const textIndent = options.textIndent !== undefined ? `${options.textIndent}px` : style.textIndent;
+  const paddingLeft = options.paddingLeft !== undefined ? `${options.paddingLeft}px` : style.paddingLeft;
+  const paddingRight = options.paddingRight !== undefined ? `${options.paddingRight}px` : style.paddingRight;
   probe.textContent = input.value || input.placeholder || "";
-  probe.style.cssText = `position:fixed;left:-9999px;top:-9999px;visibility:hidden;box-sizing:border-box;${wrap ? `width:${width}px;white-space:pre-wrap;overflow-wrap:anywhere;padding:${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft};text-indent:${textIndent};` : "white-space:pre;"}font:${style.font};font-size:${style.fontSize};font-family:${style.fontFamily};font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing};`;
+  probe.style.cssText = `position:fixed;left:-9999px;top:-9999px;visibility:hidden;box-sizing:border-box;${wrap ? `width:${width}px;white-space:pre-wrap;overflow-wrap:anywhere;padding:${style.paddingTop} ${paddingRight} ${style.paddingBottom} ${paddingLeft};` : "white-space:pre;"}font:${style.font};font-size:${style.fontSize};font-family:${style.fontFamily};font-weight:${style.fontWeight};line-height:${style.lineHeight};letter-spacing:${style.letterSpacing};`;
   document.body.appendChild(probe);
   return probe;
 }
@@ -137,7 +141,11 @@ function shouldExpand(input: HTMLTextAreaElement) {
 }
 
 function measureExpandedHeight(input: HTMLTextAreaElement, rect: typeof expandedRect.value) {
-  const probe = createTextProbe(input, true, { width: Math.max(1, rect.width - 8), textIndent: rect.prefix });
+  const probe = createTextProbe(input, true, {
+    width: Math.max(1, rect.width - 8),
+    paddingLeft: rect.prefix + 2,
+    paddingRight: rect.suffix + 8,
+  });
   const style = window.getComputedStyle(input);
   const lineHeight = Number.parseFloat(style.lineHeight) || 24;
   const contentHeight = probe.scrollHeight;
@@ -370,6 +378,43 @@ function onInput(event: Event) {
   scheduleCaretIntoView();
 }
 
+function isConditionUndoRedoShortcut(event: KeyboardEvent) {
+  const key = event.key.toLowerCase();
+  return ((event.metaKey || event.ctrlKey) && !event.altKey && key === "z") || (event.ctrlKey && !event.metaKey && !event.altKey && key === "y");
+}
+
+function isConditionRedoShortcut(event: KeyboardEvent) {
+  return ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === "z") || (event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "y");
+}
+
+function applyConditionHistoryValue(value: string) {
+  conditionLastValue = value;
+  modelValue.value = value;
+  void nextTick(() => {
+    const target = activeEditor.value;
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    target.setSelectionRange(value.length, value.length);
+    syncSelection(target);
+  });
+}
+
+function handleConditionUndoRedo(event: KeyboardEvent) {
+  if (!isConditionUndoRedoShortcut(event)) return false;
+
+  event.preventDefault();
+  event.stopPropagation();
+  const source = isConditionRedoShortcut(event) ? conditionRedoStack.value : conditionUndoStack.value;
+  const targetValue = source.pop();
+  if (targetValue === undefined) return true;
+
+  const currentValue = modelValue.value;
+  const destination = isConditionRedoShortcut(event) ? conditionUndoStack.value : conditionRedoStack.value;
+  destination.push(currentValue);
+  applyConditionHistoryValue(targetValue);
+  return true;
+}
+
 async function applyCondition() {
   editor.dismiss();
   const applied = props.apply ? await props.apply(modelValue.value) : emit("apply", modelValue.value);
@@ -385,6 +430,7 @@ async function clearCondition() {
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (handleConditionUndoRedo(event)) return;
   if (completeQuote(event)) return;
   const action = editor.handleKeydown(event);
   if (action === "apply") void applyCondition();
@@ -471,7 +517,14 @@ function hideHistoryPreview() {
   historyPreview.value = null;
 }
 
-watch(modelValue, () => resizeEditor());
+watch(modelValue, (value) => {
+  if (value !== conditionLastValue) {
+    conditionUndoStack.value.push(conditionLastValue);
+    conditionRedoStack.value = [];
+    conditionLastValue = value;
+  }
+  resizeEditor();
+});
 watch(suggestionPreferredWidth, () => {
   if (editor.dropdownOpen.value) updateSuggestionPosition();
 });
@@ -795,8 +848,7 @@ defineExpose({ focus, dismiss: editor.dismiss, rememberHistory: editor.rememberH
   width: calc(100% - 1rem + var(--data-grid-expanded-scrollbar-offset));
   max-width: none;
   margin-right: calc(-1 * var(--data-grid-expanded-scrollbar-offset));
-  padding: 0 calc(var(--data-grid-condition-suffix-width) + 0.5rem) 0.0625rem 0.125rem;
-  text-indent: var(--data-grid-condition-prefix-indent);
+  padding: 0 calc(var(--data-grid-condition-suffix-width) + 0.5rem) 0.0625rem calc(var(--data-grid-condition-prefix-indent) + 0.125rem);
   overflow-x: hidden;
   overflow-y: auto;
   white-space: pre-wrap;
@@ -860,8 +912,7 @@ defineExpose({ focus, dismiss: editor.dismiss, rememberHistory: editor.rememberH
   min-width: 0;
   height: auto;
   margin-right: calc(-1 * var(--data-grid-expanded-scrollbar-offset));
-  padding: 0 calc(var(--data-grid-condition-suffix-width) + 0.5rem) 0.0625rem 0.125rem;
-  text-indent: var(--data-grid-condition-prefix-indent);
+  padding: 0 calc(var(--data-grid-condition-suffix-width) + 0.5rem) 0.0625rem calc(var(--data-grid-condition-prefix-indent) + 0.125rem);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

@@ -21,6 +21,14 @@ export interface SqlSnippet {
   enabled?: boolean;
 }
 
+export interface SqlShortcutAction {
+  id: string;
+  label: string;
+  shortcut: string;
+  sql: string;
+  enabled?: boolean;
+}
+
 export type CompletionAssistantObjectKind = "database" | "schema" | "table" | "view" | "routine" | "procedure" | "function" | "column" | "sequence";
 
 export type CompletionAssistantCandidateKind = "database" | "schema" | "table" | "view" | "procedure" | "function" | "column" | "sequence" | "object";
@@ -336,6 +344,29 @@ export interface DatabaseStorageInfo {
   size_bytes: number | null;
 }
 
+export interface XuguDatafileInfo {
+  node_id: string;
+  space_id: number;
+  path: string;
+  file_no: number;
+  max_size?: number | null;
+  step_size?: number | null;
+  curr_size?: number | null;
+  reserved1?: string | null;
+}
+
+export interface XuguTablespaceInfo {
+  node_id: string;
+  space_id: number;
+  space_name: string;
+  datafile_num: number;
+  space_type: string;
+  media_error?: string | null;
+  total_chunk_num?: number | null;
+  free_chunk_num?: number | null;
+  datafiles: XuguDatafileInfo[];
+}
+
 export interface SqlServerCompletionContext {
   default_schema: string;
   supports_session_database_switch: boolean;
@@ -369,7 +400,7 @@ export interface TableInfo {
   parent_name?: string | null;
 }
 
-export type DatabaseObjectType = "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT" | "SEQUENCE" | "SYNONYM" | "PACKAGE" | "PACKAGE_BODY" | "TYPE" | "TYPE_BODY";
+export type DatabaseObjectType = "TABLE" | "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT" | "SEQUENCE" | "SYNONYM" | "JOB" | "PACKAGE" | "PACKAGE_BODY" | "TYPE" | "TYPE_BODY";
 
 export interface ObjectInfo {
   name: string;
@@ -398,7 +429,7 @@ export interface ObjectStatistics {
   total_bytes?: number | null;
 }
 
-export type ObjectSourceKind = "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT" | "SEQUENCE" | "SYNONYM" | "PACKAGE" | "PACKAGE_BODY" | "TYPE" | "TYPE_BODY";
+export type ObjectSourceKind = "VIEW" | "MATERIALIZED_VIEW" | "PROCEDURE" | "FUNCTION" | "TRIGGER" | "EVENT" | "SEQUENCE" | "SYNONYM" | "JOB" | "PACKAGE" | "PACKAGE_BODY" | "TYPE" | "TYPE_BODY";
 
 export interface ObjectSource {
   name: string;
@@ -521,6 +552,10 @@ export interface IndexInfo {
   comment?: string | null;
   /** Parallel to `columns`: true at index i means columns[i] is a raw expression, not a plain column name. */
   key_is_expression?: boolean[] | null;
+}
+
+export interface ReferenceKeyInfo {
+  columns: string[];
 }
 
 export interface ForeignKeyInfo {
@@ -740,6 +775,10 @@ export interface SpatialColumn {
 export interface QueryResultSourceColumnRef {
   sourceKey: string;
   sourceColumn: string;
+  /** Physical source identity for display-only features such as column formatters. */
+  database?: string;
+  schema?: string;
+  tableName?: string;
 }
 
 export interface QueryResultRun {
@@ -850,6 +889,8 @@ export type TreeNodeType =
   | "connection"
   | "connection-group"
   | "database"
+  | "tablespace"
+  | "datafile"
   | "doris-catalog"
   | "linked-server-root"
   | "linked-server"
@@ -866,6 +907,7 @@ export type TreeNodeType =
   | "type-member"
   | "sequence"
   | "synonym"
+  | "job"
   | "package"
   | "package-body"
   | "group-columns"
@@ -885,9 +927,12 @@ export type TreeNodeType =
   | "group-types"
   | "group-sequences"
   | "group-synonyms"
+  | "group-jobs"
   | "group-packages"
   | "group-partitions"
   | "group-extensions"
+  | "group-tablespaces"
+  | "group-datafiles"
   | "extension"
   | "object-browser"
   | "user-admin"
@@ -987,6 +1032,9 @@ export interface TreeNode {
   comment?: string | null;
   valid?: boolean | null;
   sizeBytes?: number | null;
+  xuguTablespace?: XuguTablespaceInfo;
+  xuguDatafile?: XuguDatafileInfo;
+  xuguDatafilePath?: string;
   objectCount?: number;
   loadedKeyCount?: number;
   totalKeyCount?: number;
@@ -1025,6 +1073,10 @@ export interface TableStructureEditorTarget {
 export interface TableStructureEditorDraft {
   dirty?: boolean;
   activeTab: TableInfoTab;
+  /** DDL as loaded from the database — the baseline `ddlDraft` is compared against. */
+  ddlContent?: string;
+  /** Edited DDL script, or null/undefined when the DDL tab was left untouched. */
+  ddlDraft?: string | null;
   newTableName: string;
   tableComment: string;
   originalTableComment: string;
@@ -1058,14 +1110,31 @@ export interface ObjectBrowserViewport {
   viewMode: ObjectBrowserViewMode;
 }
 
+/** Runtime-only viewport state for the selected configuration in a Nacos tab. */
+export interface NacosConfigEditorViewport {
+  namespace: string;
+  dataId: string;
+  group: string;
+  scrollTop: number;
+  scrollLeft: number;
+}
+
 export interface ExternalSqlFileVersion {
   sizeBytes: number;
   modifiedNs: string;
   contentHash: string;
 }
 
+export interface QueryPageJumpProgress {
+  completedRequests: number;
+  totalRequests: number;
+  targetPage: number;
+}
+
 export interface QueryTab {
   id: string;
+  /** Stable creation time used when tabs are displayed in creation order. */
+  createdAt?: number;
   title: string;
   customTitle?: boolean;
   /** Force the editor to word-wrap regardless of the global setting, e.g. for auto-generated single-line templates. */
@@ -1107,6 +1176,8 @@ export interface QueryTab {
   resultTotalRowCountLoading?: boolean;
   resultSessionId?: string;
   resultClientSessionId?: string;
+  /** Ephemeral UI progress for sequential Elasticsearch cursor requests. */
+  resultPageJumpProgress?: QueryPageJumpProgress;
   resultAccessedAt?: number;
   resultEstimatedBytes?: number;
   resultCacheKey?: string;
@@ -1142,6 +1213,8 @@ export interface QueryTab {
     head: number;
   };
   executionId?: string;
+  /** Ephemeral result run targeted by the current execution; null means a new run is being produced. */
+  executingResultRunId?: string | null;
   isExplaining?: boolean;
   explainExecutionId?: string;
   /** Per-run connection session for explain flows that require session state. */
@@ -1194,6 +1267,7 @@ export interface QueryTab {
   nacosTargetGroup?: string;
   nacosTargetKeyword?: string;
   nacosTargetRequestId?: number;
+  nacosConfigEditorViewport?: NacosConfigEditorViewport;
   structureTableName?: string;
   structureInitialTab?: TableInfoTab;
   structureInitialTabRequestId?: number;
@@ -1206,6 +1280,8 @@ export interface QueryTab {
     eventName?: string;
     eventReadOnly?: boolean;
     eventOpenRequestId?: number;
+    /** 显式的"新建事件"请求：单调递增，用于让已复用 tab 也能重复进入 CREATE 编辑器 */
+    eventCreateRequestId?: number;
     initialObjectFilter?: "tables" | "events";
     viewport?: ObjectBrowserViewport;
   };
@@ -1249,6 +1325,7 @@ export interface QueryTab {
     editableSourceKey?: string;
     multiSource?: boolean;
     allowInsert?: boolean;
+    allowDelete?: boolean;
     allowInsertDelete?: boolean;
     distinct?: boolean;
     sources?: {
@@ -1373,6 +1450,7 @@ export interface TransferTaskConfig {
   content: TransferContent;
   mode: TransferMode;
   targetTableNameCase: TransferTableNameCase;
+  quoteTargetColumnNames: boolean;
   batchSize: number;
 }
 

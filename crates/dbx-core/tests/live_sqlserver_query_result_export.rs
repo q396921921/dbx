@@ -89,7 +89,11 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
     let connection_id = "live-sqlserver-xlsx-export";
     let pool_key = format!("{connection_id}:{database}");
     state.configs.write().await.insert(connection_id.to_string(), live_sqlserver_config(connection_id, &database));
-    state.connections.write().await.insert(pool_key, PoolKind::SqlServer(Arc::new(tokio::sync::Mutex::new(client))));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(pool_key, PoolKind::SqlServer(Arc::new(tokio::sync::Mutex::new(client))));
+        })
+        .await;
 
     let file_path = dir.join("result.xlsx");
     let sql = "WITH numbers AS (\
@@ -118,6 +122,7 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
         client_session_id: None,
         execution_id: Some(format!("live-sqlserver-xlsx-{suffix}")),
         date_time_format: None,
+        csv_quote_mode: Default::default(),
         export_table_name: None,
         export_column_types: None,
         column_comments: None,

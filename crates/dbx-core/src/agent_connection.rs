@@ -661,7 +661,8 @@ fn append_agent_url_params(base: String, params: Option<&str>) -> String {
 }
 
 pub fn hive_uses_zookeeper_discovery(config: &ConnectionConfig) -> bool {
-    if !matches!(config.db_type, DatabaseType::Hive | DatabaseType::Kyuubi | DatabaseType::Impala) {
+    if !matches!(config.db_type, DatabaseType::Hive | DatabaseType::Kyuubi | DatabaseType::Impala | DatabaseType::Argo)
+    {
         return false;
     }
 
@@ -926,6 +927,26 @@ mod tests {
 
         assert_eq!(params["database"], "postgres");
         assert_eq!(params["connection_string"], "jdbc:vastbase://vastbase.example.com:5432/postgres");
+    }
+
+    #[test]
+    fn kingbase_agent_params_keep_legacy_postgres_default_when_database_is_empty() {
+        let cfg = config(DatabaseType::Kingbase, None);
+
+        let params = agent_connect_params(&cfg, "kingbase.example.com", 54321, "").unwrap();
+
+        assert_eq!(params["database"], "postgres");
+        assert_eq!(params["connection_string"], "jdbc:kingbase8://kingbase.example.com:54321/postgres");
+    }
+
+    #[test]
+    fn kingbase_agent_params_preserve_explicit_database() {
+        let cfg = config(DatabaseType::Kingbase, Some("application"));
+
+        let params = agent_connect_params(&cfg, "kingbase.example.com", 54321, "application").unwrap();
+
+        assert_eq!(params["database"], "application");
+        assert_eq!(params["connection_string"], "jdbc:kingbase8://kingbase.example.com:54321/application");
     }
 
     #[test]

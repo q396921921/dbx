@@ -7,6 +7,7 @@ use dbx_core::transfer::{
     TransferObjectKind, TransferObjectSelection, TransferOwnershipPolicy, TransferRequest, TransferTableNameCase,
 };
 use serde_json::json;
+use std::sync::Arc;
 
 fn postgres_test_config(id: &str, database: &str) -> ConnectionConfig {
     ConnectionConfig {
@@ -193,13 +194,17 @@ async fn live_postgres_transfer_upserts_generated_always_identity_values() {
     let dir = std::env::temp_dir().join(format!("dbx-live-always-transfer-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
     let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
-    let state = AppState::new(storage);
+    let state = Arc::new(AppState::new(storage));
     let source_connection_id = "live-always-source";
     let target_connection_id = "live-always-target";
     let source_pool_key = format!("{source_connection_id}:{source_database}");
     let target_pool_key = format!("{target_connection_id}:{target_database}");
-    state.connections.write().await.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
-    state.connections.write().await.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
+            connections.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+        })
+        .await;
     state
         .configs
         .write()
@@ -227,6 +232,7 @@ async fn live_postgres_transfer_upserts_generated_always_identity_values() {
         objects: Vec::new(),
         mode: TransferMode::Upsert,
         target_table_name_case: TransferTableNameCase::Preserve,
+        quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
         batch_size: 100,
     };
@@ -356,13 +362,17 @@ async fn live_postgres_structure_only_preserves_table_indexes() {
     let dir = std::env::temp_dir().join(format!("dbx-live-structure-only-transfer-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
-    let state = AppState::new(storage);
+    let state = Arc::new(AppState::new(storage));
     let source_connection_id = "live-structure-only-source";
     let target_connection_id = "live-structure-only-target";
     let source_pool_key = format!("{source_connection_id}:{source_database}");
     let target_pool_key = format!("{target_connection_id}:{target_database}");
-    state.connections.write().await.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
-    state.connections.write().await.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
+            connections.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+        })
+        .await;
     state
         .configs
         .write()
@@ -390,6 +400,7 @@ async fn live_postgres_structure_only_preserves_table_indexes() {
         objects: Vec::new(),
         mode: TransferMode::Append,
         target_table_name_case: TransferTableNameCase::Preserve,
+        quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
         batch_size: 100,
     };
@@ -598,15 +609,19 @@ async fn live_postgres_transfer_preserves_data_and_schema_objects() {
     let dir = std::env::temp_dir().join(format!("dbx-live-transfer-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
-    let state = AppState::new(storage);
+    let state = Arc::new(AppState::new(storage));
 
     let source_connection_id = "live-source";
     let target_connection_id = "live-target";
     let source_pool_key = format!("{source_connection_id}:{source_database}");
     let target_pool_key = format!("{target_connection_id}:{target_database}");
 
-    state.connections.write().await.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
-    state.connections.write().await.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
+            connections.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+        })
+        .await;
     state
         .configs
         .write()
@@ -634,6 +649,7 @@ async fn live_postgres_transfer_preserves_data_and_schema_objects() {
         objects: Vec::new(),
         mode: TransferMode::Append,
         target_table_name_case: TransferTableNameCase::Preserve,
+        quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
         batch_size: 100,
     };
@@ -885,15 +901,19 @@ async fn live_postgres_transfer_skips_create_ddl_for_existing_target_table() {
     let dir = std::env::temp_dir().join(format!("dbx-live-existing-transfer-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
-    let state = AppState::new(storage);
+    let state = Arc::new(AppState::new(storage));
 
     let source_connection_id = "live-existing-source";
     let target_connection_id = "live-existing-target";
     let source_pool_key = format!("{source_connection_id}:{source_database}");
     let target_pool_key = format!("{target_connection_id}:{target_database}");
 
-    state.connections.write().await.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
-    state.connections.write().await.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
+            connections.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+        })
+        .await;
     state
         .configs
         .write()
@@ -921,6 +941,7 @@ async fn live_postgres_transfer_skips_create_ddl_for_existing_target_table() {
         objects: Vec::new(),
         mode: TransferMode::Append,
         target_table_name_case: TransferTableNameCase::Preserve,
+        quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
         batch_size: 100,
     };
@@ -1003,13 +1024,17 @@ async fn live_postgres_transfer_creates_selected_sequence_before_referencing_tab
     let dir = std::env::temp_dir().join(format!("dbx-live-sequence-transfer-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
-    let state = AppState::new(storage);
+    let state = Arc::new(AppState::new(storage));
     let source_connection_id = "live-sequence-source";
     let target_connection_id = "live-sequence-target";
     let source_pool_key = format!("{source_connection_id}:{source_database}");
     let target_pool_key = format!("{target_connection_id}:{target_database}");
-    state.connections.write().await.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
-    state.connections.write().await.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+    state
+        .update_connection_pools(|connections| {
+            connections.insert(source_pool_key.clone(), PoolKind::Postgres(source_pool.clone()));
+            connections.insert(target_pool_key.clone(), PoolKind::Postgres(target_pool.clone()));
+        })
+        .await;
     state
         .configs
         .write()
@@ -1043,6 +1068,7 @@ async fn live_postgres_transfer_creates_selected_sequence_before_referencing_tab
         ],
         mode: TransferMode::Append,
         target_table_name_case: TransferTableNameCase::Preserve,
+        quote_target_column_names: true,
         ownership_policy: TransferOwnershipPolicy::Preserve,
         batch_size: 100,
     };

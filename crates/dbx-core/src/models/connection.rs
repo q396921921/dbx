@@ -463,6 +463,15 @@ pub fn default_connect_timeout_secs() -> u64 {
     10
 }
 
+/// Cloud Spanner schema changes are long-running operations rather than plain
+/// statements. Measured against the real service, `CREATE INDEX` on an *empty*
+/// table took 22.9-33.6s over seven runs, so the generic default fails
+/// intermittently — and the failure is misleading, because the operation keeps
+/// running server-side and completes, leaving a retry to report
+/// `Duplicate name in schema`. Raising a floor mirrors what
+/// `connection::agent_connect_timeout` already does for Access.
+pub const SPANNER_MIN_QUERY_TIMEOUT_SECS: u64 = 120;
+
 pub fn default_query_timeout_secs() -> u64 {
     60
 }
@@ -824,21 +833,12 @@ impl ConnectionConfig {
         }
     }
 
-    /// Cloud Spanner schema changes are long-running operations rather than plain
-    /// statements. Measured against the real service, `CREATE INDEX` on an *empty*
-    /// table took 22.9-33.6s over seven runs, so the generic default fails
-    /// intermittently — and the failure is misleading, because the operation keeps
-    /// running server-side and completes, leaving a retry to report
-    /// `Duplicate name in schema`. Raising a floor mirrors what
-    /// `connection::agent_connect_timeout` already does for Access.
-    const SPANNER_MIN_QUERY_TIMEOUT_SECS: u64 = 120;
-
     pub fn effective_query_timeout_secs(&self) -> u64 {
         if self.query_timeout_secs == 0 {
             // An explicit 0 is the UI's "no limit"; a floor must not impose one.
             return 0;
         }
-        let floor = if self.db_type == DatabaseType::Spanner { Self::SPANNER_MIN_QUERY_TIMEOUT_SECS } else { 1 };
+        let floor = if self.db_type == DatabaseType::Spanner { SPANNER_MIN_QUERY_TIMEOUT_SECS } else { 1 };
         self.query_timeout_secs.max(floor)
     }
 
@@ -857,7 +857,10 @@ impl ConnectionConfig {
             DatabaseType::Rqlite | DatabaseType::Turso | DatabaseType::CloudflareD1 => Some("main"),
             DatabaseType::Gaussdb | DatabaseType::OpenGauss => Some("postgres"),
             DatabaseType::Kwdb => Some("defaultdb"),
-            DatabaseType::Vastbase => Some("postgres"),
+            // Keep saved Kingbase connections from before the database field became
+            // required working after upgrade. New and edited desktop connections
+            // still require an explicit existing database in the connection form.
+            DatabaseType::Kingbase | DatabaseType::Vastbase => Some("postgres"),
             DatabaseType::Highgo => Some("highgo"),
             DatabaseType::Uxdb => Some("uxdb"),
             DatabaseType::Yashandb => Some("yasdb"),
@@ -1089,7 +1092,7 @@ impl ConnectionConfig {
             DatabaseType::Snowflake => format!("snowflake://{host}/{db_part}"),
             DatabaseType::Trino => format!("trino://{host}:{port}{db_part}"),
             DatabaseType::PrestoSql => format!("prestosql://{host}:{port}{db_part}"),
-            DatabaseType::Hive => format!("hive://{host}:{port}{db_part}"),
+            DatabaseType::Hive | DatabaseType::Argo => format!("hive://{host}:{port}{db_part}"),
             DatabaseType::Kyuubi => format!("kyuubi://{host}:{port}{db_part}"),
             DatabaseType::Impala => format!("impala://{host}:{port}{db_part}"),
             DatabaseType::Spark => format!("spark://{host}:{port}{db_part}"),
@@ -1119,7 +1122,7 @@ impl ConnectionConfig {
                 format!("zookeeper://{host}:{port}")
             }
             DatabaseType::Iris => format!("iris://{host}:{port}{db_part}"),
-            DatabaseType::InfluxDb | DatabaseType::VictoriaMetrics => {
+            DatabaseType::InfluxDb | DatabaseType::InfluxDb3 | DatabaseType::VictoriaMetrics => {
                 let scheme = if self.ssl { "https" } else { "http" };
                 format!("{scheme}://{host}:{port}")
             }
@@ -1315,7 +1318,7 @@ impl ConnectionConfig {
             DatabaseType::PrestoSql => {
                 format!("prestosql://{}:{}@{host}:{port}{db_part}", username, password)
             }
-            DatabaseType::Hive => {
+            DatabaseType::Hive | DatabaseType::Argo => {
                 format!("hive://{}:{}@{host}:{port}{db_part}", username, password)
             }
             DatabaseType::Kyuubi => {
@@ -1395,7 +1398,7 @@ impl ConnectionConfig {
             DatabaseType::Iris => {
                 format!("iris://{}:{}@{host}:{port}{db_part}", username, password)
             }
-            DatabaseType::InfluxDb | DatabaseType::VictoriaMetrics => {
+            DatabaseType::InfluxDb | DatabaseType::InfluxDb3 | DatabaseType::VictoriaMetrics => {
                 let scheme = if self.ssl { "https" } else { "http" };
                 format!("{scheme}://{host}:{port}")
             }
@@ -3444,13 +3447,17 @@ mod tests {
     }
 
     #[test]
-    fn kingbase_empty_database_has_no_default() {
+    fn kingbase_empty_database_uses_legacy_postgres_default() {
         let mut config = mysql_config("SYSTEM", "secret", None);
         config.db_type = DatabaseType::Kingbase;
         config.port = 54321;
 
-        assert_eq!(config.effective_database(), None);
-        assert_eq!(config.connection_url(), "kingbase://SYSTEM:secret@10.1.2.3:54321");
+        assert_eq!(config.effective_database(), Some("postgres"));
+        assert_eq!(config.connection_url(), "kingbase://SYSTEM:secret@10.1.2.3:54321/postgres");
+
+        config.database = Some("application".to_string());
+        assert_eq!(config.effective_database(), Some("application"));
+        assert_eq!(config.connection_url(), "kingbase://SYSTEM:secret@10.1.2.3:54321/application");
     }
 
     #[test]

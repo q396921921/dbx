@@ -9,6 +9,7 @@ import {
   isGoToLastPageShortcut,
   isGoToNextPageShortcut,
   isGoToPreviousPageShortcut,
+  isToggleZenModeShortcut,
   matchesModifierOnlyShortcut,
   matchesShortcut,
   tabSwitcherDirectionFromShortcut,
@@ -98,6 +99,14 @@ describe("keyboard shortcut matching", () => {
     expect(isExecuteSqlInNewResultTabShortcut({ key: "\\", metaKey: true }, { executeSqlInNewResultTab: "Mod+\\" })).toBe(true);
   });
 
+  it("matches the configurable Zen mode shortcut", () => {
+    const platformModEvent = isMacShortcutPlatform() ? { key: "F12", metaKey: true, shiftKey: true } : { key: "F12", ctrlKey: true, shiftKey: true };
+
+    expect(isToggleZenModeShortcut(platformModEvent, { toggleZenMode: "Shift+Mod+F12" })).toBe(true);
+    expect(isToggleZenModeShortcut({ ...platformModEvent, shiftKey: false }, { toggleZenMode: "Shift+Mod+F12" })).toBe(false);
+    expect(isToggleZenModeShortcut(platformModEvent, { toggleZenMode: "" })).toBe(false);
+  });
+
   it("matches legacy plus-key shortcuts saved with plus as a separator", () => {
     expect(matchesShortcut({ key: "+", ctrlKey: true }, "Mod++", "Win32")).toBe(true);
     expect(matchesShortcut({ key: "+", ctrlKey: true, shiftKey: true }, "Shift+Mod++", "Win32")).toBe(true);
@@ -116,8 +125,9 @@ describe("keyboard shortcut matching", () => {
   });
 
   it("matches the edit-table-structure shortcut on Windows and macOS", () => {
-    expect(isEditTableStructureShortcut({ key: "d", ctrlKey: true }, undefined, "Win32")).toBe(true);
-    expect(isEditTableStructureShortcut({ key: "d", metaKey: true }, undefined, "MacIntel")).toBe(true);
+    expect(isEditTableStructureShortcut({ key: "d", ctrlKey: true, shiftKey: true }, undefined, "Win32")).toBe(true);
+    expect(isEditTableStructureShortcut({ key: "d", metaKey: true, shiftKey: true }, undefined, "MacIntel")).toBe(true);
+    expect(isEditTableStructureShortcut({ key: "d", ctrlKey: true }, undefined, "Win32")).toBe(false);
     expect(isEditTableStructureShortcut({ key: "d", ctrlKey: true }, undefined, "MacIntel")).toBe(false);
   });
 
