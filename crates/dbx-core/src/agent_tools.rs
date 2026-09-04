@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use serde_json::json;
 
 use crate::agent_events::{ToolCall, ToolDefinition, ToolResult};
+use crate::capability_index::{self, CapabilitySearch};
 use crate::connection::AppState;
 use crate::db::vector_driver;
 use crate::models::connection::DatabaseType;
@@ -285,13 +286,52 @@ fn execute_get_current_time(tool_call: &ToolCall) -> Result<String, String> {
     .to_string())
 }
 
+/// `search_capability` tool definition — DB-independent lookup over dbx's own
+/// settings/shortcuts/toolbar actions/supported databases, so the agent can check
+/// whether a requested feature already exists before telling the user it doesn't.
+fn search_capability_tool() -> ToolDefinition {
+    ToolDefinition {
+        name: "search_capability",
+        description: "Check whether dbx (this application) already has a built-in setting, keyboard \
+                      shortcut, toolbar action, or support for a given database, before telling the \
+                      user a feature doesn't exist or suggesting they file a feature request. Pass a \
+                      short keyword describing what the user is asking about, in their own words \
+                      (Chinese or English). If nothing narrows down, the full capability list is \
+                      returned so you can judge for yourself — only report a match you're confident \
+                      about, and say so plainly if nothing covers the request.",
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Keyword to search for, e.g. a setting name, shortcut action, or database name"
+                }
+            },
+            "required": []
+        }),
+        read_only: true,
+        parallel_ok: true,
+    }
+}
+
+/// Execute `search_capability` — returns matching capability entries, or the
+/// full compact index when the query doesn't narrow things down.
+fn execute_search_capability(tool_call: &ToolCall) -> Result<String, String> {
+    let query = tool_call.arguments.get("query").and_then(serde_json::Value::as_str);
+    let lines = match capability_index::search(query) {
+        CapabilitySearch::Matches(entries) => entries,
+        CapabilitySearch::FullIndex(entries) => entries,
+    };
+    Ok(lines.join("\n"))
+}
+
 /// Get read-only tool definitions for the given database type.
 /// Returns vector tools for vector DBs, SQL tools otherwise.
 pub fn read_only_tools(db_type: DatabaseType) -> Vec<ToolDefinition> {
     if is_vector_db(db_type) {
-        vec![list_collections_tool(), get_current_time_tool()]
+        vec![list_collections_tool(), get_current_time_tool(), search_capability_tool()]
     } else {
-        vec![list_tables_tool(), get_columns_tool(), get_current_time_tool()]
+        vec![list_tables_tool(), get_columns_tool(), get_current_time_tool(), search_capability_tool()]
     }
 }
 
@@ -300,9 +340,14 @@ pub fn read_only_tools(db_type: DatabaseType) -> Vec<ToolDefinition> {
 /// explain_query for database types that support them.
 pub fn all_tools(db_type: DatabaseType, sql_permissions: AgentSqlPermissions) -> Vec<ToolDefinition> {
     if is_vector_db(db_type) {
-        return vec![list_collections_tool(), browse_collection_tool(), get_current_time_tool()];
+        return vec![
+            list_collections_tool(),
+            browse_collection_tool(),
+            get_current_time_tool(),
+            search_capability_tool(),
+        ];
     }
-    let mut tools = vec![list_tables_tool(), get_columns_tool(), get_current_time_tool()];
+    let mut tools = vec![list_tables_tool(), get_columns_tool(), get_current_time_tool(), search_capability_tool()];
     if db_type == DatabaseType::MongoDb {
         tools.push(mongo_execute_query_tool(sql_permissions));
     } else if supports_sql_query(db_type) {
@@ -579,6 +624,7 @@ pub async fn execute_tool(
             }
         }
         "get_current_time" => execute_get_current_time(tool_call),
+        "search_capability" => execute_search_capability(tool_call),
         _ => Err(format!("Unknown tool: {}", tool_call.name)),
     };
 
@@ -2260,6 +2306,78 @@ for line in sys.stdin:
             assert!(parsed["utc"].is_string());
             assert!(parsed["local"].is_string());
             assert!(parsed["readable"].is_string());
+        });
+    }
+
+    #[test]
+    fn search_capability_is_in_all_tools_and_read_only_tools() {
+        for db_type in [DatabaseType::Postgres, DatabaseType::Qdrant, DatabaseType::MongoDb] {
+            let all = all_tools(db_type, AgentSqlPermissions::default());
+            assert!(
+                all.iter().any(|tool| tool.name == "search_capability"),
+                "search_capability missing from all_tools({db_type:?})"
+            );
+            let read_only = read_only_tools(db_type);
+            assert!(
+                read_only.iter().any(|tool| tool.name == "search_capability"),
+                "search_capability missing from read_only_tools({db_type:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn execute_tool_search_capability_finds_a_known_entry() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = crate::storage::Storage::open(&temp_dir.path().join("storage.db")).await.unwrap();
+            let state = std::sync::Arc::new(crate::connection::AppState::new(storage));
+            let tool_call = ToolCall {
+                id: "call-sc".to_string(),
+                name: "search_capability".to_string(),
+                arguments: serde_json::json!({ "query": "milvus" }),
+                provider_payload: None,
+            };
+            let result = execute_tool(
+                &tool_call,
+                &state,
+                "dummy",
+                "dummy",
+                None,
+                &DatabaseType::Postgres,
+                AgentSqlPermissions::default(),
+            )
+            .await;
+            assert!(!result.is_error, "execute_tool search_capability should not error: {}", result.content);
+            assert!(result.content.to_lowercase().contains("milvus"), "expected a milvus match in: {}", result.content);
+        });
+    }
+
+    #[test]
+    fn execute_tool_search_capability_without_query_returns_full_index() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let storage = crate::storage::Storage::open(&temp_dir.path().join("storage.db")).await.unwrap();
+            let state = std::sync::Arc::new(crate::connection::AppState::new(storage));
+            let tool_call = ToolCall {
+                id: "call-sc-empty".to_string(),
+                name: "search_capability".to_string(),
+                arguments: serde_json::json!({}),
+                provider_payload: None,
+            };
+            let result = execute_tool(
+                &tool_call,
+                &state,
+                "dummy",
+                "dummy",
+                None,
+                &DatabaseType::Postgres,
+                AgentSqlPermissions::default(),
+            )
+            .await;
+            assert!(!result.is_error, "execute_tool search_capability should not error: {}", result.content);
+            assert!(result.content.lines().count() > 20, "expected the full compact index back");
         });
     }
 }

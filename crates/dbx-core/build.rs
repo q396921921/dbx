@@ -22,6 +22,20 @@ fn main() {
 
     generate_core_dialects(&plugins_dir.join("dialects"), out_dir);
     generate_connection_type_registry(&plugins_dir.join("connection-types"), out_dir);
+    generate_capability_index(cargo_manifest_dir, out_dir);
+}
+
+/// Copy the docs' generated capability knowledge base (`pnpm build:capability-index`)
+/// into OUT_DIR so `capability_index.rs` can embed it with `include_str!`. Keeping
+/// docs/data/capabilityIndex.json as the single checked-in source avoids maintaining
+/// a second copy that can drift out of sync.
+fn generate_capability_index(cargo_manifest_dir: &Path, out_dir: &Path) {
+    let source = cargo_manifest_dir.join("..").join("..").join("docs").join("data").join("capabilityIndex.json");
+    println!("cargo::rerun-if-changed={}", source.display());
+    let content = std::fs::read_to_string(&source).unwrap_or_else(|error| {
+        panic!("Cannot read {} ({error}). Run `pnpm build:capability-index` at the repo root first.", source.display())
+    });
+    std::fs::write(out_dir.join("capability_index.json"), content).expect("Failed to write capability_index.json");
 }
 
 fn yaml_entries(directory: &Path) -> Vec<PathBuf> {

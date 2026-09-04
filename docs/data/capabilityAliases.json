@@ -1,0 +1,16 @@
+{
+  "navigation-object-info": [
+    "表大小",
+    "表占用空间",
+    "占用空间",
+    "表 size",
+    "table size",
+    "显示表大小",
+    "对象大小"
+  ],
+  "navigation-reuse-data-tab": [
+    "同一张表多个标签页",
+    "标签页复用",
+    "重复打开标签页"
+  ]
+}

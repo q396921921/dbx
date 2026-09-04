@@ -9,6 +9,11 @@ const tasks = [
     args: ["scripts/sync-connection-types.mjs", "--check"],
   },
   {
+    name: "capability-index",
+    command: "tsx",
+    args: ["--tsconfig", "apps/desktop/tsconfig.json", "scripts/build-capability-index.ts", "--check"],
+  },
+  {
     name: "format",
     command: "oxfmt",
     args: ["--check", "apps/desktop/src/**/*.{ts,vue}"],

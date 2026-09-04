@@ -37,3 +37,11 @@ jobs:
         run: node .github/scripts/suggest-similar-issues.mjs
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+
+      - name: Suggest existing capability
+        run: node .github/scripts/suggest-existing-capability.mjs
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Reuses the same DeepSeek key already paid for and configured
+          # for sync-changelog.yml's release-note translation.
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

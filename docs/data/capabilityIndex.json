@@ -1,0 +1,4811 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "about-support",
+      "kind": "setting",
+      "category": "about",
+      "title": {
+        "cn": "支持信息",
+        "en": "Support information"
+      },
+      "description": {
+        "cn": "提交 issue 或寻求帮助时，可复制这些环境信息。",
+        "en": "Copy these environment details when filing issues or asking for help."
+      },
+      "settingsPath": "settings#about",
+      "sinceVersion": "v0.5.52",
+      "aliases": []
+    },
+    {
+      "id": "about-update",
+      "kind": "setting",
+      "category": "about",
+      "title": {
+        "cn": "更新下载源",
+        "en": "Update download source"
+      },
+      "description": {
+        "cn": "选择应用更新、数据库 Agent、驱动和托管 JRE 的下载来源。官方源为推荐选项，CNB 适合国内网络环境。",
+        "en": "Choose where app updates, database agents, drivers, and managed JREs are downloaded from. The official source is recommended; CNB can be faster on mainland China networks."
+      },
+      "settingsPath": "settings#about",
+      "sinceVersion": "v0.5.40",
+      "aliases": []
+    },
+    {
+      "id": "ai-agent-turn-limit",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "Agent 回合上限",
+        "en": "Agent Turn Limit"
+      },
+      "description": {
+        "cn": "单次 API Agent 运行的最大工具调用回合数，超过后会暂停并提示继续。CLI 供应商使用各自的运行限制。",
+        "en": "Maximum tool-call turns per API agent run before it pauses and asks you to continue. CLI providers use their own run limits."
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.66",
+      "aliases": []
+    },
+    {
+      "id": "ai-config",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "AI 配置列表",
+        "en": "AI Config List"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "ai-default-mode",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "默认 AI 模式",
+        "en": "Default AI Mode"
+      },
+      "description": {
+        "cn": "新建 AI 对话时使用的模式。切换当前对话的模式不会修改此设置。",
+        "en": "Mode used when starting a new AI conversation. Switching mode in the current conversation does not change this setting."
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.78",
+      "aliases": []
+    },
+    {
+      "id": "ai-global-instructions",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "全局自定义指令",
+        "en": "Global Custom Instructions"
+      },
+      "description": {
+        "cn": "所有 AI 对话自动应用。",
+        "en": "Automatically applied to all AI conversations."
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.64",
+      "aliases": []
+    },
+    {
+      "id": "ai-global-retries",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "最大重试次数",
+        "en": "Max Retries"
+      },
+      "description": {
+        "cn": "遇到临时 API 错误（限流、超时、网络波动）时的自动重试次数。适用于所有 API 模式 AI 供应商。CLI 供应商不受影响。",
+        "en": "Number of automatic retries on transient API errors (rate limits, timeouts, network blips). Applies to all API-backed AI providers. CLI providers are unaffected."
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.70",
+      "aliases": []
+    },
+    {
+      "id": "ai-prompts",
+      "kind": "setting",
+      "category": "ai",
+      "title": {
+        "cn": "场景 Prompt 模板",
+        "en": "Scenario Prompt Templates"
+      },
+      "description": {
+        "cn": "在 AI 助手中选择一个或多个模板，注入场景化的约定规范。",
+        "en": "Select one or more templates in the AI assistant to inject scenario-specific conventions."
+      },
+      "settingsPath": "settings#ai",
+      "sinceVersion": "v0.5.64",
+      "aliases": []
+    },
+    {
+      "id": "appearance-color-theme",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "配色主题",
+        "en": "Color Theme"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "appearance-corners",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "圆角样式",
+        "en": "Corner style"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.66",
+      "aliases": []
+    },
+    {
+      "id": "appearance-debug-logs",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "启用调试日志",
+        "en": "Enable debug logs"
+      },
+      "description": {
+        "cn": "开启后在本机记录更详细的用户侧诊断日志，反馈问题时可临时开启；默认关闭。",
+        "en": "Record more detailed local user-side diagnostic logs while troubleshooting reports. Disabled by default."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "appearance-exclusive-sidebar-panels",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "右侧边栏一次仅显示一个面板",
+        "en": "Show one right sidebar panel at a time"
+      },
+      "description": {
+        "cn": "打开一个右侧面板时关闭其他面板。关闭此选项可同时显示多个面板。",
+        "en": "Opening a right sidebar panel closes the others. Disable this to allow multiple panels."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.63",
+      "aliases": []
+    },
+    {
+      "id": "appearance-grid-font",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "查询结果网格字体",
+        "en": "Result Grid Font"
+      },
+      "description": {
+        "cn": "用于查询结果、表数据、列标题和单元格内编辑器。",
+        "en": "Applies to query results, table data, column headers, and inline cell editors."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.64",
+      "aliases": []
+    },
+    {
+      "id": "appearance-icons",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "图标与 Logo 样式",
+        "en": "Icon and logo style"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.26",
+      "aliases": []
+    },
+    {
+      "id": "appearance-language",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "语言 / Language",
+        "en": "Language / 语言"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.27",
+      "aliases": []
+    },
+    {
+      "id": "appearance-layout",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "界面布局",
+        "en": "Interface Layout"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-quit",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "关闭窗口时退出程序",
+        "en": "Quit when closing window"
+      },
+      "description": {
+        "cn": "开启后，点击窗口关闭按钮将彻底退出 DBX，而不是隐藏到系统托盘。",
+        "en": "When enabled, clicking the close button exits DBX completely instead of hiding it to the tray. You can change this later in Appearance settings."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.36",
+      "aliases": []
+    },
+    {
+      "id": "appearance-tab-layout",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "标签栏溢出",
+        "en": "Tab bar overflow"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "appearance-theme",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "主题",
+        "en": "Theme"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "工具栏",
+        "en": "Toolbar"
+      },
+      "description": {
+        "cn": "部分关闭或空间不足的按钮会自动收进\"更多\"下拉菜单。",
+        "en": "Some hidden or overflowed buttons appear in the \"More\" dropdown."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-ai",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "AI",
+        "en": "AI"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-checkUpdates",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "检查更新",
+        "en": "Check for updates"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-dataCompare",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "比较数据",
+        "en": "Compare Data"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-dataTransfer",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "数据传输",
+        "en": "Data Transfer"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-driverManager",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "驱动管理",
+        "en": "Driver Manager"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.25",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-github",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "GitHub",
+        "en": "GitHub"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-history",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "历史",
+        "en": "History"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-schemaDiff",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "比较架构",
+        "en": "Compare Schemas"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-sqlFile",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "执行 SQL 文件",
+        "en": "Execute SQL File"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-sqlFileTree",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "SQL 文件",
+        "en": "SQL Files"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-sqlLibrary",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "SQL 库",
+        "en": "SQL Library"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-toolbar-theme",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "主题",
+        "en": "Theme"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "appearance-tray",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "显示系统托盘/菜单栏图标",
+        "en": "Show tray/menu bar icon"
+      },
+      "description": {
+        "cn": "关闭后不显示图标，但关闭窗口仍会像之前一样隐藏到后台。",
+        "en": "When disabled, no icon is shown, but closing the window still hides DBX in the background as before."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.18",
+      "aliases": []
+    },
+    {
+      "id": "appearance-ui-font",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "界面字体",
+        "en": "Interface Font"
+      },
+      "description": {
+        "cn": "用于顶部栏、标签页、侧边栏、弹窗等非编辑器界面。",
+        "en": "Applies to app chrome such as the toolbar, tabs, sidebar, dialogs, and other non-editor UI."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.44",
+      "aliases": []
+    },
+    {
+      "id": "appearance-ui-scale",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "界面缩放",
+        "en": "UI Scale"
+      },
+      "description": {
+        "cn": "按比例缩放整个桌面端界面，适合高清屏；修改后立即生效，并在下次启动时恢复。",
+        "en": "Scale the entire desktop UI for high-DPI displays. Changes apply immediately and are restored on next launch."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.24",
+      "aliases": []
+    },
+    {
+      "id": "appearance-updates",
+      "kind": "setting",
+      "category": "appearance",
+      "title": {
+        "cn": "启用更新提醒",
+        "en": "Enable update reminders"
+      },
+      "description": {
+        "cn": "关闭后，DBX 不会自动检查应用和驱动更新，也不会显示更新红点；仍可手动检查更新。",
+        "en": "When disabled, DBX will not automatically check app or driver updates or show update badges. Manual checks are still available."
+      },
+      "settingsPath": "settings#appearance",
+      "sinceVersion": "v0.5.30",
+      "aliases": []
+    },
+    {
+      "id": "backups",
+      "kind": "setting",
+      "category": "backups",
+      "title": {
+        "cn": "数据库备份",
+        "en": "Database Backups"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#backups",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "data-datetime",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "日期与时间",
+        "en": "Date and time"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "data-datetime-display-format",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "全局显示格式",
+        "en": "Global display format"
+      },
+      "description": {
+        "cn": "应用于所有数据库中未单独配置列格式的日期时间字段。",
+        "en": "Applies to temporal columns without a column-specific formatter in every database."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "data-datetime-export-format",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "全局导出格式",
+        "en": "Global export format"
+      },
+      "description": {
+        "cn": "导出 CSV、Excel、JSON、Markdown 和文本时统一格式化日期时间字段。",
+        "en": "Formats temporal columns consistently in CSV, Excel, JSON, Markdown, and text exports."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "data-datetime-import-format",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "全局导入格式",
+        "en": "Global import format"
+      },
+      "description": {
+        "cn": "按此格式解析导入文件中的日期时间；留空时自动识别常见格式。",
+        "en": "Parses imported temporal values with this format. Leave empty to detect common formats automatically."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.59",
+      "aliases": []
+    },
+    {
+      "id": "data-duckdb",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "DuckDB 进程隔离模式（实验性）",
+        "en": "DuckDB process isolation mode (Experimental)"
+      },
+      "description": {
+        "cn": "将 DuckDB 查询放到独立 worker 进程中运行。停止长查询时，如果 DuckDB 未及时响应取消请求，DBX 会结束 worker 进程以释放数据库文件锁。",
+        "en": "Runs DuckDB queries in a separate worker process. If a long query does not respond to cancellation, DBX can stop the worker process to release the database file lock."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "data-duckdb-process-limit",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "DuckDB 最大并发 worker 数",
+        "en": "DuckDB max concurrent workers"
+      },
+      "description": {
+        "cn": "限制 DBX 同时运行的 DuckDB worker 进程数量。范围：1-16，默认：4。",
+        "en": "Limits how many DuckDB worker processes DBX can run at the same time. Range: 1-16. Default: 4."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "data-export",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "导出",
+        "en": "Export"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.29",
+      "aliases": []
+    },
+    {
+      "id": "data-export-batch",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "导出批次大小",
+        "en": "Export batch size"
+      },
+      "description": {
+        "cn": "导出数据时每批读取的行数（100-100000）。",
+        "en": "Rows fetched per batch when exporting data (100-100000)."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.29",
+      "aliases": []
+    },
+    {
+      "id": "data-export-keyset",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "尝试 keyset 优化",
+        "en": "Try keyset optimization"
+      },
+      "description": {
+        "cn": "仅对可安全识别的单表查询生效，复杂查询会自动回退。",
+        "en": "Only applies to safely recognized single-table queries; complex queries automatically fall back."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.38",
+      "aliases": []
+    },
+    {
+      "id": "data-export-row-limit",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "数据导出最多行数",
+        "en": "Data export row limit"
+      },
+      "description": {
+        "cn": "查询结果和表数据导出的总行数上限。",
+        "en": "Maximum rows for query result and table data exports."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.38",
+      "aliases": []
+    },
+    {
+      "id": "data-export-row-limit-enabled",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "限制导出行数",
+        "en": "Limit exported rows"
+      },
+      "description": {
+        "cn": "开启时，查询结果和表数据导出最多为下方设置的行数。",
+        "en": "When on, query result and table data exports stop at the row limit below."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.38",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-auto-total",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "自动统计总行数",
+        "en": "Auto-calculate total row count"
+      },
+      "description": {
+        "cn": "每次查询后自动执行 COUNT(*) 显示匹配的总行数。默认关闭以保证大查询速度 —— 可在结果栏按需手动统计。",
+        "en": "Run COUNT(*) automatically after each query to show the total matching rows. Off by default to keep large queries fast — calculate it on demand from the result footer."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.54",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-auto-transpose",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "自动转置单行查询结果",
+        "en": "Auto-transpose single-row query results"
+      },
+      "description": {
+        "cn": "开启后，SQL 查询结果只有一行且包含多列时，自动切换为转置视图。",
+        "en": "When enabled, SQL query results with exactly one row and multiple columns automatically switch to transpose view."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.67",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-cell-type-colors",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "按数据类型为表格值着色",
+        "en": "Color-code data grid values"
+      },
+      "description": {
+        "cn": "使用适配主题的克制文字颜色，按字段数据类型区分表格中的值。",
+        "en": "Use subtle, theme-aware text colors to distinguish values by their column data type."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.83",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-compact-header-actions",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "收起字段表头工具",
+        "en": "Compact column header tools"
+      },
+      "description": {
+        "cn": "将格式化、本地筛选收进更多菜单，优先显示字段名称。",
+        "en": "Move formatter and local filter tools into a more menu so column names get priority."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.21",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-filter-view",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "表格筛选视图",
+        "en": "Table filter view"
+      },
+      "description": {
+        "cn": "选择弹出式快捷筛选、固定条件面板或紧凑文本条件面板。",
+        "en": "Use a filter popover, a fixed conditions panel, or a compact text conditions panel."
+      },
+      "settingsPath": "settings#data-grid-filter-view",
+      "sinceVersion": "v0.5.85",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-flattening-multi-line",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "扁平化多行文本",
+        "en": "Flattening Multi-line Text"
+      },
+      "description": {
+        "cn": "多行文本合并为单行显示，换行符显示为 ¶ 。",
+        "en": "Multi-line text merged into single line display, with line breaks shown as ¶ ."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.83",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-header-comments",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "在字段名下方显示注释",
+        "en": "Show column comments under names"
+      },
+      "description": {
+        "cn": "把表字段注释直接显示在结果表头字段名下方。",
+        "en": "Display table column comments directly below grid column names."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.21",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-header-types",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "在字段名下方显示数据类型",
+        "en": "Show column types under names"
+      },
+      "description": {
+        "cn": "把每个字段的数据类型直接显示在结果表头字段名下方。",
+        "en": "Display each column's data type directly below grid column names."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.30",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-index-indicators",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "在字段名旁显示索引标识",
+        "en": "Show index indicators beside column names"
+      },
+      "description": {
+        "cn": "在结果表头字段名旁用图标标识字段的索引类型：主键（橙色）、唯一索引（红色）、普通索引（绿色）。",
+        "en": "Use icons to indicate each column's index type in the grid header: primary key (orange), unique index (red), regular index (green)."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.77",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-infinite-scroll",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "无限滚动加载",
+        "en": "Infinite scroll loading"
+      },
+      "description": {
+        "cn": "滚动到底部时自动加载下一批数据，无需手动翻页或加载。",
+        "en": "Automatically load the next batch when scrolling to the bottom."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.33",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-quick-entry",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "表格快捷录入",
+        "en": "Quick grid entry"
+      },
+      "description": {
+        "cn": "开启后，编辑单元格或填写底部空行并离焦会立即保存到数据库。便于高频录入，但存在误操作风险。",
+        "en": "When enabled, editing a cell or filling the bottom blank row saves to the database as soon as focus leaves. Useful for frequent entry, but it can cause accidental writes."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-transpose-field-metadata",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "在转置视图中显示字段元数据",
+        "en": "Show field metadata in transpose view"
+      },
+      "description": {
+        "cn": "在转置视图中分行显示已启用的数据类型和注释。开启后会增加行高。",
+        "en": "Display enabled column types and comments on separate lines in transpose view. This increases row height."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.84",
+      "aliases": []
+    },
+    {
+      "id": "data-grid-type-colors",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "数据类型配色方案",
+        "en": "Data type color scheme"
+      },
+      "description": {
+        "cn": "选择表格按数据类型为值着色时使用的配色。",
+        "en": "Choose which palette the grid uses to color-code values by data type."
+      },
+      "settingsPath": "settings#data-grid-type-colors",
+      "sinceVersion": "v0.5.89",
+      "aliases": []
+    },
+    {
+      "id": "data-metadata-cache",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "元数据内存缓存上限",
+        "en": "Metadata memory cache limit"
+      },
+      "description": {
+        "cn": "默认 64 MB，建议不超过 256 MB，最大 512 MB。用于 DDL、字段、索引、外键、触发器和注释缓存。",
+        "en": "Defaults to 64 MB. Keep it at or below 256 MB when possible; the hard limit is 512 MB. Covers DDL, columns, indexes, foreign keys, triggers, and comments."
+      },
+      "settingsPath": "settings#data-performance",
+      "sinceVersion": "v0.5.89",
+      "aliases": []
+    },
+    {
+      "id": "data-page-size",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "打开表默认每页行数",
+        "en": "Default rows per page when opening tables"
+      },
+      "description": {
+        "cn": "新打开数据表时每页加载的行数。在表数据页修改每页行数后，也会更新后续新建表标签页的默认值。",
+        "en": "Rows loaded per page when opening a new table. Changing rows per page in a table updates this default for future table tabs."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.62",
+      "aliases": []
+    },
+    {
+      "id": "data-performance",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "性能",
+        "en": "Performance"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#data-performance",
+      "sinceVersion": "v0.5.89",
+      "aliases": []
+    },
+    {
+      "id": "data-table-template",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "新建表预设字段",
+        "en": "New Table Preset Fields"
+      },
+      "description": {
+        "cn": "先选择数据库类型，再配置新建表时使用的预设字段类型。",
+        "en": "Choose a database type, then configure the preset field types used when creating new tables."
+      },
+      "settingsPath": "settings#table-column-templates",
+      "sinceVersion": "v0.5.38",
+      "aliases": []
+    },
+    {
+      "id": "database-access",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Microsoft Access",
+        "en": "Microsoft Access"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-bigquery",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Google BigQuery",
+        "en": "Google BigQuery"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-cassandra",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Cassandra",
+        "en": "Apache Cassandra"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-chromadb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "ChromaDB",
+        "en": "ChromaDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-clickhouse",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "ClickHouse",
+        "en": "ClickHouse"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-cloudflare-d1",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Cloudflare D1",
+        "en": "Cloudflare D1"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-consul",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Consul",
+        "en": "Consul"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-dameng",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "达梦 DM8",
+        "en": "达梦 DM8"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-databend",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Databend",
+        "en": "Databend"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-databricks",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Databricks SQL",
+        "en": "Databricks SQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-db2",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "IBM DB2",
+        "en": "IBM DB2"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-doris",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Doris",
+        "en": "Doris"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-duckdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "DuckDB",
+        "en": "DuckDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-dynamodb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Amazon DynamoDB",
+        "en": "Amazon DynamoDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-easysearch",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Easysearch",
+        "en": "Easysearch"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-elasticsearch",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Elasticsearch",
+        "en": "Elasticsearch"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-etcd",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "etcd",
+        "en": "etcd"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-exasol",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Exasol",
+        "en": "Exasol"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-firebird",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Firebird",
+        "en": "Firebird"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-gaussdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "GaussDB",
+        "en": "GaussDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-gbase",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "南大通用 GBase 8a",
+        "en": "南大通用 GBase 8a"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-goldendb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "金篆 GoldenDB",
+        "en": "金篆 GoldenDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-h2",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "H2",
+        "en": "H2"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-hbase",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache HBase",
+        "en": "Apache HBase"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-highgo",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "瀚高 HighGo",
+        "en": "瀚高 HighGo"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-hive",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Hive",
+        "en": "Apache Hive"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-ignite",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Ignite",
+        "en": "Apache Ignite"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-ignite3",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Ignite 3",
+        "en": "Apache Ignite 3"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-impala",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Impala",
+        "en": "Apache Impala"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-influxdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "InfluxDB",
+        "en": "InfluxDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-informix",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "IBM Informix",
+        "en": "IBM Informix"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-iotdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache IoTDB",
+        "en": "Apache IoTDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-iris",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "InterSystems IRIS",
+        "en": "InterSystems IRIS"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-jdbc",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "JDBC",
+        "en": "JDBC"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-kingbase",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "金仓KingbaseES",
+        "en": "金仓KingbaseES"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-kwdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "KWDB",
+        "en": "KWDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-kylin",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Kylin",
+        "en": "Apache Kylin"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-kyuubi",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Kyuubi",
+        "en": "Apache Kyuubi"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-manticoresearch",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Manticore Search",
+        "en": "Manticore Search"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-meilisearch",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Meilisearch",
+        "en": "Meilisearch"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-milvus",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Milvus",
+        "en": "Milvus"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-mongodb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "MongoDB (Legacy)",
+        "en": "MongoDB (Legacy)"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-mq",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Message Queue",
+        "en": "Message Queue"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-mqtt",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "MQTT",
+        "en": "MQTT"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-mysql",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "MySQL",
+        "en": "MySQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-nacos",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Nacos",
+        "en": "Nacos"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-neo4j",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Neo4j",
+        "en": "Neo4j"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-oceanbase-oracle",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "OceanBase Oracle Mode",
+        "en": "OceanBase Oracle Mode"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-opengauss",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "openGauss",
+        "en": "openGauss"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-oracle",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Oracle",
+        "en": "Oracle"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-oscar",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "神通 OSCAR",
+        "en": "神通 OSCAR"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-postgres",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "PostgreSQL",
+        "en": "PostgreSQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-prestosql",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "PrestoSQL",
+        "en": "PrestoSQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-qdrant",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Qdrant",
+        "en": "Qdrant"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-questdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "QuestDB",
+        "en": "QuestDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-redis",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Redis",
+        "en": "Redis"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-redshift",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Redshift",
+        "en": "Redshift"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-rqlite",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "RQLite",
+        "en": "RQLite"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-saphana",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "SAP HANA",
+        "en": "SAP HANA"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-snowflake",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Snowflake",
+        "en": "Snowflake"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-spanner",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Google Cloud Spanner",
+        "en": "Google Cloud Spanner"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-spark",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache Spark",
+        "en": "Apache Spark"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-sqlite",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "SQLite",
+        "en": "SQLite"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-sqlserver",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "SQL Server",
+        "en": "SQL Server"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-starrocks",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "StarRocks",
+        "en": "StarRocks"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-sundb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "科蓝 SUNDB",
+        "en": "科蓝 SUNDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-tdengine",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "TDengine",
+        "en": "TDengine"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-teradata",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Teradata",
+        "en": "Teradata"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-trino",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Trino",
+        "en": "Trino"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-turso",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Turso",
+        "en": "Turso"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-uxdb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "优炫 UXDB",
+        "en": "优炫 UXDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-vastbase",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "海量 Vastbase",
+        "en": "海量 Vastbase"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-vertica",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Vertica",
+        "en": "Vertica"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-victoriametrics",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "VictoriaMetrics",
+        "en": "VictoriaMetrics"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-weaviate",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Weaviate",
+        "en": "Weaviate"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-xugu",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "虚谷 XuguDB",
+        "en": "虚谷 XuguDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-yashandb",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "崖山 YashanDB",
+        "en": "崖山 YashanDB"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "database-zookeeper",
+      "kind": "database",
+      "category": "database",
+      "title": {
+        "cn": "Apache ZooKeeper",
+        "en": "Apache ZooKeeper"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "editor-app-close-unsaved-tabs",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "退出时的未保存 SQL",
+        "en": "Unsaved SQL on quit"
+      },
+      "description": {
+        "cn": "选择退出 DBX 时如何处理有未保存内容的 SQL 标签页。",
+        "en": "Choose what happens when quitting DBX while SQL tabs have unsaved edits."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "editor-auto-alias",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "自动添加表别名",
+        "en": "Automatically add table aliases"
+      },
+      "description": {
+        "cn": "补全 FROM 或 JOIN 表名时自动添加别名。",
+        "en": "When selecting a table completion in FROM or JOIN, insert a generated alias such as order_items AS oi."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.38",
+      "aliases": []
+    },
+    {
+      "id": "editor-brackets",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "自动成对补全",
+        "en": "Auto-close brackets"
+      },
+      "description": {
+        "cn": "输入左括号或左引号时自动补全对应的右括号或右引号",
+        "en": "Automatically insert closing brackets and quotes when typing an opening one"
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.52",
+      "aliases": []
+    },
+    {
+      "id": "editor-completion-spacing",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "补全后自动添加空格",
+        "en": "Insert a space after completion"
+      },
+      "description": {
+        "cn": "选择关键字、表名或列名补全后，在后续字符允许时自动追加空格",
+        "en": "Append a space after accepting a keyword, table, or column completion when the next character allows it"
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.67",
+      "aliases": []
+    },
+    {
+      "id": "editor-completion-trigger-mode",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "SQL 补全触发方式",
+        "en": "SQL completion trigger mode"
+      },
+      "description": {
+        "cn": "选择 SQL 补全候选的显示方式。",
+        "en": "Choose how SQL completion candidates are shown."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.78",
+      "aliases": []
+    },
+    {
+      "id": "editor-confirm-dangerous-sql",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "执行危险操作前弹出确认",
+        "en": "Confirm before dangerous operations"
+      },
+      "description": {
+        "cn": "关闭后，危险 SQL 以及表格行或文档删除将不再弹出确认。",
+        "en": "When disabled, dangerous SQL and table row or document deletions run without the warning dialog."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.30",
+      "aliases": []
+    },
+    {
+      "id": "editor-continue-batch-on-error",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "批量执行遇错继续",
+        "en": "Continue on Error"
+      },
+      "description": {
+        "cn": "开启后，多条 SQL 批量执行时遇到错误将继续执行后续语句，而非中断。",
+        "en": "When enabled, multi-statement execution continues after an error instead of stopping at the first failure."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.57",
+      "aliases": []
+    },
+    {
+      "id": "editor-diagnostics",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "SQL 语义诊断",
+        "en": "SQL semantic diagnostics"
+      },
+      "description": {
+        "cn": "开启后，编辑器会提示未知表、字段等语义问题；关闭可减少 SQL 解析和元数据检查的性能开销。",
+        "en": "When enabled, the editor reports semantic issues such as unknown tables and columns. Disable it to reduce parsing and metadata checks for large SQL."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "editor-execute-all-on-blank-line",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "空白位置执行全部 SQL",
+        "en": "Execute all SQL from blank lines"
+      },
+      "description": {
+        "cn": "在“执行光标所在语句”模式下，光标没有对应语句时执行全部 SQL。默认关闭。",
+        "en": "In current-statement mode, execute all SQL when there is no statement at the cursor. Disabled by default."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.81",
+      "aliases": []
+    },
+    {
+      "id": "editor-execute-mode",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "执行模式",
+        "en": "Execute mode"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "editor-execution-target",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "显示执行目标选择器",
+        "en": "Show execution target picker"
+      },
+      "description": {
+        "cn": "开启后，无选区执行时可在当前语句和全部 SQL 之间临时选择。",
+        "en": "When enabled, running without a selection lets you choose between the current statement and all SQL."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.37",
+      "aliases": []
+    },
+    {
+      "id": "editor-font",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "字体",
+        "en": "Font Family"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "editor-font-size",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "字号",
+        "en": "Font Size"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "editor-format-sql-on-sql-file-save",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "保存 SQL 文件时格式化 SQL",
+        "en": "Format SQL when saving SQL files"
+      },
+      "description": {
+        "cn": "保存 SQL 文件时自动格式化 SQL，包括通过 SQL 库保存的文件以及将新查询保存为 .sql 文件等场景。",
+        "en": "Automatically format SQL when saving a SQL file, including saved SQL library files and queries saved as .sql files."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "editor-generate-sql-include-database",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "生成 SQL 时包含数据库名",
+        "en": "Include database name in generated SQL"
+      },
+      "description": {
+        "cn": "数据库支持时，生成的表 SQL 将使用“数据库名.表名”，而不只包含表名。",
+        "en": "When supported by the database, generated table SQL uses database.table instead of only the table name."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "editor-line-numbers",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "显示行号",
+        "en": "Show line numbers"
+      },
+      "description": {
+        "cn": "在 SQL 编辑器左侧显示行号",
+        "en": "Show line numbers in the SQL editor gutter"
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "editor-prefill-query",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "新建查询时预填充 SELECT 语句",
+        "en": "Prefill new query with SELECT *"
+      },
+      "description": {
+        "cn": "新建查询时，根据当前激活的数据表标签页或侧边栏选中的表，自动在编辑器中填充 SELECT * FROM <表名>。",
+        "en": "When creating a new query, prefill the editor with SELECT * FROM <table> based on the active table tab or the table selected in the sidebar."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.56",
+      "aliases": []
+    },
+    {
+      "id": "editor-run-buttons",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "显示左侧执行按钮",
+        "en": "Show left-side run buttons"
+      },
+      "description": {
+        "cn": "在 SQL 编辑器左侧显示按语句执行的快捷按钮。关闭后仍可通过快捷键和右键菜单执行。",
+        "en": "Show per-statement run buttons in the SQL editor gutter. Keyboard shortcuts and context menu execution still work when disabled."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.48",
+      "aliases": []
+    },
+    {
+      "id": "editor-saved-sql-target",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "打开已保存 SQL 时的默认目标",
+        "en": "Default target for saved SQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.71",
+      "aliases": []
+    },
+    {
+      "id": "editor-sql-variables",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "SQL 变量与占位符替换",
+        "en": "SQL variable & placeholder substitution"
+      },
+      "description": {
+        "cn": "按数据库类型选择执行 SQL 前替换哪些变量与占位符语法，默认全部开启。",
+        "en": "Choose which variable and placeholder syntaxes DBX substitutes before running SQL, per database type. All are enabled by default."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.54",
+      "aliases": []
+    },
+    {
+      "id": "editor-statement-frame",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "显示当前语句外框线",
+        "en": "Show current statement frame"
+      },
+      "description": {
+        "cn": "开启后，在 SQL 编辑器中用外框线标出当前可执行语句；关闭后不显示外框线。",
+        "en": "When enabled, the SQL editor draws an outline around the current executable statement; when disabled, the outline is hidden."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.48",
+      "aliases": []
+    },
+    {
+      "id": "editor-table-click-navigation",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "Ctrl+点击表名打开 DDL",
+        "en": "Ctrl+Click Table Opens DDL"
+      },
+      "description": {
+        "cn": "开启后，Ctrl/Cmd+点击表名将打开表结构编辑器（DDL）；关闭则打开表数据视图。",
+        "en": "When enabled, Ctrl/Cmd+clicking a table name opens the table structure editor (DDL). When disabled, it opens the table data view."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.71",
+      "aliases": []
+    },
+    {
+      "id": "editor-theme",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "主题",
+        "en": "Theme"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "editor-unsaved-close",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "关闭未保存 SQL 前弹出确认",
+        "en": "Confirm before closing unsaved SQL"
+      },
+      "description": {
+        "cn": "关闭后，有未保存内容的 SQL 标签页会直接关闭或退出，不再弹出保存确认。",
+        "en": "When disabled, SQL tabs with unsaved edits close or quit without the save confirmation dialog."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.44",
+      "aliases": []
+    },
+    {
+      "id": "editor-value-hints",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "显示 INSERT 值列名提示",
+        "en": "Show INSERT value column hints"
+      },
+      "description": {
+        "cn": "开启后，在 INSERT ... VALUES 子句的每个值旁显示对应列名提示。",
+        "en": "When enabled, the SQL editor shows column-name hints next to each value in INSERT ... VALUES clauses."
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.55",
+      "aliases": []
+    },
+    {
+      "id": "editor-vim",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "Vim 模式",
+        "en": "Vim mode"
+      },
+      "description": {
+        "cn": "在 SQL 编辑器中使用 Vim 风格的模态编辑",
+        "en": "Use Vim-style modal editing in the SQL editor"
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.45",
+      "aliases": []
+    },
+    {
+      "id": "editor-word-wrap",
+      "kind": "setting",
+      "category": "editor",
+      "title": {
+        "cn": "自动换行",
+        "en": "Word wrap"
+      },
+      "description": {
+        "cn": "长内容在编辑器宽度内自动折行显示",
+        "en": "Wrap long lines within the editor width"
+      },
+      "settingsPath": "settings#editor",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "formatter",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "SQL 格式化",
+        "en": "SQL Formatter"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-data-type-case",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "数据类型大小写",
+        "en": "Data type case"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-dense-operators",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "紧凑运算符",
+        "en": "Dense operators"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-expression-width",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "表达式宽度",
+        "en": "Expression width"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-from-clause-layout",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "FROM 子句布局",
+        "en": "FROM clause layout"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.78",
+      "aliases": []
+    },
+    {
+      "id": "formatter-function-case",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "函数名大小写",
+        "en": "Function case"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-identifier-case",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "标识符大小写",
+        "en": "Identifier case"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "formatter-indent",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "缩进",
+        "en": "Indent"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-indent-style",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "缩进风格",
+        "en": "Indent style"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "formatter-keyword-case",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "关键字大小写",
+        "en": "Keyword case"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-lines-between-queries",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "查询之间空行",
+        "en": "Lines between queries"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-logical-operator-newline",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "逻辑运算符换行",
+        "en": "Logical operator newline"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-newline-before-semicolon",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "分号单独换行",
+        "en": "Semicolon on new line"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "formatter-param-types",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "参数类型",
+        "en": "Param types"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "formatter-preserve-empty-lines",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "保留原有空行",
+        "en": "Preserve empty lines"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "formatter-shortcuts",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "快捷键",
+        "en": "Shortcuts"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "formatter-tab-width",
+      "kind": "setting",
+      "category": "formatter",
+      "title": {
+        "cn": "缩进宽度",
+        "en": "Tab width"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#formatter",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "mcp",
+      "kind": "setting",
+      "category": "mcp",
+      "title": {
+        "cn": "MCP Server",
+        "en": "MCP Server"
+      },
+      "description": {
+        "cn": "检查 Claude Code、Cursor 等编程助手使用的 DBX MCP Server 安装与版本状态。",
+        "en": "Check the DBX MCP Server installation and version used by Claude Code, Cursor, and other agents."
+      },
+      "settingsPath": "settings#mcp",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "mcp-bin-path",
+      "kind": "setting",
+      "category": "mcp",
+      "title": {
+        "cn": "命令路径",
+        "en": "Command path"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#mcp",
+      "sinceVersion": "v0.5.27",
+      "aliases": []
+    },
+    {
+      "id": "mcp-config",
+      "kind": "setting",
+      "category": "mcp",
+      "title": {
+        "cn": "MCP 配置",
+        "en": "MCP config"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#mcp",
+      "sinceVersion": "v0.5.27",
+      "aliases": []
+    },
+    {
+      "id": "mcp-permissions",
+      "kind": "setting",
+      "category": "mcp",
+      "title": {
+        "cn": "MCP 执行权限",
+        "en": "MCP execution permission"
+      },
+      "description": {
+        "cn": "选择 DBX 对所有 MCP 客户端强制执行的权限级别。客户端的读写权限配置无法更改此级别。",
+        "en": "Choose the permission level DBX enforces for every MCP client. Client-side read/write settings cannot change this level."
+      },
+      "settingsPath": "settings#mcp",
+      "sinceVersion": "v0.5.62",
+      "aliases": []
+    },
+    {
+      "id": "navigation",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "导航",
+        "en": "Navigation"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "navigation-active-node",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "始终选中已打开项目",
+        "en": "Always select opened item"
+      },
+      "description": {
+        "cn": "切换标签页时，在侧边栏选中匹配的可见表、集合或 SQL 文件。",
+        "en": "When switching tabs, select the matching visible table, collection, or SQL file in the sidebar."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.18",
+      "aliases": []
+    },
+    {
+      "id": "navigation-disconnect-tabs",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "关闭连接后的标签页处理",
+        "en": "Tabs after disconnect"
+      },
+      "description": {
+        "cn": "选择关闭连接或数据库后，相关标签页的保留策略。",
+        "en": "Choose how related tabs should be handled after closing a connection or database."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.29",
+      "aliases": []
+    },
+    {
+      "id": "navigation-hidden-tables",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "隐藏表名前缀",
+        "en": "Hidden table name prefixes"
+      },
+      "description": {
+        "cn": "每行一个前缀，仅影响侧边栏表、视图和集合的显示名称，悬浮提示和实际操作仍使用完整名称。",
+        "en": "One prefix per line. Only sidebar table, view, and collection labels are shortened; tooltips and actions still use the full name."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.18",
+      "aliases": []
+    },
+    {
+      "id": "navigation-object-display",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏对象层级",
+        "en": "Sidebar object layout"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.24",
+      "aliases": []
+    },
+    {
+      "id": "navigation-object-info",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏附加信息",
+        "en": "Sidebar supplementary info"
+      },
+      "description": {
+        "cn": "选择在名称后显示注释、对象大小或不显示。注释与大小互斥；数据库总大小目前支持 PostgreSQL，表大小支持 MySQL、PostgreSQL、GaussDB、KingbaseES、GBase 8a、SQL Server、Oracle、达梦和 ClickHouse。",
+        "en": "Choose comments, object sizes, or no supplementary text after names. Comments and sizes are mutually exclusive. Database totals currently support PostgreSQL; table sizes support MySQL, PostgreSQL, GaussDB, KingbaseES, GBase 8a, SQL Server, Oracle, Dameng, and ClickHouse."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.64",
+      "aliases": [
+        "表大小",
+        "表占用空间",
+        "占用空间",
+        "表 size",
+        "table size",
+        "显示表大小",
+        "对象大小"
+      ]
+    },
+    {
+      "id": "navigation-open-data-tabs-next-to-active",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "在当前标签页旁打开新数据标签页",
+        "en": "Open new data tabs next to the active tab"
+      },
+      "description": {
+        "cn": "将新建的表数据标签页放在当前标签页之后。",
+        "en": "Place newly created table data tabs immediately after the active tab."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.85",
+      "aliases": []
+    },
+    {
+      "id": "navigation-open-database-on-single-click",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "单击数据库时浏览对象",
+        "en": "Browse objects on database single click"
+      },
+      "description": {
+        "cn": "开启后，单击数据库或模式节点时，会同时展开侧边栏并打开“浏览对象”标签页。",
+        "en": "When enabled, single-clicking a database or schema node also expands the sidebar and opens the \"Browse Objects\" tab."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.84",
+      "aliases": []
+    },
+    {
+      "id": "navigation-reuse-data-tab",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "复用数据标签页",
+        "en": "Reuse data tab"
+      },
+      "description": {
+        "cn": "选择打开表时如何使用数据标签页。",
+        "en": "Choose how opening a table uses data tabs."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.30",
+      "aliases": [
+        "同一张表多个标签页",
+        "标签页复用",
+        "重复打开标签页"
+      ]
+    },
+    {
+      "id": "navigation-routine-source",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "函数/过程/视图打开方式",
+        "en": "Function / procedure / view open mode"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.70",
+      "aliases": []
+    },
+    {
+      "id": "navigation-sidebar",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏打开方式",
+        "en": "Sidebar activation"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "navigation-sidebar-font-size",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏字体大小",
+        "en": "Sidebar font size"
+      },
+      "description": {
+        "cn": "侧边栏对象树的字体大小（像素），独立于编辑器字体大小。",
+        "en": "Font size for the sidebar object tree, in pixels. Independent of the editor font size."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.85",
+      "aliases": []
+    },
+    {
+      "id": "navigation-sidebar-indent",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏缩进",
+        "en": "Sidebar indentation"
+      },
+      "description": {
+        "cn": "每个树层级缩进的像素偏移量。",
+        "en": "Horizontal offset added per tree depth level, in pixels."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.85",
+      "aliases": []
+    },
+    {
+      "id": "navigation-sidebar-scroll",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "允许侧边栏横向滚动",
+        "en": "Allow sidebar horizontal scroll"
+      },
+      "description": {
+        "cn": "完整显示较长的表、视图和集合名称；默认关闭以保留省略号截断。",
+        "en": "Show long table, view, and collection names in full by allowing horizontal sidebar scrolling."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.26",
+      "aliases": []
+    },
+    {
+      "id": "navigation-table-page-size",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "侧边栏分页大小",
+        "en": "Sidebar page size"
+      },
+      "description": {
+        "cn": "侧边栏树每页最多加载的表/对象数量。表多时可以调大减少翻页次数。",
+        "en": "Maximum number of tables/objects loaded per page in the sidebar tree. Increase if you have many tables and want fewer pages."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.34",
+      "aliases": []
+    },
+    {
+      "id": "navigation-table-search",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "启用库下表搜索框",
+        "en": "Enable table search inside databases"
+      },
+      "description": {
+        "cn": "在已展开的数据库、schema 或表分组下显示局部表搜索框，用于为不同库分别过滤表。",
+        "en": "Show a local table search box under expanded databases, schemas, or table groups so each scope can filter tables independently."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.48",
+      "aliases": []
+    },
+    {
+      "id": "navigation-tabs-restore",
+      "kind": "setting",
+      "category": "navigation",
+      "title": {
+        "cn": "启动时恢复标签页",
+        "en": "Restore tabs on launch"
+      },
+      "description": {
+        "cn": "选择 DBX 启动时如何恢复上次打开的标签页。",
+        "en": "Choose how DBX restores tabs that were open last time."
+      },
+      "settingsPath": "settings#navigation",
+      "sinceVersion": "v0.5.44",
+      "aliases": []
+    },
+    {
+      "id": "query-page-size",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "查询结果默认每页行数",
+        "en": "Default query rows per page"
+      },
+      "description": {
+        "cn": "每个查询结果分页加载的行数，最大支持 {max} 行。",
+        "en": "Rows loaded per query result page. The maximum supported page size is {max}."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.82",
+      "aliases": []
+    },
+    {
+      "id": "query-result-max-rows",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "查询结果最大行数",
+        "en": "Maximum query result rows"
+      },
+      "description": {
+        "cn": "限制查询、表数据、存储过程及连续滚动累计保留的总行数。",
+        "en": "Caps rows returned by queries, table data, stored procedures, and continuous loading."
+      },
+      "settingsPath": "settings#data",
+      "sinceVersion": "v0.5.82",
+      "aliases": []
+    },
+    {
+      "id": "redis-key-templates",
+      "kind": "setting",
+      "category": "data",
+      "title": {
+        "cn": "Key 搜索模板",
+        "en": "Key search templates"
+      },
+      "description": {
+        "cn": "每行一个模板。当连接未配置模板时，作为全局回退建议。",
+        "en": "One template per line. Used as fallback suggestions when a Redis connection has no templates of its own."
+      },
+      "settingsPath": "settings#redis-key-templates",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "security",
+      "kind": "setting",
+      "category": "security",
+      "title": {
+        "cn": "安全",
+        "en": "Security"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#security",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "security-password",
+      "kind": "setting",
+      "category": "security",
+      "title": {
+        "cn": "修改密码",
+        "en": "Change Password"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#security",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-acceptCompletion",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "接受补全",
+        "en": "Accept completion"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Tab",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-cancelSearch",
+      "kind": "shortcut",
+      "category": "search",
+      "title": {
+        "cn": "取消搜索",
+        "en": "Cancel search"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Escape",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-closeOtherTabs",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "关闭其他标签页",
+        "en": "Close Other Tabs"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+W",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-closeTab",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "关闭标签页",
+        "en": "Close tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+W",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-copyCurrentRow",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "复制当前数据行",
+        "en": "Copy current data row"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "v0.5.19",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-copyLineDown",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "向下复制当前行",
+        "en": "Copy line down"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+ArrowDown",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-copyLineUp",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "向上复制当前行",
+        "en": "Copy line up"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+ArrowUp",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-copySidebarSelection",
+      "kind": "shortcut",
+      "category": "sidebar",
+      "title": {
+        "cn": "复制侧边栏选中项",
+        "en": "Copy sidebar selection"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+C",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-deleteCurrentRow",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "删除当前数据行",
+        "en": "Delete current data row"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Delete",
+      "sinceVersion": "v0.5.19",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-deleteLine",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "删除当前行",
+        "en": "Delete current line"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+K",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-duplicateLine",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "复制当前行",
+        "en": "Duplicate current line"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+D",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-editSidebarConnection",
+      "kind": "shortcut",
+      "category": "sidebar",
+      "title": {
+        "cn": "编辑侧边栏连接",
+        "en": "Edit sidebar connection"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+E",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-editTableStructure",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "编辑表结构",
+        "en": "Edit table structure"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+D",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-executeSql",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "执行 SQL",
+        "en": "Execute SQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Enter",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-executeSqlInNewResultTab",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "在新结果标签页中执行 SQL",
+        "en": "Execute SQL in new result tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+\\",
+      "sinceVersion": "v0.5.68",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-expandSelectStar",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "将 * 展开为字段",
+        "en": "Expand * to columns"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Shift+X",
+      "sinceVersion": "v0.5.77",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-exPasteSqlInCondition",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "ExPaste：粘贴为 IN 条件",
+        "en": "ExPaste: paste as IN condition"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "v0.5.49",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-extendSelection",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "扩展选择",
+        "en": "Extend selection"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Alt+W",
+      "sinceVersion": "v0.5.75",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-find",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "查找",
+        "en": "Find"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+F",
+      "sinceVersion": "v0.5.23",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-focusSearch",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "聚焦当前页面搜索",
+        "en": "Focus current view search"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+F",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-formatSql",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "格式化 SQL",
+        "en": "Format SQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+F",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-goToColumn",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "跳转列",
+        "en": "Go to column"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-goToFirstPage",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "第一页",
+        "en": "First page"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-goToLastPage",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "末页",
+        "en": "Last page"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-goToNextPage",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "下一页",
+        "en": "Next page"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-goToPreviousPage",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "上一页",
+        "en": "Previous page"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-indentLess",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "减少缩进",
+        "en": "Indent less"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Tab",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-indentMore",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "增加缩进",
+        "en": "Indent more"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-insertLineBelow",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "在下方新增一行",
+        "en": "Insert line below"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Enter",
+      "sinceVersion": "v0.5.78",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-joinLines",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "合并行",
+        "en": "Join lines"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+J",
+      "sinceVersion": "v0.5.85",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-lowercaseSelection",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "选中内容转为小写",
+        "en": "Convert selection to lowercase"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+L",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-moveLineDown",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "下移当前行",
+        "en": "Move line down"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Alt+ArrowDown",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-moveLineUp",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "上移当前行",
+        "en": "Move line up"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Alt+ArrowUp",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-navigateTabHistoryBack",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "返回到上一个查看的标签页",
+        "en": "Go back to the previously viewed tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Alt+ArrowLeft",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-navigateTabHistoryForward",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "前进到下一个查看的标签页",
+        "en": "Go forward to the next viewed tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Alt+ArrowRight",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-newQuery",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "新建查询",
+        "en": "New query"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+T",
+      "sinceVersion": "v0.5.16",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-openDataInNewTab",
+      "kind": "shortcut",
+      "category": "sidebar",
+      "title": {
+        "cn": "在新数据标签页中打开（鼠标点击）",
+        "en": "Open data in new tab (mouse click)"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Alt",
+      "sinceVersion": "v0.5.58",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-openSettings",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "打开设置",
+        "en": "Open settings"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+,",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-pasteSidebarSelection",
+      "kind": "shortcut",
+      "category": "sidebar",
+      "title": {
+        "cn": "粘贴到侧边栏",
+        "en": "Paste into sidebar"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+V",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-quickOpen",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "快速打开 (搜索所有数据库对象)",
+        "en": "Quick open (search all database objects)"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+P",
+      "sinceVersion": "v0.5.36",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-redo",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "重做",
+        "en": "Redo"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+Z",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-refreshData",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "刷新数据",
+        "en": "Refresh data"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "F5",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-replace",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "替换",
+        "en": "Replace"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+R",
+      "sinceVersion": "v0.5.23",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-resetUiZoom",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "重置全局界面缩放",
+        "en": "Reset UI zoom"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+0",
+      "sinceVersion": "v0.5.24",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-saveSql",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "保存 SQL",
+        "en": "Save SQL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+S",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-selectAll",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "全选",
+        "en": "Select all"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+A",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-sendSelectionToAi",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "发送选中代码到 AI",
+        "en": "Send selection to AI"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Shift+A",
+      "sinceVersion": "v0.5.52",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-sqlIntentionActions",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "SQL 意图操作（展开 * / 限定标识符）",
+        "en": "SQL Intention Actions (Expand * / Qualify Identifier)"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+Enter",
+      "sinceVersion": "v0.5.78",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToNextTab",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到右侧标签页",
+        "en": "Switch to next tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+]",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToPreviousTab",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到左侧标签页",
+        "en": "Switch to previous tab"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+[",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab1",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 1 个标签页",
+        "en": "Switch to tab 1"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+1",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab2",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 2 个标签页",
+        "en": "Switch to tab 2"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+2",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab3",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 3 个标签页",
+        "en": "Switch to tab 3"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+3",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab4",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 4 个标签页",
+        "en": "Switch to tab 4"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+4",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab5",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 5 个标签页",
+        "en": "Switch to tab 5"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+5",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab6",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 6 个标签页",
+        "en": "Switch to tab 6"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+6",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab7",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 7 个标签页",
+        "en": "Switch to tab 7"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+7",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab8",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 8 个标签页",
+        "en": "Switch to tab 8"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+8",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-switchToTab9",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换到第 9 个标签页",
+        "en": "Switch to tab 9"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+9",
+      "sinceVersion": "v0.5.42",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-tabSwitcher",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "标签页切换器（按住显示，松开切换）",
+        "en": "Tab switcher (hold to show, release to switch)"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Ctrl+Tab",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleBlockComment",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "切换块注释",
+        "en": "Toggle block comment"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+A",
+      "sinceVersion": "v0.5.86",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleFold",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "切换折叠",
+        "en": "Toggle fold"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+.",
+      "sinceVersion": "v0.5.70",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleLineComment",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "切换行注释",
+        "en": "Toggle line comment"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+/",
+      "sinceVersion": "v0.5.49",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleResultsPane",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换结果面板",
+        "en": "Toggle results pane"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "",
+      "sinceVersion": "",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleSidebar",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "切换侧边栏",
+        "en": "Toggle sidebar"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+B",
+      "sinceVersion": "v0.5.31",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-toggleTranspose",
+      "kind": "shortcut",
+      "category": "grid",
+      "title": {
+        "cn": "切换转置视图",
+        "en": "Toggle transpose view"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Tab",
+      "sinceVersion": "v0.5.18",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-triggerCompletion",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "触发补全",
+        "en": "Trigger completion"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Alt+/",
+      "sinceVersion": "v0.5.88",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-undo",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "撤销",
+        "en": "Undo"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+Z",
+      "sinceVersion": "v0.5.32",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-uppercaseSelection",
+      "kind": "shortcut",
+      "category": "editor",
+      "title": {
+        "cn": "选中内容转为大写",
+        "en": "Convert selection to uppercase"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Alt+U",
+      "sinceVersion": "v0.5.46",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-viewTableDdl",
+      "kind": "shortcut",
+      "category": "sidebar",
+      "title": {
+        "cn": "查看表 DDL",
+        "en": "View table DDL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Shift+Mod+D",
+      "sinceVersion": "v0.5.76",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-zoomInUi",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "放大全局界面",
+        "en": "Zoom in UI"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+=",
+      "sinceVersion": "v0.5.24",
+      "aliases": []
+    },
+    {
+      "id": "shortcut-zoomOutUi",
+      "kind": "shortcut",
+      "category": "global",
+      "title": {
+        "cn": "缩小全局界面",
+        "en": "Zoom out UI"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "defaultShortcut": "Mod+-",
+      "sinceVersion": "v0.5.24",
+      "aliases": []
+    },
+    {
+      "id": "shortcuts",
+      "kind": "setting",
+      "category": "shortcuts",
+      "title": {
+        "cn": "快捷键",
+        "en": "Shortcuts"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#shortcuts",
+      "sinceVersion": "v0.5.12",
+      "aliases": []
+    },
+    {
+      "id": "snippets",
+      "kind": "setting",
+      "category": "snippets",
+      "title": {
+        "cn": "代码片段",
+        "en": "Snippets"
+      },
+      "description": {
+        "cn": "自定义编辑器中触发的 SQL 代码片段模板。",
+        "en": "Customize SQL snippet templates triggered in the editor."
+      },
+      "settingsPath": "settings#snippets",
+      "sinceVersion": "v0.5.20",
+      "aliases": []
+    },
+    {
+      "id": "sync-secrets",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "同步加密后的敏感信息",
+        "en": "Sync encrypted secrets"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-secrets-passphrase",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "同步密码",
+        "en": "Sync password"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-snippet",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "GitHub / Gitee 代码片段同步",
+        "en": "GitHub / Gitee Snippet Sync"
+      },
+      "description": {
+        "cn": "将同一份 DBX 快照保存到私有代码片段。首次上传会自动创建代码片段并保存其 ID。",
+        "en": "Store the same DBX snapshot in a private code snippet. The first upload creates a snippet and saves its ID."
+      },
+      "settingsPath": "settings#sync-snippet",
+      "sinceVersion": "v0.5.53",
+      "aliases": []
+    },
+    {
+      "id": "sync-snippet-id",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "代码片段 ID",
+        "en": "Snippet ID"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-snippet",
+      "sinceVersion": "v0.5.53",
+      "aliases": []
+    },
+    {
+      "id": "sync-snippet-provider",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "平台",
+        "en": "Provider"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-snippet",
+      "sinceVersion": "v0.5.53",
+      "aliases": []
+    },
+    {
+      "id": "sync-snippet-token",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "访问令牌",
+        "en": "Access token"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-snippet",
+      "sinceVersion": "v0.5.53",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "WebDAV 同步",
+        "en": "WebDAV Sync"
+      },
+      "description": {
+        "cn": "将包含 SQL 库的 DBX 快照上传到兼容 WebDAV 的存储服务，或从远端恢复。",
+        "en": "Upload or restore a DBX snapshot, including saved SQL library entries, from a WebDAV-compatible storage service."
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav-auto-upload",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "每",
+        "en": "Every"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.36",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav-endpoint",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "WebDAV 地址",
+        "en": "WebDAV URL"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav-password",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "密码",
+        "en": "Password"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav-remote-path",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "远端快照路径",
+        "en": "Remote snapshot path"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "sync-webdav-username",
+      "kind": "setting",
+      "category": "sync",
+      "title": {
+        "cn": "用户名",
+        "en": "Username"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#sync-webdav",
+      "sinceVersion": "v0.5.22",
+      "aliases": []
+    },
+    {
+      "id": "tunnels",
+      "kind": "setting",
+      "category": "tunnels",
+      "title": {
+        "cn": "隧道维护",
+        "en": "Tunnels"
+      },
+      "description": {
+        "cn": "",
+        "en": ""
+      },
+      "settingsPath": "settings#tunnels",
+      "sinceVersion": "v0.5.55",
+      "aliases": []
+    }
+  ]
+}

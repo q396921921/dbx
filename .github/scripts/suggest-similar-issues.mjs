@@ -106,11 +106,11 @@ function labelNames(labels) {
   return (labels || []).map((label) => (typeof label === "string" ? label : label.name)).filter(Boolean);
 }
 
-function stripIssuePrefix(title) {
+export function stripIssuePrefix(title) {
   return String(title || "").replace(/^\s*\[[^\]]+\]\s*/u, "").trim();
 }
 
-function stripMarkdown(value) {
+export function stripMarkdown(value) {
   return String(value || "")
     .replace(/<!--.*?-->/gsu, " ")
     .replace(/<img\b[^>]*>/giu, " ")
@@ -121,7 +121,7 @@ function stripMarkdown(value) {
     .replace(/^\s*[_*-]{3,}\s*$/gmu, " ");
 }
 
-function parseIssueSections(body) {
+export function parseIssueSections(body) {
   const text = String(body || "");
   const headings = [...text.matchAll(/^###\s+(.+?)\s*$/gmu)];
   if (headings.length === 0) return [{ heading: "", content: text }];
@@ -149,7 +149,7 @@ function relevantBody(body) {
   return stripMarkdown(sections.map(({ content }) => content).join("\n")).slice(0, 2400);
 }
 
-function normalizeText(value) {
+export function normalizeText(value) {
   return stripMarkdown(value)
     .normalize("NFKC")
     .toLocaleLowerCase("en-US")
@@ -215,7 +215,7 @@ function latinTokens(value) {
   );
 }
 
-function characterNgrams(value, size = 3) {
+export function characterNgrams(value, size = 3) {
   const compact = normalizeText(value).replace(/\s+/gu, "");
   const result = new Set();
   for (let index = 0; index <= compact.length - size; index += 1) {
@@ -232,7 +232,7 @@ function intersectionSize(left, right) {
   return count;
 }
 
-function diceCoefficient(left, right) {
+export function diceCoefficient(left, right) {
   if (left.size === 0 || right.size === 0) return 0;
   return (2 * intersectionSize(left, right)) / (left.size + right.size);
 }
