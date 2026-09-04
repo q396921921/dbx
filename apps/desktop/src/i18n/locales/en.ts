@@ -5530,6 +5530,8 @@ export default {
     searchExistingTables: "Search tables...",
     loadingTables: "Loading tables...",
     noTables: "No tables available",
+    targetColumnsTimeout: "Loading target table columns timed out. Check the connection and try again.",
+    retry: "Retry",
     stepSource: "Source",
     stepOptions: "Options",
     stepMapping: "Mapping",

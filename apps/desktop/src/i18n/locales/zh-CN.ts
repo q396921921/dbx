@@ -5514,6 +5514,8 @@ export default withEnglishFallback({
     searchExistingTables: "搜索表...",
     loadingTables: "正在加载表...",
     noTables: "暂无可用表",
+    targetColumnsTimeout: "加载目标表字段超时，请检查连接后重试。",
+    retry: "重试",
     stepSource: "来源",
     stepOptions: "选项",
     stepMapping: "映射",
