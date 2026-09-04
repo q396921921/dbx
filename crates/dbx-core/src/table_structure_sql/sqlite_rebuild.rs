@@ -1484,6 +1484,7 @@ mod tests {
     ) -> TableStructureSqlOptions {
         TableStructureSqlOptions {
             database_type: Some(DatabaseType::Sqlite),
+            driver_profile: None,
             schema: None,
             table_name: table_name.to_string(),
             columns: vec![EditableStructureColumn {

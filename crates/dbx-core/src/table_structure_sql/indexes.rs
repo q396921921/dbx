@@ -12,7 +12,7 @@ pub(super) fn build_index_sql(options: &TableStructureSqlOptions, warnings: &mut
         capabilities = caps;
         dialect = StructureDialect::GaussdbM;
     } else {
-        let caps = capabilities_for(options.database_type);
+        let caps = capabilities_for(options.database_type, options.driver_profile.as_deref());
         capabilities = caps;
         dialect = caps.dialect;
     }
@@ -346,7 +346,7 @@ pub(super) fn build_create_index_statements(
     concurrently_supported: bool,
     for_new_table: bool,
 ) -> Vec<String> {
-    let capabilities = capabilities_for(database_type_for_dialect(dialect));
+    let capabilities = capabilities_for(database_type_for_dialect(dialect), None);
     let name = clean(&index.name);
     let columns: Vec<String> =
         index.columns.iter().map(|column| clean(column)).filter(|column| !column.is_empty()).collect();

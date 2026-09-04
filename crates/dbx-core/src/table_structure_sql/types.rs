@@ -207,6 +207,11 @@ pub struct TriggerInfo {
 pub struct TableStructureSqlOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_type: Option<DatabaseType>,
+    /// Driver profile reported by the connection (e.g. `"gbase8s"`). GBase 8s
+    /// is Informix-compatible rather than MySQL-compatible like the rest of
+    /// the `Gbase` family, so this disambiguates which dialect to generate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     pub table_name: String,
@@ -280,6 +285,8 @@ pub struct SqliteTableStructurePreview {
 pub struct SingleColumnAlterSqlOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_type: Option<DatabaseType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<String>,
     pub table_name: String,

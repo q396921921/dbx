@@ -52,6 +52,7 @@ async fn live_postgres_concurrent_index_builds_valid_index() {
 
     let result = build_table_structure_change_sql(TableStructureSqlOptions {
         database_type: Some(DatabaseType::Postgres),
+        driver_profile: None,
         schema: Some(schema.clone()),
         table_name: "users".to_string(),
         columns: Vec::new(),
@@ -184,6 +185,7 @@ async fn live_postgres_partitioned_parent_concurrent_request_rejected() {
     idx.id = "idx_events_id".to_string();
     let result = build_table_structure_change_sql(TableStructureSqlOptions {
         database_type: Some(DatabaseType::Postgres),
+        driver_profile: None,
         schema: Some(schema.clone()),
         table_name: "events".to_string(),
         columns: Vec::new(),
