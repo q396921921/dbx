@@ -1,4 +1,4 @@
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{DateTime, Datelike, FixedOffset, Local, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -122,6 +122,31 @@ fn parse_known_temporal(value: &str) -> Option<ParsedTemporal> {
     None
 }
 
+/// A driver may hand back a bare epoch integer for a column it still reports as
+/// a temporal type — IoTDB's `TIMESTAMP(ms)` does exactly that. The data grid's
+/// export formatter already renders those (`columnFormatter.ts`,
+/// `unit: "auto"`), which is why "export current page" shows a real date while
+/// the Rust streaming exporters used to write the raw epoch. Mirror that
+/// formatter's rule exactly so both paths agree: accept only 10 digits
+/// (seconds) or 13 digits (milliseconds), require the result to land in
+/// 1970..=2100, and render in the local zone the same way `dayjs(ms).format()`
+/// does. Widening this (microseconds, nanoseconds, other digit counts) would
+/// re-introduce the mismatch in the opposite direction.
+fn parse_epoch_temporal(value: &str) -> Option<NaiveDateTime> {
+    let digits = value.strip_prefix('-').unwrap_or(value);
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<i64>().ok()?;
+    let milliseconds = match digits.len() {
+        10 => parsed.checked_mul(1000)?,
+        13 => parsed,
+        _ => return None,
+    };
+    let local = DateTime::from_timestamp_millis(milliseconds)?.with_timezone(&Local).naive_local();
+    (1970..=2100).contains(&local.year()).then_some(local)
+}
+
 fn parse_temporal(value: &str, preferred_pattern: Option<&str>) -> Option<ParsedTemporal> {
     preferred_pattern
         .filter(|pattern| !pattern.trim().is_empty())
@@ -141,7 +166,8 @@ pub(crate) fn excel_temporal_serial(
         // timezone-bearing and time-only values as text.
         TemporalKind::DateTimeWithTimeZone | TemporalKind::Time => return None,
     };
-    let parsed = parse_temporal(value.trim(), preferred_pattern)?;
+    let parsed = parse_temporal(value.trim(), preferred_pattern)
+        .or_else(|| parse_epoch_temporal(value.trim()).map(ParsedTemporal::DateTime))?;
     let (date, time) = match (kind, parsed) {
         (ExcelTemporalKind::Date, ParsedTemporal::Date(date)) => (date, NaiveTime::default()),
         (ExcelTemporalKind::Date, ParsedTemporal::DateTime(value)) => (value.date(), value.time()),
@@ -188,6 +214,7 @@ pub fn format_temporal_export_value(value: &Value, data_type: Option<&str>, patt
         return value.clone();
     };
     parse_known_temporal(raw)
+        .or_else(|| parse_epoch_temporal(raw.trim()).map(ParsedTemporal::DateTime))
         .and_then(|parsed| format_parsed(parsed, pattern))
         .map(Value::String)
         .unwrap_or_else(|| value.clone())
@@ -480,6 +507,49 @@ pub fn normalize_temporal_import_value(value: &Value, data_type: Option<&str>, p
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn formats_driver_epoch_timestamps_like_the_current_page_export() {
+        // IoTDB hands back `strconv.FormatInt(epoch, 10)` for a TIMESTAMP(ms)
+        // column, so the streaming exporters used to write the raw epoch while
+        // "export current page" (formatted in the frontend) showed a real date.
+        let pattern = Some("YYYY-MM-DD HH:mm:ss.SSS");
+        let formatted = format_temporal_export_value(&json!("1785042135456"), Some("TIMESTAMP(ms)"), pattern);
+        let rendered = formatted.as_str().expect("formatted value stays a string");
+        assert_ne!(rendered, "1785042135456", "epoch must not pass through unformatted");
+        assert!(rendered.ends_with(":15.456"), "milliseconds must survive: {rendered}");
+
+        // Ten digits are seconds, matching columnFormatter.ts `unit: "auto"`.
+        let seconds = format_temporal_export_value(&json!("1785042135"), Some("TIMESTAMP(ms)"), pattern);
+        assert_eq!(seconds.as_str().expect("string").get(..4), rendered.get(..4));
+
+        // The CSV force-text wrapper now wraps a real date instead of an epoch.
+        let rows = vec![vec![json!("1785042135456"), json!("device-a")]];
+        let types = vec!["TIMESTAMP(ms)".to_string(), "TEXT".to_string()];
+        let wrapped = format_temporal_export_rows_with_string_types_for_csv_cow(&rows, &types, pattern, true);
+        let cell = wrapped[0][0].as_str().expect("string");
+        assert!(cell.starts_with("=\"") && cell.ends_with(":15.456\""), "cell={cell}");
+    }
+
+    #[test]
+    fn leaves_non_auto_epoch_shapes_untouched() {
+        let pattern = Some("YYYY-MM-DD HH:mm:ss.SSS");
+        // Microsecond/nanosecond epochs are outside the shapes the data grid
+        // formatter accepts; formatting them here would make the streaming
+        // export disagree with "export current page" in the other direction.
+        for raw in ["1785042135456789", "1785042135456789012", "17850421", "not-a-number"] {
+            assert_eq!(
+                format_temporal_export_value(&json!(raw), Some("TIMESTAMP(ms)"), pattern),
+                json!(raw),
+                "raw={raw}"
+            );
+        }
+        // A plain integer column is not temporal, so it is never touched.
+        assert_eq!(
+            format_temporal_export_value(&json!("1785042135456"), Some("BIGINT"), pattern),
+            json!("1785042135456")
+        );
+    }
 
     #[test]
     fn normalizes_unpadded_slash_dates_for_import() {
