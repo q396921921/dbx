@@ -301,6 +301,125 @@ pub fn format_temporal_export_rows_with_string_types(
     format_temporal_export_rows_with_string_types_cow(rows, column_types, pattern).into_owned()
 }
 
+/// CSV is untyped text: spreadsheet apps (WPS/Excel/OnlyOffice) re-guess a
+/// quoted date-looking cell's type on open regardless of RFC4180 quoting,
+/// silently truncating/reformatting it (dropping the date part or the
+/// milliseconds). Wrapping the value as an `="..."` formula is the standard
+/// cross-app way to force text interpretation; the existing CSV
+/// quoting/escaping (which doubles embedded `"`) turns it into valid CSV for
+/// free. Applied whenever the column is a temporal type, independent of
+/// whether `pattern` re-formats the value or the raw driver string passes
+/// through unchanged (`保持数据库原始值`) — both shapes are equally prone to
+/// spreadsheet mis-parsing.
+fn wrap_csv_force_text(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(format!("=\"{text}\"")),
+        other => other,
+    }
+}
+
+pub fn format_temporal_export_row_for_csv_cow<'a>(
+    row: &'a [Value],
+    column_types: &[Option<String>],
+    pattern: Option<&str>,
+    force_csv_text: bool,
+) -> Cow<'a, [Value]> {
+    if !force_csv_text {
+        return format_temporal_export_row_cow(row, column_types, pattern);
+    }
+    if !column_types.iter().any(|data_type| temporal_kind(data_type.as_deref()).is_some()) {
+        return Cow::Borrowed(row);
+    }
+    let active_pattern = active_temporal_pattern(pattern);
+    Cow::Owned(
+        row.iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let data_type = column_types.get(index).and_then(|data_type| data_type.as_deref());
+                if temporal_kind(data_type).is_none() {
+                    return value.clone();
+                }
+                let value = match active_pattern {
+                    Some(pattern) => format_temporal_export_value(value, data_type, Some(pattern)),
+                    None => value.clone(),
+                };
+                wrap_csv_force_text(value)
+            })
+            .collect(),
+    )
+}
+
+pub fn format_temporal_export_rows_for_csv_cow<'a>(
+    rows: &'a [Vec<Value>],
+    column_types: &[Option<String>],
+    pattern: Option<&str>,
+    force_csv_text: bool,
+) -> Cow<'a, [Vec<Value>]> {
+    if !force_csv_text {
+        return format_temporal_export_rows_cow(rows, column_types, pattern);
+    }
+    if !column_types.iter().any(|data_type| temporal_kind(data_type.as_deref()).is_some()) {
+        return Cow::Borrowed(rows);
+    }
+    Cow::Owned(
+        rows.iter()
+            .map(|row| format_temporal_export_row_for_csv_cow(row, column_types, pattern, true).into_owned())
+            .collect(),
+    )
+}
+
+pub fn format_temporal_export_row_with_string_types_for_csv_cow<'a>(
+    row: &'a [Value],
+    column_types: &[String],
+    pattern: Option<&str>,
+    force_csv_text: bool,
+) -> Cow<'a, [Value]> {
+    if !force_csv_text {
+        return format_temporal_export_row_with_string_types_cow(row, column_types, pattern);
+    }
+    if !column_types.iter().any(|data_type| temporal_kind(Some(data_type)).is_some()) {
+        return Cow::Borrowed(row);
+    }
+    let active_pattern = active_temporal_pattern(pattern);
+    Cow::Owned(
+        row.iter()
+            .enumerate()
+            .map(|(index, value)| {
+                let data_type = column_types.get(index).map(String::as_str);
+                if temporal_kind(data_type).is_none() {
+                    return value.clone();
+                }
+                let value = match active_pattern {
+                    Some(pattern) => format_temporal_export_value(value, data_type, Some(pattern)),
+                    None => value.clone(),
+                };
+                wrap_csv_force_text(value)
+            })
+            .collect(),
+    )
+}
+
+pub fn format_temporal_export_rows_with_string_types_for_csv_cow<'a>(
+    rows: &'a [Vec<Value>],
+    column_types: &[String],
+    pattern: Option<&str>,
+    force_csv_text: bool,
+) -> Cow<'a, [Vec<Value>]> {
+    if !force_csv_text {
+        return format_temporal_export_rows_with_string_types_cow(rows, column_types, pattern);
+    }
+    if !column_types.iter().any(|data_type| temporal_kind(Some(data_type)).is_some()) {
+        return Cow::Borrowed(rows);
+    }
+    Cow::Owned(
+        rows.iter()
+            .map(|row| {
+                format_temporal_export_row_with_string_types_for_csv_cow(row, column_types, pattern, true).into_owned()
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn normalize_temporal_import_value_cow<'a>(
     value: &'a Value,
     data_type: Option<&str>,
@@ -388,6 +507,59 @@ mod tests {
                 Some("YYYY/M/D HH:mm:ss")
             ),
             vec![json!(1), json!("2024/2/25 13:02:15"), json!("2024-02-25 13:02:15")]
+        );
+    }
+
+    #[test]
+    fn csv_export_wraps_formatted_temporal_values_as_force_text_formulas() {
+        let row = vec![json!(1), json!("2024-02-25 13:02:15"), json!("plain text")];
+        let column_types = [Some("NUMBER".into()), Some("TIMESTAMP".into()), Some("VARCHAR2".into())];
+        assert_eq!(
+            format_temporal_export_row_for_csv_cow(&row, &column_types, Some("YYYY/M/D HH:mm:ss"), true).into_owned(),
+            vec![json!(1), json!("=\"2024/2/25 13:02:15\""), json!("plain text")]
+        );
+    }
+
+    #[test]
+    fn csv_export_wraps_raw_temporal_values_even_without_a_configured_pattern() {
+        // "保持数据库原始值": no export pattern configured, but the raw driver
+        // string is still date-shaped and equally prone to spreadsheet
+        // mis-parsing, so the force-text wrap must still apply.
+        let row = vec![json!("2024-02-25 13:02:15.000")];
+        let column_types = [Some("DATETIME".into())];
+        assert_eq!(
+            format_temporal_export_row_for_csv_cow(&row, &column_types, None, true).into_owned(),
+            vec![json!("=\"2024-02-25 13:02:15.000\"")]
+        );
+    }
+
+    #[test]
+    fn csv_export_does_not_wrap_null_temporal_values() {
+        let row = vec![json!(Value::Null)];
+        let column_types = [Some("DATE".into())];
+        assert_eq!(
+            format_temporal_export_row_for_csv_cow(&row, &column_types, None, true).into_owned(),
+            vec![json!(Value::Null)]
+        );
+    }
+
+    #[test]
+    fn csv_export_force_text_disabled_matches_plain_temporal_formatting() {
+        let row = vec![json!("2024-02-25 13:02:15")];
+        let column_types = [Some("TIMESTAMP".into())];
+        assert_eq!(
+            format_temporal_export_row_for_csv_cow(&row, &column_types, Some("YYYY/M/D HH:mm:ss"), false).into_owned(),
+            format_temporal_export_row(&row, &column_types, Some("YYYY/M/D HH:mm:ss"))
+        );
+    }
+
+    #[test]
+    fn csv_export_with_string_types_wraps_temporal_values() {
+        let row = vec![json!("2024-02-25"), json!(42)];
+        let column_types = ["DATE".to_string(), "INT".to_string()];
+        assert_eq!(
+            format_temporal_export_row_with_string_types_for_csv_cow(&row, &column_types, None, true).into_owned(),
+            vec![json!("=\"2024-02-25\""), json!(42)]
         );
     }
 
