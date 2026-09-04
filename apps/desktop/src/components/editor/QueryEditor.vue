@@ -5763,7 +5763,27 @@ onMounted(async () => {
       },
       provide: (field) => lineNumberMarkers.from(field),
     });
-    return field;
+
+    const highlightField = StateField.define({
+      create() {
+        return Decoration.none;
+      },
+      update(decorations, transaction) {
+        for (const effect of transaction.effects) {
+          if (effect.is(effectType)) {
+            const range = effect.value;
+            if (!range) return Decoration.none;
+            const from = Math.max(0, Math.min(range.from, transaction.state.doc.length));
+            const to = Math.max(from, Math.min(range.to, transaction.state.doc.length));
+            return from === to ? Decoration.none : Decoration.set([Decoration.mark({ class: "cm-db-result-source-highlight" }).range(from, to)]);
+          }
+        }
+        if (transaction.docChanged || transaction.selection) return Decoration.none;
+        return decorations;
+      },
+      provide: (field) => EditorView.decorations.from(field),
+    });
+    return [field, highlightField];
   };
 
   class StatementExecutionStateMarker extends GutterMarker {
@@ -7120,6 +7140,10 @@ defineExpose({
 
 :deep(.cm-db-execution-preview) {
   background: var(--dbx-editor-selection-background, rgba(59, 130, 246, 0.35));
+}
+
+:deep(.cm-db-result-source-highlight) {
+  background: var(--dbx-editor-selection-background, rgba(126, 34, 206, 0.2));
 }
 
 :deep(.cm-lineNumbers .cm-db-result-source-line-number) {
