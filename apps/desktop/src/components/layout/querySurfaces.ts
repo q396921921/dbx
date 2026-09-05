@@ -44,7 +44,7 @@ export interface ContentAreaSurfaceProps {
   activeTab: QueryTab;
   activeConnection?: ConnectionConfig;
   executableSql: string;
-  activeOutputView: "result" | "summary" | "explain" | "chart" | "messages";
+  activeOutputView: "result" | "summary" | "explain" | "chart" | "messages" | "profile";
   formatSqlRequest: { id: number; tabId: string } | null;
   compressSqlRequest: { id: number; tabId: string } | null;
   selectedSql: string;
@@ -61,7 +61,7 @@ export interface ContentAreaSurfaceProps {
  * global active tab after an await (see redevelopment guide §6.1).
  */
 export interface ContentAreaSurfaceEmits {
-  "update:activeOutputView": [tabId: string, value: "result" | "summary" | "explain" | "chart" | "messages"];
+  "update:activeOutputView": [tabId: string, value: "result" | "summary" | "explain" | "chart" | "messages" | "profile"];
   fixWithAi: [tabId: string, errorMessage: string];
   sendSelectionToAi: [tabId: string, sql: string];
   previewChangesAvailable: [tabId: string, value: boolean];

@@ -14,6 +14,16 @@ describe("ContentArea completed query output", () => {
   });
 });
 
+describe("ContentArea editor-only split sizing", () => {
+  it("keeps the editor pane at 100% in editor-only mode so no blank dead zone is left behind", () => {
+    // The shared result surface renders results in its own workspace pane, so
+    // this splitpanes has a single (editor) pane in editor-only mode. A purely
+    // reactive size prop does not re-normalize a lone pane, so any value below
+    // 100 would shrink the editor and leave the remainder as empty background.
+    expect(contentAreaSource).toContain("const editorPaneSize = computed(() => (props.editorOnly || !resultsPaneOpen.value ? 100 : 100 - resultsPaneSize.value));");
+  });
+});
+
 describe("ContentArea Mongo tab reuse", () => {
   it("remounts the document browser when the active tab changes collections", () => {
     expect(contentAreaSource).toContain(':key="`${activeTab.id}:${activeTab.sql}`"');

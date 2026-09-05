@@ -12,6 +12,7 @@ import { expandToSqlStatementWindow } from "@/lib/sql/insertValueHints";
 import type { SqlSemanticBuildOptions, SqlSemanticSpan } from "@/lib/sql/semantic/types";
 import { isEditorStatePlausibleFor, resolveLexicalLeafFromSyntaxTree, resolveSqlStatementWindow } from "@/lib/sql/sqlSyntaxTreeWindow";
 import { DEFAULT_SQL_SNIPPETS, MANTICORESEARCH_SQL_SNIPPETS, resolveSqlSnippetBodyForDatabase } from "@/lib/sql/sqlSnippetTemplates";
+import { BACKSLASH_ESCAPE_STRING_DIALECTS } from "@/lib/sql/sqlStatementRanges";
 import { requiresMysqlIdentifierQuote, requiresPostgresIdentifierQuote } from "@/lib/sql/sqlIdentifier";
 import { identifierMatchScore, matchesIdentifierSearch } from "@/lib/sql/identifierSearch";
 import { containsHan, orderedSubsequenceSpan, pinyinFirstLetters } from "@/lib/common/pinyin";
@@ -2887,7 +2888,8 @@ const MYSQL_DASH_COMMENT_DIALECTS = new Set<DatabaseType>(["mysql", "doris", "st
 // why that's unsafe (a trailing backslash before a closing quote in a dialect that doesn't escape
 // it, e.g. a Postgres Windows-path string literal, would misread the real closing quote as
 // escaped and swallow the rest of the query).
-const BACKSLASH_ESCAPE_STRING_DIALECTS = new Set<DatabaseType>(["mysql", "doris", "starrocks", "hive", "argo", "impala", "spark"]);
+// The authoritative set lives in sqlStatementRanges.ts (the statement splitter depends on it too);
+// import it here to keep a single source of truth.
 
 // Table/schema/db unquoted-identifier continue class needs @ and # in addition to what
 // SQL_IDENTIFIER_CONTINUE_CHAR covers, so splice its inner class body into a locally-built class

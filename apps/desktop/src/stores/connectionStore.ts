@@ -140,6 +140,7 @@ import { isMongoLegacyDriverProfile } from "@/lib/mongo/mongoCapabilities";
 import { mongoCollectionKindFromNode, toMongoCollectionKind, visibleMongoCollections } from "@/lib/sidebar/mongoCollectionMutation";
 import { completionSchemasFromTree, completionTablesFromTree } from "@/lib/metadata/completionTreeIndex";
 import { kvRootNodeLabel } from "@/lib/kv/kvRootPresentation";
+import { etcdPermissionsAllowKey } from "@/lib/etcd/keyPermissions";
 import { REDIS_SCAN_PAGE_SIZE_DEFAULT } from "@/lib/redis/redisKeyPattern";
 import { normalizeRedisDatabaseAliases, redisDatabaseAlias, redisDatabaseLabel } from "@/lib/redis/redisDatabaseAlias";
 import { normalizeRedisKeyTemplates } from "@/lib/redis/redisKeyTemplates";
@@ -194,6 +195,19 @@ const MONGO_LEGACY_DRIVER_LABEL = "MongoDB (Legacy)";
 const XUGU_TABLE_CHILD_METADATA_AGENT_VERSION = "0.1.23";
 const SUPERSEDED_CONNECTION_ATTEMPT_MESSAGE = "Connection attempt was superseded by a newer attempt";
 const SHARDINGSPHERE_PROXY_VERSION_MARKER = "shardingsphere-proxy";
+
+export interface EtcdAccessCapabilities {
+  /** May access cluster-wide administration APIs such as status and leases. */
+  admin: boolean;
+  /** Has at least one etcd role that permits writes to a Key range. */
+  writable: boolean;
+  /** Null means unrestricted; otherwise writes are limited to these etcd ranges. */
+  writePermissions: api.EtcdAuthPermission[] | null;
+}
+
+const unrestrictedEtcdAccess: EtcdAccessCapabilities = { admin: true, writable: true, writePermissions: null };
+const restrictedEtcdAccess: EtcdAccessCapabilities = { admin: false, writable: false, writePermissions: [] };
+const fallbackEtcdV2Access: EtcdAccessCapabilities = { admin: false, writable: true, writePermissions: null };
 
 function usesShardingSphereLogicalTables(databaseInfo: DatabaseConnectionInfo | undefined): boolean {
   return databaseInfo?.productVersion?.toLowerCase().includes(SHARDINGSPHERE_PROXY_VERSION_MARKER) === true;
@@ -441,6 +455,9 @@ export const useConnectionStore = defineStore("connection", () => {
   const activePinnedTreeNodeReorderKey = ref<string | null>(null);
   let pinnedTreeNodePersistQueue: Promise<void> = Promise.resolve();
   const connectedIds = ref<Set<string>>(new Set());
+  const etcdAccessCapabilities = ref<Record<string, EtcdAccessCapabilities>>({});
+  const etcdAccessCapabilityGenerations = new Map<string, number>();
+  const etcdAccessCapabilityLoads = new Map<string, Promise<EtcdAccessCapabilities>>();
   const identifierQuotes = ref<Record<string, string>>({});
   const lastConnectionHealthCheckAt = ref<Record<string, number>>({});
   const agentDrivers = ref<AgentDriverInstallState[]>([]);
@@ -655,6 +672,99 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function getConfig(connectionId: string) {
     return configById.value.get(connectionId);
+  }
+
+  function getEtcdAccessCapabilities(connectionId: string): EtcdAccessCapabilities {
+    const config = getConfig(connectionId);
+    if (config?.db_type !== "etcd") return unrestrictedEtcdAccess;
+    const username = config.username?.trim() || "";
+    // Only an explicitly configured root user can be trusted before probing
+    // the server. Anonymous and certificate connections may still target an
+    // auth-enabled cluster, so keep privileged controls hidden until the
+    // agent reports the effective identity and authentication status.
+    if (username === "root") return unrestrictedEtcdAccess;
+    return etcdAccessCapabilities.value[connectionId] ?? (config.driver_profile === "etcd-v2" ? fallbackEtcdV2Access : restrictedEtcdAccess);
+  }
+
+  function canWriteEtcdKey(connectionId: string, key: string, keyBytes?: api.KvValue | null): boolean {
+    const access = getEtcdAccessCapabilities(connectionId);
+    if (!access.writable) return false;
+    if (access.writePermissions === null) return true;
+    return etcdPermissionsAllowKey(access.writePermissions, keyBytes ?? { encoding: "utf8", data: key });
+  }
+
+  async function resolveEtcdAccessCapabilities(connectionId: string, config: ConnectionConfig | undefined): Promise<EtcdAccessCapabilities> {
+    const username = config?.username?.trim() || "";
+    if (username === "root") return unrestrictedEtcdAccess;
+    // The v2 auth API cannot resolve the identity behind the active HTTP
+    // connection. Query an explicitly configured user, while anonymous v2
+    // connections retain their historical Key access and rely on the server
+    // as the authorization boundary.
+    if (config?.driver_profile === "etcd-v2" && !username) return fallbackEtcdV2Access;
+    // An empty user asks the agent for the authenticated identity. This also
+    // covers client-certificate CN authentication without duplicating X.509
+    // parsing in the UI.
+    const userParams = config?.driver_profile === "etcd-v2" ? { user: username } : {};
+    const user = await api.etcdAuthCall<api.EtcdAuthUserDetail>(connectionId, "user_get", userParams);
+    if (user.authEnabled === false) return unrestrictedEtcdAccess;
+    if (user.roles.includes("root")) return unrestrictedEtcdAccess;
+    const roles = await Promise.all(user.roles.map((role) => api.etcdAuthCall<api.EtcdAuthRoleDetail>(connectionId, "role_get", { role })));
+    const writePermissions = roles.flatMap((role) => role.permissions.filter((permission) => permission.access === "write" || permission.access === "readwrite"));
+    return {
+      admin: false,
+      writable: writePermissions.length > 0,
+      writePermissions,
+    };
+  }
+
+  async function ensureEtcdAccessCapabilities(connectionId: string, options: { force?: boolean; verifyHealth?: boolean } = {}): Promise<EtcdAccessCapabilities> {
+    const config = getConfig(connectionId);
+    if (config?.db_type !== "etcd") return unrestrictedEtcdAccess;
+    const cached = etcdAccessCapabilities.value[connectionId];
+    if (cached && !options.force) return cached;
+    const existing = etcdAccessCapabilityLoads.get(connectionId);
+    if (existing) return existing;
+
+    const load = (async () => {
+      await ensureConnected(connectionId, { verifyHealth: options.verifyHealth ?? false });
+      const currentConfig = getConfig(connectionId);
+      if (currentConfig?.db_type !== "etcd") return unrestrictedEtcdAccess;
+      const generation = etcdAccessCapabilityGenerations.get(connectionId) ?? 0;
+      const configFingerprint = connectionConfigFingerprint(currentConfig);
+      let access: EtcdAccessCapabilities;
+      try {
+        access = await resolveEtcdAccessCapabilities(connectionId, currentConfig);
+      } catch {
+        // Initial v3 discovery fails closed. Once a capability snapshot has
+        // been confirmed, however, a transient Auth RPC failure must not
+        // overwrite it and make controls flicker between states.
+        // The v2 API cannot discover an implicit current user, so preserve its
+        // pre-capability behavior on discovery errors and let etcd authorize
+        // each Key mutation. Administrative views remain hidden.
+        access = etcdAccessCapabilities.value[connectionId] ?? (currentConfig.driver_profile === "etcd-v2" ? fallbackEtcdV2Access : restrictedEtcdAccess);
+      }
+      if (generation === (etcdAccessCapabilityGenerations.get(connectionId) ?? 0) && connectedIds.value.has(connectionId) && connectionConfigFingerprint(getConfig(connectionId) ?? currentConfig) === configFingerprint) {
+        etcdAccessCapabilities.value = { ...etcdAccessCapabilities.value, [connectionId]: access };
+        return access;
+      }
+      return getEtcdAccessCapabilities(connectionId);
+    })();
+    etcdAccessCapabilityLoads.set(connectionId, load);
+    try {
+      return await load;
+    } finally {
+      if (etcdAccessCapabilityLoads.get(connectionId) === load) etcdAccessCapabilityLoads.delete(connectionId);
+    }
+  }
+
+  function clearEtcdAccessCapabilities(connectionId: string) {
+    etcdAccessCapabilityGenerations.set(connectionId, (etcdAccessCapabilityGenerations.get(connectionId) ?? 0) + 1);
+    etcdAccessCapabilityLoads.delete(connectionId);
+    if (connectionId in etcdAccessCapabilities.value) {
+      const next = { ...etcdAccessCapabilities.value };
+      delete next[connectionId];
+      etcdAccessCapabilities.value = next;
+    }
   }
 
   function connectionIdentifierQuote(connectionId?: string): string | undefined {
@@ -1099,6 +1209,7 @@ export const useConnectionStore = defineStore("connection", () => {
 
   function markConnectionLost(connectionId: string, error: unknown) {
     connectedIds.value.delete(connectionId);
+    clearEtcdAccessCapabilities(connectionId);
     clearSidebarStorageCaches(connectionId);
     clearPrimaryVisibleObjectNames(connectionId);
     clearConnectionIdentifierQuote(connectionId);
@@ -3248,6 +3359,7 @@ export const useConnectionStore = defineStore("connection", () => {
     for (const id of removedIds) {
       clearConnectionError(id);
       connectionErrorRevisions.delete(id);
+      clearEtcdAccessCapabilities(id);
       connectedIds.value.delete(id);
       clearSidebarStorageCaches(id);
       clearPrimaryVisibleObjectNames(id);
@@ -3288,6 +3400,7 @@ export const useConnectionStore = defineStore("connection", () => {
     syncTimeoutInheritanceBackup();
     rebuildTreeNodes();
     if (!runtimeConfigChanged) return;
+    clearEtcdAccessCapabilities(config.id);
     clearPrimaryVisibleObjectNames(config.id);
     connectedIds.value.delete(config.id);
     clearSidebarStorageCaches(config.id);
@@ -3819,6 +3932,7 @@ export const useConnectionStore = defineStore("connection", () => {
     if (!cancelled) return false;
     clearConnectionError(connectionId);
     connectedIds.value.delete(connectionId);
+    clearEtcdAccessCapabilities(connectionId);
     clearSidebarStorageCaches(connectionId);
     clearPrimaryVisibleObjectNames(connectionId);
     clearConnectionIdentifierQuote(connectionId);
@@ -3839,6 +3953,7 @@ export const useConnectionStore = defineStore("connection", () => {
     cancelLocalConnectionAttempt(connectionId);
 
     connectedIds.value.delete(connectionId);
+    clearEtcdAccessCapabilities(connectionId);
     clearSidebarStorageCaches(connectionId);
     clearPrimaryVisibleObjectNames(connectionId);
     clearConnectionIdentifierQuote(connectionId);
@@ -3963,6 +4078,7 @@ export const useConnectionStore = defineStore("connection", () => {
         cancelObjectMetadataLoadsForConnection(connectionId);
         clearMetadataRuntimeCacheForConnection(connectionId);
         connectedIds.value.delete(connectionId);
+        clearEtcdAccessCapabilities(connectionId);
         clearPrimaryVisibleObjectNames(connectionId);
         clearConnectionHealthCheck(connectionId);
         if (activeConnectionId.value === connectionId) activeConnectionId.value = null;
@@ -4498,42 +4614,41 @@ export const useConnectionStore = defineStore("connection", () => {
       load = reclaimTreeNodeLoad(load, node);
       const targetNode = treeNodeLoadTarget(load);
       if (!targetNode) return;
-      setChildren(
-        targetNode,
-        withSavedSqlRoot(
+      const etcdAccess = await ensureEtcdAccessCapabilities(connectionId, { force: true, verifyHealth: false });
+      const children: TreeNode[] = [
+        {
+          id: `${connectionId}:etcd`,
+          label: kvRootNodeLabel("etcd"),
+          type: "etcd-root" as const,
           connectionId,
-          [
-            {
-              id: `${connectionId}:etcd`,
-              label: kvRootNodeLabel("etcd"),
-              type: "etcd-root" as const,
-              connectionId,
-              database: "",
-              isExpanded: false,
-              children: [],
-            },
-            {
-              id: `${connectionId}:etcd-access-control`,
-              label: "用户和角色",
-              type: "etcd-access-control" as const,
-              connectionId,
-              database: "",
-              isExpanded: false,
-              children: [],
-            },
-            {
-              id: `${connectionId}:etcd-dashboard`,
-              label: "服务仪表盘",
-              type: "etcd-dashboard" as const,
-              connectionId,
-              database: "",
-              isExpanded: false,
-              children: [],
-            },
-          ],
-          targetNode,
-        ),
-      );
+          database: "",
+          isExpanded: false,
+          children: [],
+        },
+      ];
+      if (etcdAccess.admin) {
+        children.push(
+          {
+            id: `${connectionId}:etcd-access-control`,
+            label: "用户和角色",
+            type: "etcd-access-control" as const,
+            connectionId,
+            database: "",
+            isExpanded: false,
+            children: [],
+          },
+          {
+            id: `${connectionId}:etcd-dashboard`,
+            label: "服务仪表盘",
+            type: "etcd-dashboard" as const,
+            connectionId,
+            database: "",
+            isExpanded: false,
+            children: [],
+          },
+        );
+      }
+      setChildren(targetNode, withSavedSqlRoot(connectionId, children, targetNode));
       targetNode.isExpanded = true;
     } catch (e) {
       recordMetadataLoadError(connectionId, e, load);
@@ -7979,12 +8094,19 @@ export const useConnectionStore = defineStore("connection", () => {
 
   async function listCompletionColumns(connectionId: string, database: string, table: string, schema?: string, context?: { clientSessionId?: string; version?: number; tableQuoted?: boolean; schemaQuoted?: boolean }, catalog?: string): Promise<SqlCompletionColumn[]> {
     const config = getConfig(connectionId);
-    const oracleIdentifier = config?.db_type === "oracle" || config?.db_type === "oceanbase-oracle";
-    const uppercaseUnquotedIdentifier = oracleIdentifier || config?.db_type === "saphana";
+    // Use the effective database type (e.g. a JDBC connection whose URL is
+    // `jdbc:oracle:...` resolves to "oracle") rather than the raw db_type.
+    // Otherwise a JDBC-Oracle connection with no schema selected falls
+    // through neither the Oracle current-schema completion path nor the
+    // schema-required early return below finds a schema, and every star
+    // expansion silently returns no columns.
+    const effectiveDbType = effectiveDatabaseTypeForConnection(config);
+    const oracleIdentifier = effectiveDbType === "oracle" || effectiveDbType === "oceanbase-oracle";
+    const uppercaseUnquotedIdentifier = oracleIdentifier || effectiveDbType === "saphana";
     const completionTable = uppercaseUnquotedIdentifier && context?.tableQuoted === false ? table.toUpperCase() : table;
-    const rawCompletionSchema = schema?.trim() || (config?.db_type === "dameng" ? config.username?.trim() || undefined : undefined);
+    const rawCompletionSchema = schema?.trim() || (effectiveDbType === "dameng" ? config?.username?.trim() || undefined : undefined);
     const completionSchema = uppercaseUnquotedIdentifier && rawCompletionSchema && context?.schemaQuoted === false ? rawCompletionSchema.toUpperCase() : rawCompletionSchema;
-    const usesCurrentSchema = usesOracleCurrentSchemaCompletion(config?.db_type, completionSchema);
+    const usesCurrentSchema = usesOracleCurrentSchemaCompletion(effectiveDbType, completionSchema);
     if (isSchemaAwareDatabase(connectionId) && !connectionUsesDatabaseObjectTreeMode(config) && !completionSchema && !usesCurrentSchema) {
       return [];
     }
@@ -8894,6 +9016,9 @@ export const useConnectionStore = defineStore("connection", () => {
     connectionGroupOptions,
     selectedConnectionGroupId,
     getConfig,
+    getEtcdAccessCapabilities,
+    ensureEtcdAccessCapabilities,
+    canWriteEtcdKey,
     connectionIdentifierQuote,
     isTreeNodePinned,
     orderByPinnedTreeNodes,

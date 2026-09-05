@@ -97,6 +97,21 @@ describe("EditorGroupTabBar semantic tab groups", () => {
     expect(source).toContain("grouping && !tabSearchQuery.value.trim() && isTabGroupCollapsed(tab)");
   });
 
+  it("keeps the overflow search scoped to the popover list without filtering the strip", () => {
+    // Regression: the popover's "search opened tabs" box shared the strip's
+    // query, so typing a term with no match emptied the top tab bar while the
+    // active tab's content stayed on screen.
+    const overflowFilter = sourceBetween("const filteredGroupTabs", "watch(tabOverflowOpen");
+    expect(overflowFilter).toContain("tabOverflowSearchQuery.value.trim()");
+    expect(overflowFilter).not.toContain("tabSearchQuery");
+    const overflowOpenWatch = sourceBetween("watch(tabOverflowOpen", "const showOverflowControl");
+    expect(overflowOpenWatch).toContain('tabOverflowSearchQuery.value = "";');
+    const stripFilter = sourceBetween("const filteredPinnedTabs", "const stripEntries");
+    expect(stripFilter).toContain("tabSearchQuery.value.trim()");
+    expect(stripFilter).not.toContain("tabOverflowSearchQuery");
+    expect(source).toContain('<Input v-model="tabOverflowSearchQuery" data-group-tab-search-input');
+  });
+
   it("keeps wrap layout out of the vertical placement", () => {
     expect(source).toContain('const isWrapLayout = computed(() => !isVerticalLayout.value && settingsStore.editorSettings.tabLayout === "wrap");');
   });

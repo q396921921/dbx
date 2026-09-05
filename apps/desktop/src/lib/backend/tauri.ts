@@ -3140,6 +3140,7 @@ export interface EtcdAuthUserListResponse {
 export interface EtcdAuthUserDetail {
   user: string;
   roles: string[];
+  authEnabled?: boolean;
 }
 export interface EtcdAuthPermission {
   access: "read" | "write" | "readwrite";
@@ -5055,6 +5056,7 @@ export async function exportQueryResultXlsx(
   rows: readonly (readonly XlsxCellValue[])[],
   numericColumnRightAlign?: boolean,
   autoFilter?: boolean,
+  dateTimeFormat?: string,
 ): Promise<void> {
   return invoke("export_query_result_xlsx", {
     request: {
@@ -5066,6 +5068,7 @@ export async function exportQueryResultXlsx(
       rows,
       numericColumnRightAlign,
       autoFilter,
+      dateTimeFormat,
     },
   });
 }
@@ -5082,12 +5085,14 @@ export async function exportQueryResultsXlsx(
     autoFilter?: boolean;
   }[],
   autoFilter?: boolean,
+  dateTimeFormat?: string,
 ): Promise<void> {
   return invoke("export_query_results_xlsx", {
     request: {
       filePath,
       worksheets,
       autoFilter,
+      dateTimeFormat,
     },
   });
 }

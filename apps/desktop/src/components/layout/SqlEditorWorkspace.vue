@@ -119,9 +119,9 @@ const storedResultPaneSize = Number(safeLocalStorageGet(SHARED_RESULT_PANE_STORA
 const resultPaneSize = ref(Number.isFinite(storedResultPaneSize) && storedResultPaneSize >= SHARED_RESULT_PANE_MIN_SIZE && storedResultPaneSize <= SHARED_RESULT_PANE_MAX_SIZE ? storedResultPaneSize : SHARED_RESULT_PANE_DEFAULT_SIZE);
 const showResultPane = ref(true);
 // The result pane stays mounted and animates its size between the stored
-// split and 0, so collapsing/expanding glides instead of jumping: the stock
-// splitpanes pane transition is re-enabled for this workspace in
-// sqlEditorWorkspace.css (globals.css kills it for horizontal splitpanes).
+// split and 0, so collapsing/expanding glides instead of jumping: the pane
+// transition for this outer split is re-enabled in sqlEditorWorkspace.css
+// (globals.css kills it for horizontal splitpanes).
 const resultPaneTargetSize = computed(() => (showSharedResult.value && showResultPane.value ? resultPaneSize.value : 0));
 const editorPaneSize = computed(() => 100 - resultPaneTargetSize.value);
 // Entrance choreography is hydration-gated: groups present at first render

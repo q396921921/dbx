@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { HeroProductStage } from "@/components/aceternity/HeroProductStage";
 import { InfiniteMovingCards } from "@/components/aceternity/InfiniteMovingCards";
 import { Spotlight } from "@/components/aceternity/Spotlight";
+import { Starfield } from "@/components/landing/Starfield";
 import { LandingNav } from "@/components/landing/LandingNav";
 import { LandingFooter } from "@/components/landing/LandingFooter";
 import { InstallTabs } from "@/components/landing/InstallTabs";
@@ -574,6 +575,8 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
   return (
     <main className="landing" lang={getHtmlLang(l)}>
       <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(softwareStructuredData) }} />
+      {/* 漫游星空背景层：铺满整个深色着陆页，克制不抢焦点 */}
+      <Starfield />
       {/* Nav */}
       <LandingNav lang={l} active="home" />
 

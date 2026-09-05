@@ -25,6 +25,7 @@ import { useAppUpdater } from "@/composables/useAppUpdater";
 import { useMcpUpdateBadge } from "@/composables/useMcpUpdateBadge";
 import { useExportTracker } from "@/composables/useExportTracker";
 import { useFileDrop } from "@/composables/useFileDrop";
+import { useLargeSqlFileStreamingFallback } from "@/composables/useLargeSqlFileFallback";
 import { usePanelResize } from "@/composables/usePanelResize";
 import { useDatabaseOptions } from "@/composables/useDatabaseOptions";
 import { useSqlExecution } from "@/composables/useSqlExecution";
@@ -220,6 +221,7 @@ const {
   getActiveTaskCount: () => trackedUpdateTaskCount.value,
 });
 const { setupFileDrop } = useFileDrop();
+const { openInStreamingExecutorOnTooLarge } = useLargeSqlFileStreamingFallback();
 
 const isDesktop = isTauriRuntime();
 const windowContext = resolveWindowContext();
@@ -293,7 +295,7 @@ const cursorPos = ref(0);
 const previewChangesAvailable = ref(false);
 const formatSqlRequest = ref<{ id: number; tabId: string } | null>(null);
 const compressSqlRequest = ref<{ id: number; tabId: string } | null>(null);
-const activeOutputView = ref<"result" | "summary" | "explain" | "chart" | "messages">("result");
+const activeOutputView = ref<"result" | "summary" | "explain" | "chart" | "messages" | "profile">("result");
 const newQueryContextSource = ref<"tab" | "sidebar">("tab");
 const queryEditorDdlTarget = ref<{ connectionId: string; database: string; catalog?: string; schema?: string; tableName: string; objectType?: ObjectSourceKind } | null>(null);
 const queryEditorObjectSourceTarget = ref<{
@@ -1970,6 +1972,7 @@ function applyExternalSqlFileTarget(tab: QueryTab, path: string) {
 async function openSqlFile() {
   const tab = activeTab.value;
   if (!tab) return;
+  let openedSqlPath: string | undefined;
   try {
     if (isTauriRuntime()) {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1979,6 +1982,7 @@ async function openSqlFile() {
       });
       if (path) {
         const sqlPath = path as string;
+        openedSqlPath = sqlPath;
         const snapshot = await api.readExternalSqlFileSnapshot(sqlPath);
         queryStore.updateSql(tab.id, snapshot.content);
         queryStore.linkExternalSqlPath(tab.id, sqlPath, sqlFileTitleFromPath(sqlPath), snapshot.version);
@@ -2000,7 +2004,9 @@ async function openSqlFile() {
       input.click();
     }
   } catch (e: any) {
-    toast(t("toolbar.sqlOpenFailed", { message: externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)) }), 5000);
+    if (!openInStreamingExecutorOnTooLarge(openedSqlPath, e)) {
+      toast(t("toolbar.sqlOpenFailed", { message: externalSqlFileOpenErrorMessage(e, (key, params) => t(key, params)) }), 5000);
+    }
   }
 }
 
@@ -3512,7 +3518,7 @@ onUnmounted(() => {
                     :block-dangerous-redis-commands="blockDangerousRedisCommands"
                     :zen-mode="isZenMode"
                     @update:active-output-view="
-                      (tabId: string, view: 'result' | 'summary' | 'explain' | 'chart' | 'messages') => {
+                      (tabId: string, view: 'result' | 'summary' | 'explain' | 'chart' | 'messages' | 'profile') => {
                         if (tabId === queryStore.activeTabId) activeOutputView = view;
                       }
                     "

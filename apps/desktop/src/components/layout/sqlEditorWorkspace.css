@@ -17,12 +17,14 @@
   --sql-workspace-ease-out: cubic-bezier(0.25, 1, 0.5, 1);
 }
 
-/* Pane size transitions: restore splitpanes' stock behavior inside the
-   workspace (globals.css disables it for all horizontal splitpanes). */
-.sql-editor-workspace .splitpanes--ready .splitpanes__pane {
+/* Pane size transitions: only the outer editor/result split animates pane
+   sizes (the result-pane collapse/expand glide). Group panes never animate
+   their sizes — splits use the entrance keyframes below — so they stay on
+   stock splitpanes behavior (transition, disabled while dragging). */
+.sql-editor-workspace .sql-editor-workspace-split.splitpanes--ready > .splitpanes__pane {
   transition: width 0.2s ease-out, height 0.2s ease-out !important;
 }
-.sql-editor-workspace .splitpanes--ready.splitpanes--dragging .splitpanes__pane {
+.sql-editor-workspace .sql-editor-workspace-split.splitpanes--ready.splitpanes--dragging > .splitpanes__pane {
   transition: none !important;
 }
 
@@ -81,7 +83,7 @@
   .sql-editor-workspace .result-surface-leave-active {
     transition: none;
   }
-  .sql-editor-workspace .splitpanes--ready .splitpanes__pane {
+  .sql-editor-workspace .sql-editor-workspace-split.splitpanes--ready > .splitpanes__pane {
     transition: none !important;
   }
 }

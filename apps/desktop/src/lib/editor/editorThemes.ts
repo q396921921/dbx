@@ -4,6 +4,12 @@ import { customUiAppearance, type AppCustomUiColors, type AppThemeAppearance, ty
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 
+// @codemirror/lang-sql tags dialect builtin-list words (COUNT, DATE_FORMAT, ...) as
+// standard(name) — not standard(variableName), which is a *child* tag of name and so never
+// matches a token tagged with the parent. Shared so both editor theme builders below stay in
+// sync with what the SQL tokenizer actually emits.
+export const SQL_BUILTIN_HIGHLIGHT_TAG = tags.standard(tags.name);
+
 type CodeMirrorStyleSpec = Parameters<typeof import("@codemirror/view").EditorView.theme>[0];
 type LucideIconNode = Array<[string, Record<string, string>]>;
 
@@ -165,7 +171,7 @@ function createCustomTheme(EditorView: typeof import("@codemirror/view").EditorV
     { tag: tags.definition(tags.variableName), color: c.variable },
     { tag: tags.function(tags.variableName), color: c.function },
     { tag: tags.function(tags.propertyName), color: c.function },
-    { tag: tags.standard(tags.variableName), color: c.builtin },
+    { tag: SQL_BUILTIN_HIGHLIGHT_TAG, color: c.builtin },
     { tag: tags.propertyName, color: c.property },
     { tag: tags.operator, color: c.operator },
     { tag: tags.compareOperator, color: c.operator },
@@ -563,7 +569,7 @@ function createIdeEditorTheme(EditorView: typeof import("@codemirror/view").Edit
     { tag: [tags.typeName, tags.typeOperator, tags.unit], color: c.type },
     { tag: [tags.name, tags.variableName, tags.definition(tags.variableName)], color: c.variable },
     { tag: [tags.function(tags.variableName), tags.function(tags.propertyName), tags.function(tags.name), tags.macroName], color: c.function },
-    { tag: [tags.standard(tags.variableName), tags.special(tags.name)], color: c.builtin },
+    { tag: [SQL_BUILTIN_HIGHLIGHT_TAG, tags.special(tags.name)], color: c.builtin },
     { tag: [tags.propertyName, tags.labelName, tags.annotation], color: c.property },
     { tag: [tags.operator, tags.compareOperator, tags.logicOperator, tags.arithmeticOperator, tags.derefOperator], color: c.operator },
     { tag: [tags.punctuation, tags.separator, tags.paren, tags.brace, tags.bracket, tags.angleBracket], color: c.punctuation },
@@ -763,6 +769,16 @@ export function buildEditorFontThemeRules(opts?: { fixedHeight?: boolean; scroll
     ...(opts?.scrollable ? { ".cm-scroller": { overflowX: "auto", overflowY: "auto" } } : {}),
     ".cm-content": {
       fontFamily: `var(${EDITOR_FONT_FAMILY_CSS_VAR}, ${defaults?.family ?? "monospace"})`,
+      // Ligature fonts (Fira Code, Cascadia Code, JetBrains Mono, ...) combine
+      // runs like `--`/`==` into a single shaped glyph. CodeMirror repaints
+      // edited lines by patching individual character spans, and that
+      // per-keystroke patching can race the browser's ligature reshaping when
+      // the same character is typed repeatedly in place, leaving earlier
+      // characters unpainted until something else forces a repaint (dbx#7900).
+      // Disabling ligatures here avoids the reshaping entirely, matching the
+      // same fix already applied to DataGridConditionEditor.vue.
+      fontVariantLigatures: "none",
+      fontFeatureSettings: '"liga" 0, "calt" 0',
       lineHeight: "1.6",
       padding: "0",
     },

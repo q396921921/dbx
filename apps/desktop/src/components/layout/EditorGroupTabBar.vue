@@ -176,9 +176,16 @@ const tabScrollbarThumbStyle = computed<CSSProperties>(() => ({
 // Overflow search lists this group's tabs (mirrors the legacy AppTabBar
 // overflow popover, scoped to the group that owns the strip).
 const tabOverflowOpen = ref(false);
+// The overflow popover's "search opened tabs" query is scoped to the popover
+// list only. It must not reach the strip: with a shared query, typing a term
+// with no match would empty the always-visible top tab bar while the active
+// tab's content stays on screen.
+const tabOverflowSearchQuery = ref("");
+// The strip's own search box lives only in the vertical toolbar, where
+// filtering the strip itself is the point of the search.
 const tabSearchQuery = ref("");
 const filteredGroupTabs = computed(() => {
-  const query = tabSearchQuery.value.trim().toLocaleLowerCase();
+  const query = tabOverflowSearchQuery.value.trim().toLocaleLowerCase();
   if (!query) {
     return props.tabs;
   }
@@ -186,7 +193,7 @@ const filteredGroupTabs = computed(() => {
 });
 
 watch(tabOverflowOpen, (open) => {
-  tabSearchQuery.value = "";
+  tabOverflowSearchQuery.value = "";
   if (open) {
     nextTick(() => document.querySelector<HTMLInputElement>("[data-group-tab-search-input]")?.focus());
   }
@@ -523,8 +530,9 @@ function tabMatchesSearch(tab: QueryTab, query: string) {
 }
 
 /**
- * The strips apply the search box (overflow popover and vertical toolbar
- * share it): sections filter by title before clustering.
+ * The strips apply the vertical toolbar search box: sections filter by title
+ * before clustering. The overflow popover's query (tabOverflowSearchQuery) is
+ * scoped to the popover list and deliberately does not reach the strip.
  */
 const filteredPinnedTabs = computed(() => {
   const query = tabSearchQuery.value.trim().toLocaleLowerCase();
@@ -1201,7 +1209,7 @@ watch(
           <PopoverContent align="end" class="w-auto min-w-56 max-w-80 gap-0 rounded-[6px] p-1" @click.stop @keydown.stop>
             <div class="relative border-b px-1 pb-1">
               <Search class="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input v-model="tabSearchQuery" data-group-tab-search-input type="search" :placeholder="t('tabs.searchOpenTabs')" class="h-8 pl-7 text-sm" />
+              <Input v-model="tabOverflowSearchQuery" data-group-tab-search-input type="search" :placeholder="t('tabs.searchOpenTabs')" class="h-8 pl-7 text-sm" />
             </div>
             <div class="max-h-[min(70vh,28rem)] overflow-y-auto pt-1">
               <CustomContextMenu v-for="tab in filteredGroupTabs" :key="tab.id" :items="getTabMenuItems(tab)" v-slot="{ onContextMenu }">

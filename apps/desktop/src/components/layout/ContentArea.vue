@@ -14,6 +14,7 @@ import {
   Columns3Cog,
   Copy,
   EyeOff,
+  Gauge,
   Loader2,
   Search,
   TableProperties,
@@ -100,6 +101,7 @@ const MongoBucketBrowser = defineAsyncComponent(() => import("@/components/docum
 const VectorBrowser = defineAsyncComponent(() => import("@/components/vector/VectorBrowser.vue"));
 const HBaseBrowser = defineAsyncComponent(() => import("@/components/hbase/HBaseBrowser.vue"));
 const ElasticsearchJsonResponsePanel = defineAsyncComponent(() => import("@/components/common/ElasticsearchJsonResponsePanel.vue"));
+const ElasticsearchProfilePanel = defineAsyncComponent(() => import("@/components/common/ElasticsearchProfilePanel.vue"));
 const MqAdminConsole = defineAsyncComponent(() => import("@/components/mq/MqAdminConsole.vue"));
 const MqttAdminConsole = defineAsyncComponent(() => import("@/components/mqtt/MqttAdminConsole.vue"));
 const NacosAdminConsole = defineAsyncComponent(() => import("@/components/nacos/NacosAdminConsole.vue"));
@@ -150,6 +152,7 @@ import type { CodeMirrorSqlDialectName } from "@/lib/editor/codemirrorSqlDialect
 import { codeMirrorSqlDialect, codeMirrorSqlDialectForConnection, effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
 import { chartableColumnIndexes } from "@/lib/dataGrid/chartData";
 import { elasticsearchJsonResponseForResult } from "@/lib/elasticsearch/elasticsearchJsonResponse";
+import { elasticsearchProfileBodyForResult, parseElasticsearchProfile } from "@/lib/elasticsearch/elasticsearchProfile";
 import * as api from "@/lib/backend/api";
 import { applyMongoGridChangesToDocument, applyMongoGridChangesToDocumentBaseline, buildMongoUpdateDocument, formatMongoShellLiteral, serializeMongoDocumentId, type MongoInputValue } from "@/lib/mongo/mongoDocumentValues";
 import type { DataGridSortMode } from "@/lib/dataGrid/dataGridSort";
@@ -217,6 +220,15 @@ const emit = defineEmits<ContentAreaSurfaceEmits>();
 const { t, locale } = useI18n();
 const queryStore = useQueryStore();
 const connectionStore = useConnectionStore();
+const canAccessEtcdAdmin = computed(() => connectionStore.getEtcdAccessCapabilities(props.activeTab.connectionId).admin);
+watch(
+  () => [props.activeTab.connectionId, props.activeTab.mode] as const,
+  ([connectionId, mode]) => {
+    if (mode !== "etcd-dashboard" && mode !== "etcd-access-control") return;
+    void connectionStore.ensureEtcdAccessCapabilities(connectionId, { force: true, verifyHealth: false }).catch(() => undefined);
+  },
+  { immediate: true },
+);
 
 function groupedQueryReadonlyColumnIndexes(tab: QueryTab): number[] | undefined {
   if (!tab.queryAnalysis?.groupByColumns?.length || !tab.querySourceColumns || !tab.tableMeta?.primaryKeys.length) return undefined;
@@ -232,12 +244,14 @@ const { toast } = useToast();
 const DEFAULT_QUERY_RESULTS_PANE_SIZE = 68;
 
 onMounted(() => {
-  const preload = () => preloadDataGridComponent();
-  if ("requestIdleCallback" in window) {
-    window.requestIdleCallback(preload, { timeout: 1500 });
-  } else {
-    setTimeout(preload, 300);
-  }
+  // Deliberately not preloading DataGrid here for every tab: evaluating that
+  // chunk is expensive (large component graph) and previously ran
+  // unconditionally shortly after any tab mounted, including source-only
+  // tabs (e.g. viewing a large object's DDL) that never need a grid. That
+  // turned a "warm the cache" optimization into a multi-second main-thread
+  // freeze right when the user was trying to read the newly-opened tab (see
+  // issue #8103). The watcher below still preloads it eagerly for tabs that
+  // actually need one.
   window.addEventListener("dbx-refresh-active-kv-browser", onRefreshActiveKvBrowser);
   window.addEventListener("resize", updateStandaloneResultToolbarDimensions);
   window.visualViewport?.addEventListener("resize", updateStandaloneResultToolbarDimensions);
@@ -458,6 +472,13 @@ const activeElasticsearchRawBody = computed(() => {
   if (activeEffectiveDatabaseType.value !== "elasticsearch" && activeEffectiveDatabaseType.value !== "easysearch") return undefined;
   return props.activeTab.result?.elasticsearch_raw_body;
 });
+/** ES `_search?profile=true` body extracted from the active result, when present. */
+const activeElasticsearchProfileBody = computed(() => elasticsearchProfileBodyForResult(activeEffectiveDatabaseType.value, props.activeTab.result));
+/** Only surfaces the "Profile" entry when the response actually carries a profile section. */
+const canShowProfile = computed(() => {
+  const body = activeElasticsearchProfileBody.value;
+  return body !== null && parseElasticsearchProfile(body) !== null;
+});
 /** Toggle between the _source table and the raw JSON panel for Elasticsearch REST results. */
 const showElasticsearchRawJson = ref(false);
 watch(
@@ -631,7 +652,10 @@ const mongoQueryResultSaveHandler = computed<CustomSaveHandler | undefined>(() =
 });
 const resultsPaneOpen = ref(false);
 const resultsPaneSize = ref(Number(safeLocalStorageGet("dbx-results-pane-size")) || DEFAULT_QUERY_RESULTS_PANE_SIZE);
-const editorPaneSize = computed(() => (resultsPaneOpen.value ? 100 - resultsPaneSize.value : 100));
+// In editor-only mode the results pane is never mounted in this splitpanes,
+// so the editor pane must stay at 100%: a reactive size update alone does not
+// re-normalize a single pane, and shrinking it would leave a blank dead zone.
+const editorPaneSize = computed(() => (props.editorOnly || !resultsPaneOpen.value ? 100 : 100 - resultsPaneSize.value));
 const queryRunningElapsed = ref(0);
 
 function toggleResultsPane(): boolean {
@@ -774,23 +798,25 @@ watch(
 // Table toolbox handlers
 function handleTableImport() {
   const tab = props.activeTab;
-  if (!tab.tableMeta || !tab.connectionId) return;
+  const tableMeta = activeDataTabTableMeta.value;
+  if (!tableMeta || !tab.connectionId) return;
   connectionStore.tableImportSource = {
     connectionId: tab.connectionId,
     database: tab.database,
-    schema: tab.tableMeta.schema,
-    tableName: tab.tableMeta.tableName,
+    schema: tableMeta.schema,
+    tableName: tableMeta.tableName,
   };
 }
 
 function handleTableDataGenerate() {
   const tab = props.activeTab;
-  if (!tab.tableMeta || !tab.connectionId) return;
+  const tableMeta = activeDataTabTableMeta.value;
+  if (!tableMeta || !tab.connectionId) return;
   connectionStore.tableDataGenerateSource = {
     connectionId: tab.connectionId,
     database: tab.database,
-    schema: tab.tableMeta.schema,
-    tableName: tab.tableMeta.tableName,
+    schema: tableMeta.schema,
+    tableName: tableMeta.tableName,
   };
 }
 
@@ -1661,10 +1687,12 @@ defineExpose({
                 class="ml-auto"
                 :active-view="activeOutputView"
                 :can-show-explain="canShowExplainOutput"
+                :can-show-profile="canShowProfile"
                 :can-export-archive="canExportResultArchive"
                 :archive-exporting="resultArchiveExporting"
                 :compact="standaloneResultToolbarCompact"
                 @select-explain="emit('update:activeOutputView', activeTab.id, 'explain')"
+                @select-profile="emit('update:activeOutputView', activeTab.id, 'profile')"
                 @export-archive="exportResultArchive"
               />
             </div>
@@ -1680,6 +1708,8 @@ defineExpose({
               :table-result="activeTab.explainTableResult"
               :table-error="activeTab.explainTableError"
             />
+
+            <ElasticsearchProfilePanel v-else-if="activeOutputView === 'profile' && canShowProfile" class="flex-1 min-h-0" :body="activeElasticsearchProfileBody ?? ''" />
 
             <QueryChart v-else-if="activeOutputView === 'chart' && activeTab.result && !activeElasticsearchJsonResponse" class="flex-1 min-h-0" :result="activeTab.result" />
 
@@ -1871,16 +1901,31 @@ defineExpose({
                       {{ showElasticsearchRawJson ? t("tabs.tableData") : t("redis.jsonView") }}
                     </button>
                   </template>
+                  <template v-else-if="canShowProfile">
+                    <div class="mx-1 h-4 w-px bg-border" />
+                    <button
+                      type="button"
+                      class="inline-flex h-5 shrink-0 items-center gap-1 rounded-sm border border-transparent px-2 text-xs leading-none transition-colors"
+                      :class="activeOutputView === 'profile' ? 'bg-secondary text-secondary-foreground' : 'text-muted-foreground hover:text-foreground'"
+                      :aria-pressed="activeOutputView === 'profile'"
+                      @click="emit('update:activeOutputView', activeTab.id, activeOutputView === 'profile' ? 'result' : 'profile')"
+                    >
+                      <Gauge class="h-3.5 w-3.5" />
+                      {{ t("profile.title") }}
+                    </button>
+                  </template>
                 </template>
                 <template #result-toolbar-actions="{ compact }">
                   <DataGridColumnLayoutPopover :grid="dataGridRef" :compact="compact" />
                   <QueryResultToolbarActions
                     :active-view="activeOutputView"
                     :can-show-explain="canShowExplainOutput"
+                    :can-show-profile="canShowProfile"
                     :can-export-archive="canExportResultArchive"
                     :archive-exporting="resultArchiveExporting"
                     :compact="compact"
                     @select-explain="emit('update:activeOutputView', activeTab.id, 'explain')"
+                    @select-profile="emit('update:activeOutputView', activeTab.id, 'profile')"
                     @export-archive="exportResultArchive"
                   />
                 </template>
@@ -1933,19 +1978,17 @@ defineExpose({
           <span v-if="activeConnection?.name?.trim()" data-data-header-connection class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="activeConnection.name">
             {{ activeConnection.name }}
           </span>
-          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 font-medium" :title="activeTab.tableMeta?.tableName || activeTab.title">
-            {{ activeTab.tableMeta?.tableName || activeTab.title }}
+          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 font-medium" :title="activeDataTabTableMeta?.tableName || activeTab.title">
+            {{ activeDataTabTableMeta?.tableName || activeTab.title }}
           </span>
-          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="[activeTab.tableMeta?.schema, databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t)].filter(Boolean).join('@')">
-            <template v-if="activeTab.tableMeta?.schema">{{ activeTab.tableMeta.schema }}@</template>{{ databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t) }}
+          <span class="inline-flex min-w-12 items-center truncate rounded border border-border bg-muted/30 px-2 py-0.5 text-muted-foreground" :title="[activeDataTabTableMeta?.schema, databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t)].filter(Boolean).join('@')">
+            <template v-if="activeDataTabTableMeta?.schema">{{ activeDataTabTableMeta.schema }}@</template>{{ databaseDisplayNameForTab(activeTab.connectionId, activeTab.database, t) }}
           </span>
-          <span v-if="showDataColumnsChip && activeTab.mode === 'data' && activeTab.tableMeta" class="inline-flex shrink-0 items-center rounded border border-border bg-muted/30 px-2 py-0.5 font-medium text-muted-foreground tabular-nums">
-            {{ activeTab.tableMeta.columns.length }} {{ t("tree.columns") }}
-          </span>
+          <span v-if="showDataColumnsChip && activeDataTabTableMeta" class="inline-flex shrink-0 items-center rounded border border-border bg-muted/30 px-2 py-0.5 font-medium text-muted-foreground tabular-nums"> {{ activeDataTabTableMeta.columns.length }} {{ t("tree.columns") }} </span>
           <span class="ml-auto" />
           <DataGridColumnLayoutPopover v-if="activeTab.result?.columns.length" :grid="dataGridRef" trigger-class="px-1.5" />
           <Button
-            v-if="showDataTableInfoButton && activeTab.result && activeTab.tableMeta && activeTab.connectionId"
+            v-if="showDataTableInfoButton && activeTab.result && activeDataTabTableMeta && activeTab.connectionId"
             variant="ghost"
             size="sm"
             class="h-5 text-xs px-1.5 shrink-0"
@@ -1954,7 +1997,7 @@ defineExpose({
             @click="dataGridRef?.toggleDdl()"
             ><TableProperties class="h-3.5 w-3.5" /><span v-if="!dataToolbarCompact">{{ t("grid.tableInfo") }}</span></Button
           >
-          <DropdownMenu v-if="activeTab.result && activeTab.tableMeta && activeTab.connectionId">
+          <DropdownMenu v-if="activeTab.result && activeDataTabTableMeta && activeTab.connectionId">
             <DropdownMenuTrigger as-child>
               <Button variant="ghost" size="sm" class="h-5 text-xs px-1.5 shrink-0" :title="t('tableToolbox.title')"
                 ><Toolbox class="h-3.5 w-3.5" /><span v-if="!dataToolbarCompact">{{ t("tableToolbox.title") }}</span></Button
@@ -2197,7 +2240,7 @@ defineExpose({
             </PopoverContent>
           </Popover>
           <ToolbarOverflowMenu v-if="showDataToolbarOverflow" :label="t('toolbar.moreActions')">
-            <DropdownMenuItem v-if="activeTab.result && activeTab.tableMeta && activeTab.connectionId" @select="dataGridRef?.toggleDdl()">
+            <DropdownMenuItem v-if="activeTab.result && activeDataTabTableMeta && activeTab.connectionId" @select="dataGridRef?.toggleDdl()">
               <TableProperties class="h-3.5 w-3.5" />
               {{ t("grid.tableInfo") }}
             </DropdownMenuItem>
@@ -2303,13 +2346,15 @@ defineExpose({
     <!-- etcd Dashboard: cluster observation -->
     <template v-else-if="activeTab.mode === 'etcd-dashboard'">
       <div class="flex-1 min-h-0">
-        <EtcdDashboard ref="etcdDashboardRef" :key="activeTab.id" :connection-id="activeTab.connectionId" />
+        <EtcdDashboard v-if="canAccessEtcdAdmin" ref="etcdDashboardRef" :key="activeTab.id" :connection-id="activeTab.connectionId" />
+        <div v-else class="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><ShieldAlert class="h-4 w-4" />{{ t("etcd.adminPermissionRequired") }}</div>
       </div>
     </template>
 
     <template v-else-if="activeTab.mode === 'etcd-access-control'">
       <div class="flex-1 min-h-0">
-        <EtcdAccessControl :key="activeTab.id" :connection-id="activeTab.connectionId" />
+        <EtcdAccessControl v-if="canAccessEtcdAdmin" :key="activeTab.id" :connection-id="activeTab.connectionId" />
+        <div v-else class="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground"><ShieldAlert class="h-4 w-4" />{{ t("etcd.adminPermissionRequired") }}</div>
       </div>
     </template>
 

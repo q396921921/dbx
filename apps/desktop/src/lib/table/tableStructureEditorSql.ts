@@ -77,6 +77,10 @@ export interface EditableStructureTrigger {
 
 export interface BuildTableStructureChangeSqlOptions {
   databaseType?: DatabaseType;
+  /** Driver profile reported by the connection (e.g. `"gbase8s"`). GBase 8s is
+   * Informix-compatible rather than MySQL-compatible like the rest of the
+   * `Gbase` family, so this disambiguates which dialect the backend generates. */
+  driverProfile?: string | null;
   schema?: string;
   tableName: string;
   columns: EditableStructureColumn[];
@@ -118,6 +122,7 @@ export interface SqliteTableStructureChangePreview extends TableStructureChangeS
 
 export interface BuildSingleColumnAlterSqlOptions {
   databaseType?: DatabaseType;
+  driverProfile?: string | null;
   schema?: string;
   tableName: string;
   column: EditableStructureColumn;

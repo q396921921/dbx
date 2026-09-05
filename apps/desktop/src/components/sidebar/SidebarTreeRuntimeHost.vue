@@ -696,14 +696,23 @@ function isGroupLabel(node: TreeNode): boolean {
 async function openDirectNavigationNode(node: TreeNode, requestId: number) {
   if (!node.connectionId) return;
   const isNacosNavigation = node.type === "nacos-namespace" || node.type === "nacos-access-control";
-  await connectionStore.ensureConnected(node.connectionId, isNacosNavigation ? { verifyHealth: false } : undefined);
+  const isEtcdNavigation = node.type === "etcd-root" || node.type === "etcd-dashboard" || node.type === "etcd-access-control";
+  await connectionStore.ensureConnected(node.connectionId, isNacosNavigation || isEtcdNavigation ? { verifyHealth: false } : undefined);
   if (!isCurrentNavigationRequest(requestId)) return;
-  const connectionName = connectionStore.getConfig(node.connectionId)?.name || (isNacosNavigation ? "Nacos" : "Consul");
+  if ((node.type === "etcd-dashboard" || node.type === "etcd-access-control") && !connectionStore.getEtcdAccessCapabilities(node.connectionId).admin) return;
+  const connectionName = connectionStore.getConfig(node.connectionId)?.name || (isNacosNavigation ? "Nacos" : isEtcdNavigation ? "etcd" : "Consul");
   if (node.type === "consul-root") {
     queryStore.createTab(node.connectionId, "", `${connectionName}:keys`, "consul");
     refreshActiveKvBrowserAfterOpen("consul", node.connectionId);
   } else if (node.type === "consul-overview") {
     queryStore.createTab(node.connectionId, "", `${connectionName}:${t("consul.ui.overview")}`, "consul-overview");
+  } else if (node.type === "etcd-root") {
+    queryStore.createTab(node.connectionId, "", `${connectionName}:keys`, "etcd");
+    refreshActiveKvBrowserAfterOpen("etcd", node.connectionId);
+  } else if (node.type === "etcd-dashboard") {
+    queryStore.createTab(node.connectionId, "", `${connectionName}:dashboard`, "etcd-dashboard");
+  } else if (node.type === "etcd-access-control") {
+    queryStore.createTab(node.connectionId, "", `${connectionName}:access-control`, "etcd-access-control");
   } else if (node.type === "nacos-namespace") {
     queryStore.openNacosAdmin(node.connectionId, { namespace: node.nacosNamespace || "", namespaceName: node.nacosNamespaceName || node.label });
   } else if (node.type === "nacos-access-control") {
@@ -918,19 +927,6 @@ async function toggle(requestId = beginNavigationRequest()) {
       await connectionStore.ensureConnected(node.connectionId);
       const topicFromId = node.id.endsWith(":mqtt-topic:__console__") ? undefined : node.id.split(":mqtt-topic:")[1] || node.label;
       queryStore.openMqttAdmin(node.connectionId, topicFromId ? { initialTopic: topicFromId } : undefined);
-    } else if (node.type === "etcd-root" && node.connectionId) {
-      await connectionStore.ensureConnected(node.connectionId);
-      const tabTitle = `${connectionStore.getConfig(node.connectionId)?.name || "etcd"}:keys`;
-      queryStore.createTab(node.connectionId, "", tabTitle, "etcd");
-      refreshActiveKvBrowserAfterOpen("etcd", node.connectionId);
-    } else if (node.type === "etcd-dashboard" && node.connectionId) {
-      await connectionStore.ensureConnected(node.connectionId);
-      const tabTitle = `${connectionStore.getConfig(node.connectionId)?.name || "etcd"}:dashboard`;
-      queryStore.createTab(node.connectionId, "", tabTitle, "etcd-dashboard");
-    } else if (node.type === "etcd-access-control" && node.connectionId) {
-      await connectionStore.ensureConnected(node.connectionId);
-      const tabTitle = `${connectionStore.getConfig(node.connectionId)?.name || "etcd"}:access-control`;
-      queryStore.createTab(node.connectionId, "", tabTitle, "etcd-access-control");
     } else if (node.type === "zookeeper-root" && node.connectionId) {
       await connectionStore.ensureConnected(node.connectionId);
       const tabTitle = `${connectionStore.getConfig(node.connectionId)?.name || "ZooKeeper"}:keys`;
@@ -6239,6 +6235,14 @@ function handleRowClick(node: TreeNode, clickDetail: number) {
 }
 
 function handleRowDoubleClick(node: TreeNode, event: MouseEvent) {
+  // Direct-navigation rows already handle every click in the click sequence.
+  // Starting a new request for their trailing dblclick would invalidate the
+  // still-pending single-click navigation without providing a replacement in
+  // single-click activation mode.
+  if (isDirectNavigationTreeNode(node.type)) {
+    activateRuntimeNode(node);
+    return;
+  }
   beginNavigationRequest();
   activateRuntimeNode(node);
   onDoubleClick(event);

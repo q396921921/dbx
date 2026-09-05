@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildEditorFontThemeRules, buildSqlCompletionThemeRules, editorDiagnosticColors, editorThemeAppearanceFor, resolveCustomThemeBackgrounds, resolveEditorTheme } from "@/lib/editor/editorThemes";
+import { buildEditorFontThemeRules, buildSqlCompletionThemeRules, editorDiagnosticColors, editorThemeAppearanceFor, resolveCustomThemeBackgrounds, resolveEditorTheme, SQL_BUILTIN_HIGHLIGHT_TAG } from "@/lib/editor/editorThemes";
 import { DEFAULT_APP_CUSTOM_UI_COLORS, wcagContrastRatio, type AppThemePalette } from "@/lib/app/appTheme";
 import type { EditorTheme } from "@/stores/settingsStore";
+import { createDbxCodeMirrorSqlDialect } from "@/lib/editor/codemirrorSqlDialect";
+import * as langSql from "@codemirror/lang-sql";
 
 describe("resolveEditorTheme", () => {
   it("maps only the follow-app editor theme to application IDE palettes", () => {
@@ -191,6 +193,34 @@ describe("SQL completion theme", () => {
   });
 });
 
+describe("SQL builtin highlight tag", () => {
+  // #7950: count/date_format/etc. were added to the dialect builtin word lists (#7222) but
+  // never actually rendered in a distinct color, because the theme's highlight rule matched
+  // standard(variableName) while @codemirror/lang-sql tags builtin words as standard(name) —
+  // variableName is a *child* tag of name, so a rule keyed on the child never matches the
+  // token's actual (parent) tag.
+  it("gives builtin SQL functions their own highlight class, distinct from plain identifiers and keywords", async () => {
+    const { highlightTree } = await import("@lezer/highlight");
+    const { HighlightStyle } = await import("@codemirror/language");
+    const { tags } = await import("@lezer/highlight");
+    const style = HighlightStyle.define([
+      { tag: tags.keyword, color: "keyword" },
+      { tag: [tags.name, tags.variableName], color: "variable" },
+      { tag: SQL_BUILTIN_HIGHLIGHT_TAG, color: "builtin" },
+    ]);
+
+    const dialect = createDbxCodeMirrorSqlDialect(langSql, "postgres", "postgres");
+    const doc = "select count(*) from t";
+    const tree = dialect.language.parser.parse(doc);
+    const classesByToken = new Map<string, string>();
+    highlightTree(tree, style, (from, to, cls) => classesByToken.set(doc.slice(from, to), cls));
+
+    expect(classesByToken.get("count")).toBeDefined();
+    expect(classesByToken.get("count")).not.toBe(classesByToken.get("t"));
+    expect(classesByToken.get("count")).not.toBe(classesByToken.get("select"));
+  });
+});
+
 describe("editor gutters", () => {
   it("keeps single line numbers vertically centered in the base rule", () => {
     const rules = buildEditorFontThemeRules();
@@ -199,6 +229,20 @@ describe("editor gutters", () => {
       alignItems: "center",
       display: "flex",
       justifyContent: "flex-end",
+    });
+  });
+});
+
+describe("editor font theme", () => {
+  it("disables ligatures on the editor content so repainted character runs stay stable", () => {
+    const rules = buildEditorFontThemeRules();
+
+    // Ligature fonts merge runs like `--`/`==` into one glyph and can race
+    // CodeMirror's per-keystroke span patching (dbx#7900); dropping either
+    // declaration would reintroduce unpainted characters in the query editor.
+    expect(rules[".cm-content"]).toMatchObject({
+      fontVariantLigatures: "none",
+      fontFeatureSettings: '"liga" 0, "calt" 0',
     });
   });
 });

@@ -15,7 +15,7 @@ use super::util::clean;
 /// a concurrent request in the first place).
 pub(super) fn validate_concurrent_index_scope(options: &TableStructureSqlOptions) -> Vec<String> {
     let mut errors = Vec::new();
-    let capabilities = capabilities_for(options.database_type);
+    let capabilities = capabilities_for(options.database_type, options.driver_profile.as_deref());
     if !capabilities.index_concurrent || capabilities.dialect != StructureDialect::Postgres {
         return errors;
     }
@@ -67,7 +67,7 @@ pub(super) fn validate_dameng_identity(
     columns: &[&EditableStructureColumn],
     warnings: &mut Vec<String>,
 ) {
-    if capabilities_for(options.database_type).dialect != StructureDialect::Dameng {
+    if capabilities_for(options.database_type, options.driver_profile.as_deref()).dialect != StructureDialect::Dameng {
         return;
     }
 
@@ -109,7 +109,7 @@ pub(super) fn validate_columns(columns: &[&EditableStructureColumn], warnings: &
 /// classes are almost always needed. This is a warning, not an error, because
 /// the default class may be deliberate in some cases.
 fn validate_gin_opclass_warnings(options: &TableStructureSqlOptions, warnings: &mut Vec<String>) {
-    let capabilities = capabilities_for(options.database_type);
+    let capabilities = capabilities_for(options.database_type, options.driver_profile.as_deref());
     if capabilities.dialect != StructureDialect::Postgres {
         return;
     }
