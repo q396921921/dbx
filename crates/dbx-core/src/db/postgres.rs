@@ -11422,7 +11422,7 @@ mod tests {
 
         let demo_seq = sequences.iter().find(|s| s.name == "demo_seq").expect("demo_seq present");
         assert_eq!(demo_seq.last_value.as_deref(), Some("5"));
-        assert_eq!(demo_seq.start_value.as_deref(), Some("5"));
+        assert_eq!(demo_seq.start_value, "5");
         assert_eq!(demo_seq.increment, "1");
         assert!(!demo_seq.cycle);
     }
