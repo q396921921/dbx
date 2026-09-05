@@ -1870,10 +1870,8 @@ export async function saveMaxRetries(maxRetries: number): Promise<void> {
   if (!res.ok) throw await backendResponseError(res);
 }
 
-export interface OpenTabsStatePayload {
-  tabs: unknown[];
-  activeTabId: string | null;
-}
+export type { OpenTabsStatePayload, PersistedEditorGroup } from "@/lib/app/openTabsPersistence";
+import type { OpenTabsStatePayload } from "@/lib/app/openTabsPersistence";
 
 export async function loadEditorSettings(): Promise<unknown | null> {
   return loadBrowserAppState("editor_settings");
@@ -1891,6 +1889,10 @@ export async function loadOpenTabsState(): Promise<OpenTabsStatePayload | null> 
     ? {
         tabs: payload.tabs,
         activeTabId: typeof payload.activeTabId === "string" ? payload.activeTabId : null,
+        ...(payload.groups !== undefined ? { groups: payload.groups } : {}),
+        ...(typeof payload.focusedGroupId === "string" ? { focusedGroupId: payload.focusedGroupId } : {}),
+        ...(payload.orientation === "vertical" || payload.orientation === "horizontal" ? { orientation: payload.orientation } : {}),
+        ...(Array.isArray(payload.sizes) ? { sizes: payload.sizes } : {}),
       }
     : null;
 }
@@ -2635,6 +2637,11 @@ export async function exportQueryResultXlsx(
   rows: readonly (readonly XlsxCellValue[])[],
   numericColumnRightAlign?: boolean,
   autoFilter?: boolean,
+  // Accepted for signature parity with the Tauri backend but unused: the web
+  // builder writes every cell as `inlineStr`, so a temporal value keeps the
+  // text the grid already formatted (milliseconds included) and never goes
+  // through a `numFmt` display pattern.
+  _dateTimeFormat?: string,
 ): Promise<void> {
   const { buildXlsxWorkbook } = await import("@/lib/export/xlsxExport");
   const workbook = buildXlsxWorkbook({
@@ -2670,6 +2677,7 @@ export async function exportQueryResultsXlsx(
     autoFilter?: boolean;
   }[],
   autoFilter?: boolean,
+  _dateTimeFormat?: string,
 ): Promise<void> {
   const { buildXlsxWorkbookMulti } = await import("@/lib/export/xlsxExport");
   const workbook = buildXlsxWorkbookMulti(autoFilter === undefined ? worksheets : worksheets.map((worksheet) => ({ ...worksheet, autoFilter })));

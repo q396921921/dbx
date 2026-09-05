@@ -552,6 +552,14 @@ export interface IndexInfo {
   comment?: string | null;
   /** Parallel to `columns`: true at index i means columns[i] is a raw expression, not a plain column name. */
   key_is_expression?: boolean[] | null;
+  /** Parallel to `columns`: operator class name for each key column (PostgreSQL), if non-default. */
+  column_opclasses?: (string | null)[] | null;
+  /**
+   * True when the index is the object behind a PRIMARY KEY / UNIQUE constraint rather than a
+   * standalone index. Carried back to the backend inside the index draft's `original` snapshot:
+   * Dameng only accepts `ALTER TABLE ... ADD/DROP CONSTRAINT` for those indexes.
+   */
+  constraint_backed?: boolean | null;
 }
 
 export interface ReferenceKeyInfo {
@@ -1283,6 +1291,7 @@ export interface QueryTab {
     /** 显式的"新建事件"请求：单调递增，用于让已复用 tab 也能重复进入 CREATE 编辑器 */
     eventCreateRequestId?: number;
     initialObjectFilter?: "tables" | "events";
+    searchQuery?: string;
     viewport?: ObjectBrowserViewport;
   };
   objectSource?: {

@@ -174,7 +174,7 @@ import { currentExecutableStatementRange, type SqlTextRange } from "@/lib/sql/sq
 import { executableStatementRangeCacheForDoc, executableStatementRangeStartingAt, type ExecutableStatementRangeCache } from "@/lib/sql/executableStatementRangeCache";
 import { EMPTY_TABLE_COLUMN_TEMPLATE_DATA_TYPE, parseTableColumnTemplateFields, TABLE_COLUMN_TEMPLATE_DATABASE_TYPES, tableColumnTemplateRowsToSettings } from "@/lib/table/tableColumnTemplates";
 import { DEFAULT_SQL_VARIABLE_SYNTAX_TOGGLES, normalizeSqlVariableSyntaxOverrides, SQL_VARIABLE_SYNTAX_DATABASE_TYPES, SQL_VARIABLE_SYNTAX_KEYS, SQL_VARIABLE_SYNTAX_TOKENS, type SqlVariableSyntaxOverrides, type SqlVariableSyntaxToggles } from "@/lib/sql/sqlVariableSyntax";
-import { buildMcpCherryStudioConfig, buildMcpCodexConfig, buildMcpDeepSeekHarnessConfig, buildMcpJsonConfig, buildMcpOpenCodeConfig, buildMcpPiConfig, buildMcpTraeConfig, buildMcpVsCodeConfig, mcpWebBackendUrl, type McpLaunchConfig } from "@/lib/mcp/mcpConfigTemplates";
+import { buildMcpCherryStudioConfig, buildMcpCodexConfig, buildMcpDeepSeekHarnessConfig, buildMcpJsonConfig, buildMcpOpenCodeConfig, buildMcpPiConfig, buildMcpQoderConfig, buildMcpTraeConfig, buildMcpVsCodeConfig, mcpWebBackendUrl, type McpLaunchConfig } from "@/lib/mcp/mcpConfigTemplates";
 import { beginMcpStatusRequest, mcpUpdateAvailability } from "@/lib/mcp/mcpUpdateStatus";
 import { isMcpPolicyMutationBlocked, MCP_CAPABILITY_ROWS, MCP_EXECUTION_MODE_COLUMNS, mcpExecutionModeFromPolicy, mcpPolicyFieldsForExecutionMode, type McpExecutionMode } from "@/lib/mcp/mcpPolicySelection";
 import { isMacOS, isWindows } from "@/lib/backend/platform";
@@ -279,6 +279,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   "update:open": [value: boolean];
   "check-updates": [];
+  "ai-config-deep-link-handled": [];
 }>();
 
 const isSettingsPage = computed(() => props.variant === "page");
@@ -2117,7 +2118,7 @@ async function exportDebugLogs() {
 }
 
 // ---------- MCP Server ----------
-type McpConfigTab = "claude" | "cursor" | "codebuddy" | "zcode" | "trae" | "vscode" | "windsurf" | "codex" | "deepseek-harness" | "opencode" | "pi" | "cherry-studio";
+type McpConfigTab = "claude" | "cursor" | "codebuddy" | "zcode" | "trae" | "vscode" | "windsurf" | "codex" | "deepseek-harness" | "opencode" | "pi" | "cherry-studio" | "qoder";
 type McpCopyKind = "install" | "uninstall" | "http-endpoint" | "http-token" | "http-config" | `${McpConfigTab}-config`;
 type McpTransportTab = "stdio" | "http";
 
@@ -2568,6 +2569,12 @@ const mcpTraeRecommendedConfig = computed(() => {
   // TRAE currently splits Windows executable paths containing spaces, so bypass Node and launch the native MCP binary directly.
   const nativeBinPath = !isWeb && isWindows() ? mcpStatus.value?.native_bin_path : undefined;
   return buildMcpTraeConfig(mcpLaunchConfig.value, nativeBinPath ?? undefined);
+});
+
+const mcpQoderRecommendedConfig = computed(() => {
+  // Qoder follows TRAE's mcpServers JSON format and has the same Windows path parsing limitation.
+  const nativeBinPath = !isWeb && isWindows() ? mcpStatus.value?.native_bin_path : undefined;
+  return buildMcpQoderConfig(mcpLaunchConfig.value, nativeBinPath ?? undefined);
 });
 
 const mcpVsCodeRecommendedConfig = computed(() => buildMcpVsCodeConfig(mcpLaunchConfig.value));
@@ -3524,6 +3531,7 @@ const aiEditApiStyle = ref<AiApiStyle>("completions");
 const aiEditCustomHeaderRows = ref<AiHeaderRow[]>([]);
 const aiEditProxyEnabled = ref(false);
 const aiEditProxyUrl = ref("");
+const aiEditSkipTlsVerify = ref(false);
 const aiEditEnableThinking = ref(true);
 const aiEditReasoningLevel = ref<AiReasoningLevel>("default");
 const aiEditMaxOutputTokens = ref<number | undefined>(undefined);
@@ -3583,6 +3591,8 @@ const aiIsGrokCli = computed(() => aiEditProvider.value === "grok-cli");
 const aiIsCodeBuddyCli = computed(() => aiEditProvider.value === "codebuddy-cli");
 const aiIsQoderCli = computed(() => aiEditProvider.value === "qoder-cli");
 const aiIsCliProvider = computed(() => CLI_AI_PROVIDERS.has(aiEditProvider.value));
+
+const aiSupportsSkipTlsVerify = computed(() => aiEditProvider.value === "custom" || aiEditProvider.value === "openai-compatible" || aiEditProvider.value === "anthropic-compatible");
 const aiCliProviderLabel = computed(() => selectedAiProviderPreset.value.label);
 const aiCliCommandName = computed(() => {
   if (aiIsClaudeCodeCli.value) return "claude";
@@ -3809,6 +3819,7 @@ function currentAiEditConfig() {
     customHeaders: customHeadersFromRows(),
     proxyEnabled: aiEditProxyEnabled.value,
     proxyUrl: aiEditProxyUrl.value,
+    skipTlsVerify: aiSupportsSkipTlsVerify.value && aiEditSkipTlsVerify.value,
     enableThinking: aiEditEnableThinking.value,
     reasoningLevel: aiEditReasoningLevel.value,
     maxOutputTokens: aiEditMaxOutputTokens.value || undefined,
@@ -3857,6 +3868,7 @@ function aiSelectProvider(presetId: string) {
   aiEditLegacyModels.value = preset.group === "partner" ? [...(preset.models ?? [])] : [];
   aiEditApiStyle.value = preset.apiStyle;
   aiEditCustomHeaderRows.value = [];
+  aiEditSkipTlsVerify.value = false;
   aiEditEnableThinking.value = true;
   aiEditReasoningLevel.value = "default";
   if (CLI_AI_PROVIDERS.has(provider)) void ensureCliMcpStatus();
@@ -3896,6 +3908,7 @@ function aiEnterEditMode(configId?: string) {
       aiEditCustomHeaderRows.value = aiHeaderRowsFromConfig(config.customHeaders);
       aiEditProxyEnabled.value = config.proxyEnabled ?? false;
       aiEditProxyUrl.value = config.proxyUrl ?? "";
+      aiEditSkipTlsVerify.value = config.skipTlsVerify ?? false;
       aiEditEnableThinking.value = config.enableThinking ?? true;
       aiEditReasoningLevel.value = config.reasoningLevel ?? "default";
       aiEditMaxOutputTokens.value = config.maxOutputTokens;
@@ -3930,6 +3943,7 @@ function aiEnterEditMode(configId?: string) {
     aiEditCustomHeaderRows.value = [];
     aiEditProxyEnabled.value = false;
     aiEditProxyUrl.value = "";
+    aiEditSkipTlsVerify.value = false;
     aiEditEnableThinking.value = true;
     aiEditReasoningLevel.value = "default";
     aiEditMaxOutputTokens.value = undefined;
@@ -3959,6 +3973,7 @@ async function applyPendingAiConfigDeepLinkDraft() {
   if (!settingsVisible.value || !requestId || requestId === handledAiConfigRequestId || !draft) return;
 
   handledAiConfigRequestId = requestId;
+  emit("ai-config-deep-link-handled");
   activeSettingsTab.value = "ai";
   aiEnterEditMode();
   aiEditConfigName.value = draft.name;
@@ -5467,6 +5482,7 @@ onUnmounted(() => {
                       <SelectContent>
                         <SelectItem value="none">{{ t("settings.tabGroupNone") }}</SelectItem>
                         <SelectItem value="database-type">{{ t("settings.tabGroupDatabaseType") }}</SelectItem>
+                        <SelectItem value="database">{{ t("settings.tabGroupDatabase") }}</SelectItem>
                         <SelectItem value="connection">{{ t("settings.tabGroupConnection") }}</SelectItem>
                       </SelectContent>
                     </Select>
@@ -6873,6 +6889,15 @@ onUnmounted(() => {
                   {{ t("settings.snippetsAdd") }}
                 </Button>
               </div>
+              <div class="rounded-md border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                <p>{{ t("settings.snippetsPlaceholderHint") }}</p>
+                <pre class="mt-2 overflow-x-auto whitespace-pre-wrap rounded bg-background/70 px-2 py-1.5 font-mono text-[11px] leading-relaxed text-foreground">
+SELECT t.*
+FROM ${1:table} t
+WHERE t.del_flag = 0
+LIMIT 100;</pre
+                >
+              </div>
 
               <div class="overflow-x-auto rounded-md border">
                 <table class="w-full min-w-[720px] text-sm">
@@ -7766,6 +7791,18 @@ onUnmounted(() => {
                   <Label class="text-right text-xs">{{ t("ai.proxyUrl") }}</Label>
                   <Input v-model="aiEditProxyUrl" autocomplete="off" class="col-span-2" inputClass="h-8 text-xs" placeholder="socks5://127.0.0.1:7890" :disabled="!aiEditProxyEnabled" />
                 </div>
+
+                <!-- Skip TLS Verify -->
+                <div v-if="aiSupportsSkipTlsVerify" class="grid grid-cols-3 items-start gap-3">
+                  <Label class="text-right text-xs">{{ t("ai.sslVerification") }}</Label>
+                  <div class="col-span-2">
+                    <label class="flex items-center gap-2 text-xs text-muted-foreground">
+                      <input v-model="aiEditSkipTlsVerify" type="checkbox" class="h-4 w-4 shrink-0 accent-primary" />
+                      {{ t("ai.skipTlsVerify") }}
+                    </label>
+                    <p class="mt-1 text-xs text-muted-foreground">{{ t("ai.skipTlsVerifyHint") }}</p>
+                  </div>
+                </div>
               </div>
             </section>
 
@@ -8310,6 +8347,7 @@ onUnmounted(() => {
                       <TabsTrigger value="opencode" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">OpenCode</TabsTrigger>
                       <TabsTrigger value="pi" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">Pi</TabsTrigger>
                       <TabsTrigger value="cherry-studio" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">Cherry Studio</TabsTrigger>
+                      <TabsTrigger value="qoder" class="settings-mcp-config-tab h-7 flex-none shrink-0 px-2.5">Qoder</TabsTrigger>
                     </TabsList>
 
                     <TabsContent value="claude" class="m-0">
@@ -8481,6 +8519,21 @@ onUnmounted(() => {
                           <pre class="overflow-x-auto whitespace-pre text-xs leading-relaxed"><code>{{ mcpCherryStudioRecommendedConfig }}</code></pre>
                           <Button type="button" variant="outline" size="icon" class="absolute right-2 top-2 h-7 w-7" :title="t('common.copy')" @click="copyMcpText('cherry-studio-config', mcpCherryStudioRecommendedConfig)">
                             <CheckCircle2 v-if="mcpCopied === 'cherry-studio-config'" class="h-3.5 w-3.5 text-green-500" />
+                            <Copy v-else class="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    </TabsContent>
+
+                    <TabsContent value="qoder" class="m-0">
+                      <div class="space-y-2">
+                        <div class="rounded-md border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                          {{ t("settings.mcpQoderConfigPath") }}
+                        </div>
+                        <div class="relative rounded-md border bg-background p-3">
+                          <pre class="overflow-x-auto whitespace-pre text-xs leading-relaxed"><code>{{ mcpQoderRecommendedConfig }}</code></pre>
+                          <Button type="button" variant="outline" size="icon" class="absolute right-2 top-2 h-7 w-7" :title="t('common.copy')" @click="copyMcpText('qoder-config', mcpQoderRecommendedConfig)">
+                            <CheckCircle2 v-if="mcpCopied === 'qoder-config'" class="h-3.5 w-3.5 text-green-500" />
                             <Copy v-else class="h-3.5 w-3.5" />
                           </Button>
                         </div>

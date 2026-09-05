@@ -391,6 +391,10 @@ pub struct AiConfig {
     pub proxy_enabled: bool,
     #[serde(default)]
     pub proxy_url: String,
+    /// Disable TLS certificate verification for the AI endpoint. Intended for
+    /// trusted self-signed / private-CA gateways only.
+    #[serde(default)]
+    pub skip_tls_verify: bool,
     #[serde(default = "default_enable_thinking")]
     pub enable_thinking: bool,
     #[serde(default)]
@@ -775,6 +779,17 @@ fn ensure_anthropic_version_prefix(endpoint: &str) -> String {
     } else {
         format!("{ep}/v1")
     }
+}
+
+/// Temporary Agens compatibility workaround. Agens' OpenAI-compatible gateway
+/// currently uses a strict Responses input deserializer for agent follow-up
+/// requests. Keep these tweaks scoped to that endpoint so other providers
+/// retain the standard request shape.
+///
+/// TODO(Agens): Remove `is_agens_endpoint` and all Agens-specific branches
+/// below if api.agnes-ai.cn is discontinued or no longer needs this workaround.
+fn is_agens_endpoint(config: &AiConfig) -> bool {
+    config.endpoint.to_ascii_lowercase().contains("agnes-ai.cn")
 }
 
 pub fn resolve_endpoint(config: &AiConfig) -> String {
@@ -1455,7 +1470,16 @@ pub fn build_responses_input(system_prompt: &str, messages: &[AiMessage]) -> ser
     json!(input)
 }
 
+#[cfg(test)]
 fn build_responses_input_with_tools(system_prompt: &str, messages: &[AiMessage]) -> serde_json::Value {
+    build_responses_input_with_tools_variant(system_prompt, messages, false)
+}
+
+fn build_responses_input_with_tools_variant(
+    system_prompt: &str,
+    messages: &[AiMessage],
+    include_function_call_metadata: bool,
+) -> serde_json::Value {
     let mut input = Vec::new();
     if !system_prompt.is_empty() {
         input.push(json!({
@@ -1482,12 +1506,20 @@ fn build_responses_input_with_tools(system_prompt: &str, messages: &[AiMessage])
                 }));
             }
             for tool_call in &message.tool_calls {
-                input.push(json!({
+                let mut item = json!({
                     "type": "function_call",
                     "call_id": tool_call.id,
                     "name": tool_call.name,
                     "arguments": tool_call.arguments.to_string(),
-                }));
+                });
+                if include_function_call_metadata {
+                    // OpenAI commonly returns these fields on output items;
+                    // Agens' strict input enum requires them when replaying a
+                    // function call in the next turn.
+                    item["id"] = json!(format!("fc_{}", tool_call.id));
+                    item["status"] = json!("completed");
+                }
+                input.push(item);
             }
             continue;
         }
@@ -1718,6 +1750,9 @@ fn ai_endpoint_is_loopback(config: &AiConfig) -> bool {
 
 pub fn build_ai_http_client(config: &AiConfig, timeout_secs: u64) -> Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+    if config.skip_tls_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
     if config.proxy_enabled && !config.proxy_url.trim().is_empty() && !ai_endpoint_is_loopback(config) {
         let proxy_url = normalize_ai_proxy_url(&config.proxy_url);
         let proxy = reqwest::Proxy::all(&proxy_url).map_err(|e| format!("Invalid AI proxy URL: {e}"))?;
@@ -2179,9 +2214,17 @@ fn build_openai_chat_messages(
     system_prompt: &str,
     messages: &[AiMessage],
 ) -> Vec<serde_json::Value> {
+    let agens_endpoint = is_agens_endpoint(config);
     let mut output = vec![json!({ "role": "system", "content": system_prompt })];
     output.extend(messages.iter().map(|message| {
-        let mut item = json!({ "role": message.role, "content": openai_message_content(message) });
+        let content = if agens_endpoint && message.role == "assistant" && !message.tool_calls.is_empty() {
+            // The canonical Chat Completions representation uses null content
+            // for an assistant turn that only contains tool calls.
+            serde_json::Value::Null
+        } else {
+            openai_message_content(message)
+        };
+        let mut item = json!({ "role": message.role, "content": content });
         if message.role == "tool" {
             if let Some(tool_call_id) = message.tool_call_id.as_ref() {
                 item["tool_call_id"] = json!(tool_call_id);
@@ -4101,7 +4144,11 @@ async fn stream_responses_with_tools(
 
     let mut body = json!({
         "model": request.config.model,
-        "input": build_responses_input_with_tools(&request.system_prompt, &request.messages),
+        "input": build_responses_input_with_tools_variant(
+            &request.system_prompt,
+            &request.messages,
+            is_agens_endpoint(&request.config),
+        ),
         "max_output_tokens": responses_max_output_tokens(request.max_tokens, &request.config),
         "tools": tool_json,
         "tool_choice": "auto",
@@ -4559,25 +4606,25 @@ mod tests {
 
     use super::{
         append_gemini_model_parts, apply_chat_completion_thinking_toggle, build_ai_http_client, build_gemini_contents,
-        build_openai_chat_messages, build_responses_input_with_tools, call_claude, call_openai_compatible,
-        classify_error, claude_headers, claude_system_prompt, complete, decorate_chat_completion_body,
-        drain_next_stream_line, emit_gemini_tool_call_parts, emit_responses_function_call_item, format_transport_error,
-        gemini_text, is_kimi_model, is_retryable_error, list_models_core, maybe_bearer_headers, maybe_tag_retry_after,
-        measure_first_stream_chunk, merge_global_max_retries, minimax_stream_semantics,
-        ollama_selected_model_tool_support, openai_message_content, openai_response_text, openai_stream_reasoning,
-        openai_stream_text, parse_dynamic_effort_capability, parse_gemini_model_list_response,
-        parse_model_list_response, parse_retry_after, parse_retry_after_secs, provider_requires_api_key,
-        resolve_endpoint, resolve_gemini_stream_endpoint, resolve_model_effort_core, resolve_model_list_endpoint,
-        resolve_ollama_show_endpoint, responses_function_tool, responses_max_output_tokens, responses_stream_text,
-        responses_text, responses_token_usage, retain_ollama_completion_models, retry_after_secs,
-        set_chat_completion_token_limit, stream, stream_claude, stream_claude_with_tools, stream_data_payload,
-        stream_error, stream_openai_with_tools, stream_with_tools, test_connection_core, uses_anthropic_messages_api,
-        validate_config, validate_model_list_config, with_retry, with_stream_retry, AiApiStyle, AiAssistantMode,
-        AiAuthMethod, AiCapabilitySource, AiChatSelectionState, AiCompletionRequest, AiConfig, AiEffortCapability,
-        AiEffortOption, AiEffortSelection, AiInlineImage, AiMessage, AiModelInfo, AiProvider, AiReasoningLevel,
-        MiniMaxStreamDelta, MiniMaxStreamState, MiniMaxTextAccumulator, StreamToolEvent, StreamingToolCallAccumulator,
-        ToolCallRef, AUTHORIZATION, CLAUDE_DEFAULT_SYSTEM, CONTENT_TYPE, MINIMAX_REASONING_DETAILS_PAYLOAD_KEY,
-        TEST_PROMPT,
+        build_openai_chat_messages, build_responses_input_with_tools, build_responses_input_with_tools_variant,
+        call_claude, call_openai_compatible, classify_error, claude_headers, claude_system_prompt, complete,
+        decorate_chat_completion_body, drain_next_stream_line, emit_gemini_tool_call_parts,
+        emit_responses_function_call_item, format_transport_error, gemini_text, is_agens_endpoint, is_kimi_model,
+        is_retryable_error, list_models_core, maybe_bearer_headers, maybe_tag_retry_after, measure_first_stream_chunk,
+        merge_global_max_retries, minimax_stream_semantics, ollama_selected_model_tool_support, openai_message_content,
+        openai_response_text, openai_stream_reasoning, openai_stream_text, parse_dynamic_effort_capability,
+        parse_gemini_model_list_response, parse_model_list_response, parse_retry_after, parse_retry_after_secs,
+        provider_requires_api_key, resolve_endpoint, resolve_gemini_stream_endpoint, resolve_model_effort_core,
+        resolve_model_list_endpoint, resolve_ollama_show_endpoint, responses_function_tool,
+        responses_max_output_tokens, responses_stream_text, responses_text, responses_token_usage,
+        retain_ollama_completion_models, retry_after_secs, set_chat_completion_token_limit, stream, stream_claude,
+        stream_claude_with_tools, stream_data_payload, stream_error, stream_openai_with_tools, stream_with_tools,
+        test_connection_core, uses_anthropic_messages_api, validate_config, validate_model_list_config, with_retry,
+        with_stream_retry, AiApiStyle, AiAssistantMode, AiAuthMethod, AiCapabilitySource, AiChatSelectionState,
+        AiCompletionRequest, AiConfig, AiEffortCapability, AiEffortOption, AiEffortSelection, AiInlineImage, AiMessage,
+        AiModelInfo, AiProvider, AiReasoningLevel, MiniMaxStreamDelta, MiniMaxStreamState, MiniMaxTextAccumulator,
+        StreamToolEvent, StreamingToolCallAccumulator, ToolCallRef, AUTHORIZATION, CLAUDE_DEFAULT_SYSTEM, CONTENT_TYPE,
+        MINIMAX_REASONING_DETAILS_PAYLOAD_KEY, TEST_PROMPT,
     };
 
     #[test]
@@ -4869,6 +4916,7 @@ mod tests {
                 custom_headers: Default::default(),
                 proxy_enabled: false,
                 proxy_url: String::new(),
+                skip_tls_verify: false,
                 enable_thinking: true,
                 reasoning_level: AiReasoningLevel::Default,
                 max_output_tokens: None,
@@ -5503,6 +5551,7 @@ mod tests {
 
         assert!(!config.proxy_enabled);
         assert_eq!(config.proxy_url, "");
+        assert!(!config.skip_tls_verify);
         assert!(config.enable_thinking);
         assert_eq!(config.auth_method, AiAuthMethod::ApiKey);
         assert!(config.claude_code_cli_path.is_none());
@@ -5533,6 +5582,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: true,
             proxy_url: "not a proxy url".to_string(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5575,6 +5625,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: true,
             proxy_url: "127.0.0.1:7890".to_string(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5603,6 +5654,23 @@ mod tests {
     }
 
     #[test]
+    fn ai_http_client_accepts_skip_tls_verify() {
+        let mut config: AiConfig = serde_json::from_value(serde_json::json!({
+            "provider": "custom",
+            "apiKey": "key",
+            "endpoint": "https://ai.private-ca.internal/v1",
+            "model": "my-model",
+            "apiStyle": "completions"
+        }))
+        .unwrap();
+        assert!(!config.skip_tls_verify);
+
+        config.skip_tls_verify = true;
+
+        build_ai_http_client(&config, 1).unwrap();
+    }
+
+    #[test]
     fn ai_http_client_bypasses_proxy_for_loopback_endpoint() {
         let config = AiConfig {
             provider: AiProvider::OpenaiCompatible,
@@ -5615,6 +5683,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: true,
             proxy_url: "not a proxy url".to_string(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5655,6 +5724,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5699,6 +5769,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5740,6 +5811,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5800,6 +5872,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5836,6 +5909,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5875,6 +5949,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -5981,6 +6056,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6068,6 +6144,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6151,6 +6228,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6200,6 +6278,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6371,6 +6450,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6416,6 +6496,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6509,6 +6590,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -6656,6 +6738,46 @@ mod tests {
     }
 
     #[test]
+    fn agens_responses_variant_adds_replay_metadata_without_changing_default() {
+        let messages = [AiMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            images: Vec::new(),
+            tool_call_id: None,
+            tool_calls: vec![ToolCallRef {
+                id: "call_1".to_string(),
+                name: "list_tables".to_string(),
+                arguments: serde_json::json!({}),
+                provider_payload: None,
+            }],
+        }];
+
+        let standard = build_responses_input_with_tools("", &messages);
+        assert!(standard[0].get("id").is_none());
+        assert!(standard[0].get("status").is_none());
+
+        let agens = build_responses_input_with_tools_variant("", &messages, true);
+        assert_eq!(agens[0]["id"], "fc_call_1");
+        assert_eq!(agens[0]["status"], "completed");
+    }
+
+    #[test]
+    fn only_agens_endpoints_enable_compatibility_variant() {
+        let agens: AiConfig = serde_json::from_value(serde_json::json!({
+            "provider": "custom",
+            "apiKey": "key",
+            "endpoint": "https://api.agnes-ai.cn/v1",
+            "model": "agnes-2.5-flash",
+            "apiStyle": "responses",
+        }))
+        .unwrap();
+        let other = AiConfig { endpoint: "https://api.openai.com/v1".to_string(), ..agens.clone() };
+
+        assert!(is_agens_endpoint(&agens));
+        assert!(!is_agens_endpoint(&other));
+    }
+
+    #[test]
     fn responses_tool_done_item_can_supply_complete_function_call() {
         let mut accumulator = StreamingToolCallAccumulator::new();
         let mut item_indices = HashMap::new();
@@ -6793,6 +6915,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7025,6 +7148,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7077,6 +7201,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7132,6 +7257,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7181,6 +7307,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7574,6 +7701,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::High,
             max_output_tokens: None,
@@ -7650,6 +7778,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: true,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -7721,6 +7850,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
