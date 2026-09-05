@@ -911,8 +911,15 @@ useScheduledDatabaseBackups({ scheduler: true });
 const appVersion = ref("");
 const isClassicLayout = computed(() => settingsStore.editorSettings.appLayout === "classic");
 const isVerticalTabPlacement = computed(() => settingsStore.editorSettings.tabPlacement === "left" || settingsStore.editorSettings.tabPlacement === "right");
+// AppTabBar only renders the settings/driver special-page strip, and that strip
+// is still a horizontal-only "w-full" bar (see AppTabBar.vue's app-tab-bar class).
+// Placing it inside a flex-row/flex-row-reverse workspace squeezes the sibling
+// content pane (EditorSettingsPage/DriverStorePage) to zero width, so fall back
+// to stacking it above the content instead of adopting the vertical layout here.
+const isSpecialPageStripActive = computed(() => driverStoreActive.value || settingsStore.settingsPageActive);
 const tabWorkspaceLayoutClass = computed(() => {
   if (settingsStore.editorSettings.tabPlacement === "bottom") return "flex-col-reverse";
+  if (isVerticalTabPlacement.value && isSpecialPageStripActive.value) return "flex-col";
   if (settingsStore.editorSettings.tabPlacement === "right") return "flex-row-reverse";
   return isVerticalTabPlacement.value ? "flex-row" : "flex-col";
 });
