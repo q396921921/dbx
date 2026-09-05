@@ -262,6 +262,22 @@ fn with_known_length(source_type: &str, character_maximum_length: Option<i32>) -
     if trimmed.contains('(') {
         return trimmed.to_string();
     }
+    // `character_maximum_length` is populated by several drivers for types
+    // where it does NOT mean "declared VARCHAR length" — MySQL's
+    // information_schema fills it in for TEXT/BLOB family columns (e.g.
+    // TEXT -> 65535), and Oracle's DATA_LENGTH is filled in for every
+    // column, including DATE (byte length, e.g. 7) and NUMBER. Splicing
+    // those in verbatim is wrong twice over: `TEXT(65535)` is silently
+    // *reinterpreted* as MEDIUMTEXT by MySQL (real DB verified), and
+    // `DATE(7)` sent to a MySQL target is a straight syntax error — both
+    // regressions the previous unconditional splice introduced. Restrict to
+    // the varying-length string types this is actually meant for, mirroring
+    // the same whitelist `columnDDLDataType` uses in
+    // agents/drivers/kingbase-go/kingbase_metadata.go.
+    let base_upper = trimmed.to_ascii_uppercase();
+    if !matches!(base_upper.as_str(), "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR") {
+        return trimmed.to_string();
+    }
     match character_maximum_length {
         Some(len) if len > 0 => format!("{trimmed}({len})"),
         _ => trimmed.to_string(),
@@ -13008,6 +13024,65 @@ mod tests {
         assert_eq!(with_known_length("varchar(50)", Some(1000)), "varchar(50)", "explicit params are never overridden");
         assert_eq!(with_known_length("varchar", Some(0)), "varchar", "non-positive length is ignored");
         assert_eq!(with_known_length("varchar", Some(-1)), "varchar", "negative length (unbounded marker) is ignored");
+    }
+
+    #[test]
+    fn with_known_length_ignores_non_varying_length_types() {
+        // `character_maximum_length` is populated by several drivers for
+        // columns where it does not mean "declared VARCHAR length" — MySQL's
+        // information_schema fills it in for TEXT/BLOB (byte capacity, e.g.
+        // TEXT -> 65535), and Oracle's DATA_LENGTH is filled in for every
+        // column, DATE and NUMBER included (issue #8011 review round 2).
+        // Splicing those in would silently reinterpret the type (MySQL turns
+        // `TEXT(65535)` into MEDIUMTEXT) or produce invalid DDL (`DATE(7)`).
+        assert_eq!(with_known_length("text", Some(65535)), "text");
+        assert_eq!(with_known_length("date", Some(7)), "date");
+        assert_eq!(with_known_length("number", Some(22)), "number");
+        assert_eq!(with_known_length("char", Some(1)), "char");
+        assert_eq!(with_known_length("character", Some(1)), "character");
+    }
+
+    #[test]
+    fn mysql_same_dialect_add_column_keeps_text_type_when_length_metadata_is_present() {
+        // MySQL's own information_schema reports a real character_maximum_length
+        // for TEXT (65535) even though COLUMN_TYPE never carries it in
+        // parentheses. Splicing it in verbatim would have this same-dialect
+        // ADD COLUMN silently reinterpreted as MEDIUMTEXT by the server (real
+        // MySQL 8.4.6 verified) instead of staying TEXT.
+        let mut source_col = column("notes", "text", None);
+        source_col.character_maximum_length = Some(65535);
+        let diff = ColumnDiff {
+            diff_type: "added".to_string(),
+            name: "notes".to_string(),
+            source: Some(source_col),
+            target: None,
+            changes: vec![],
+            add_position: None,
+        };
+        let sql = gen_sql(wrap_table_diff("t", vec![diff]), DatabaseType::Mysql, Some(DialectKind::Mysql));
+        assert!(sql.contains("text"), "expected the column to stay TEXT: {sql}");
+        assert!(!sql.contains("(65535)"), "must not splice TEXT's byte capacity in as a length: {sql}");
+    }
+
+    #[test]
+    fn oracle_to_mysql_date_column_does_not_gain_an_invalid_length() {
+        // Oracle's DATA_LENGTH is populated for every column, DATE included
+        // (byte length, e.g. 7) — not just character types. Splicing it in
+        // would send `DATE(7)` to MySQL, which is a syntax error there (real
+        // MySQL 8.4.6 verified); the pre-fix behavior of passing `DATE`
+        // through untouched was already correct.
+        let mut source_col = column("created_on", "DATE", None);
+        source_col.character_maximum_length = Some(7);
+        let diff = ColumnDiff {
+            diff_type: "added".to_string(),
+            name: "created_on".to_string(),
+            source: Some(source_col),
+            target: None,
+            changes: vec![],
+            add_position: None,
+        };
+        let sql = gen_sql(wrap_table_diff("t", vec![diff]), DatabaseType::Mysql, Some(DialectKind::Oracle));
+        assert!(!sql.contains("DATE(7)"), "must not turn a valid DATE column into invalid DDL: {sql}");
     }
 
     #[test]
