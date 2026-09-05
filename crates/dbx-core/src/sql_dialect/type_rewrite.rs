@@ -350,21 +350,23 @@ pub fn rewrite_column_type(source_type: &str, target: DatabaseType, source_diale
                 return strip_display_width_if_needed(&converted, &profile);
             }
             // No matrix rule for this cross-dialect pair, and it's a
-            // length-bearing string type reported without a length — e.g.
+            // *varying*-length string type reported without a length — e.g.
             // Postgres/Kingbase's unbounded `character varying` via
             // format_type(). A bare passthrough would be invalid DDL for a
-            // target that requires an explicit VARCHAR/CHAR length (MySQL
-            // and its family: VARCHAR/CHARACTER VARYING with no length is a
-            // syntax error there). Default to 255, matching the same
-            // fallback apply_template() already uses when a mapped type's
-            // length is missing.
+            // target that requires an explicit VARCHAR length (MySQL and its
+            // family: VARCHAR/CHARACTER VARYING with no length is a syntax
+            // error there). Default to 255, matching the same fallback
+            // apply_template() already uses when a mapped type's length is
+            // missing. CHAR/CHARACTER are deliberately excluded: MySQL
+            // accepts a bare CHAR as CHAR(1), so defaulting it to 255 would
+            // silently change valid output into a different, wrong length.
+            // VARCHAR2/NVARCHAR2 are also excluded: they aren't valid MySQL
+            // type names at all, with or without a length, so defaulting
+            // their length fixes nothing.
             if params.is_none()
                 && profile.supports_display_width
                 && profile.max_varchar_len.is_some()
-                && matches!(
-                    base.as_str(),
-                    "VARCHAR" | "CHARACTER VARYING" | "CHAR" | "CHARACTER" | "NVARCHAR" | "NVARCHAR2" | "VARCHAR2"
-                )
+                && matches!(base.as_str(), "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR")
             {
                 return format!("{}(255)", source_type.trim());
             }
@@ -539,7 +541,16 @@ mod tests {
         let source = Some(DialectKind::Postgres);
         assert_eq!(rewrite_column_type("character varying", DatabaseType::Mysql, source), "character varying(255)");
         assert_eq!(rewrite_column_type("varchar", DatabaseType::Mysql, source), "varchar(255)");
-        assert_eq!(rewrite_column_type("character", DatabaseType::Mysql, source), "character(255)");
+    }
+
+    #[test]
+    fn mysql_leaves_bare_char_untouched() {
+        // Unlike VARCHAR, a bare CHAR/CHARACTER is already valid MySQL
+        // syntax (implicitly CHAR(1)); defaulting it to 255 would silently
+        // change correct output into a different, wrong length.
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(rewrite_column_type("character", DatabaseType::Mysql, source), "character");
+        assert_eq!(rewrite_column_type("char", DatabaseType::Mysql, source), "char");
     }
 
     #[test]
