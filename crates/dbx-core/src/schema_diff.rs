@@ -219,17 +219,35 @@ pub struct FieldMapping {
     pub custom_params: Option<String>,
 }
 
+/// Canonicalizes a handful of ANSI-SQL type synonyms that name the same
+/// underlying type across dialects (e.g. Postgres/Kingbase report the base
+/// type as `character varying` via `format_type()`, while the field-mapping
+/// UI's type catalog lists the shorter `varchar`). Without this, a user
+/// mapping configured against one spelling silently never matches a column
+/// reported under the other.
+fn canonical_type_name(base: &str) -> std::borrow::Cow<'_, str> {
+    match base.trim().to_ascii_uppercase().as_str() {
+        "CHARACTER VARYING" => std::borrow::Cow::Borrowed("VARCHAR"),
+        "CHARACTER" => std::borrow::Cow::Borrowed("CHAR"),
+        _ => std::borrow::Cow::Owned(base.trim().to_ascii_uppercase()),
+    }
+}
+
+fn type_names_match(a: &str, b: &str) -> bool {
+    canonical_type_name(a) == canonical_type_name(b)
+}
+
 impl FieldMapping {
     pub fn apply<'a>(mappings: &'a [FieldMapping], source_type: &str) -> Option<&'a str> {
         let base_type = source_type.split('(').next().unwrap_or(source_type).trim();
-        mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type)).map(|m| m.target_type.as_str())
+        mappings.iter().find(|m| type_names_match(&m.source_type, base_type)).map(|m| m.target_type.as_str())
     }
 
     pub fn apply_with_params(mappings: &[FieldMapping], source_type: &str, target_kind: DialectKind) -> Option<String> {
         let trimmed = source_type.trim();
         let base_type = trimmed.split('(').next().unwrap_or(trimmed);
         let source_params = &trimmed[base_type.len()..];
-        let matched = mappings.iter().find(|m| m.source_type.eq_ignore_ascii_case(base_type))?;
+        let matched = mappings.iter().find(|m| type_names_match(&m.source_type, base_type))?;
 
         let result = match matched.param_strategy {
             ParamStrategy::Strip => Some(matched.target_type.clone()),
@@ -12895,6 +12913,30 @@ mod tests {
             Some("character(100)".to_string()),
             "Custom params already wrapped in parentheses should be kept as-is"
         );
+    }
+
+    #[test]
+    fn field_mapping_matches_character_varying_alias() {
+        // Kingbase/Postgres report a varchar column's base type as
+        // `character varying` (via format_type()), not `varchar`. A user who
+        // configures a mapping using the shorter, more common `varchar`
+        // spelling must still match it (issue #8011) — previously an exact
+        // string comparison meant such a mapping silently never fired
+        // against the real `character varying` column, dropping the user's
+        // chosen param strategy.
+        let mappings = vec![FieldMapping {
+            source_type: "varchar".into(),
+            target_type: "varchar".into(),
+            param_strategy: ParamStrategy::Custom,
+            custom_params: Some("255".to_string()),
+        }];
+        let result = FieldMapping::apply_with_params(&mappings, "character varying", DialectKind::Mysql);
+        assert_eq!(result, Some("varchar(255)".to_string()));
+
+        let result = FieldMapping::apply_with_params(&mappings, "character varying(50)", DialectKind::Mysql);
+        assert_eq!(result, Some("varchar(255)".to_string()));
+
+        assert_eq!(FieldMapping::apply(&mappings, "character varying"), Some("varchar"));
     }
 
     #[test]

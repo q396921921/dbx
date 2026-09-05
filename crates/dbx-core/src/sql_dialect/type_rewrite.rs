@@ -343,10 +343,31 @@ pub fn rewrite_column_type(source_type: &str, target: DatabaseType, source_diale
     // Dialect-kind matrix
     if let Some(src) = source_dialect {
         let target_kind = DialectKind::from_database_type(target);
-        let matrix = TypeMappingMatrix::for_dialects(src, target_kind);
-        let (converted, _) = matrix.convert_type(source_type);
-        if converted != source_type {
-            return strip_display_width_if_needed(&converted, &profile);
+        if src != target_kind {
+            let matrix = TypeMappingMatrix::for_dialects(src, target_kind);
+            let (converted, _) = matrix.convert_type(source_type);
+            if converted != source_type {
+                return strip_display_width_if_needed(&converted, &profile);
+            }
+            // No matrix rule for this cross-dialect pair, and it's a
+            // length-bearing string type reported without a length — e.g.
+            // Postgres/Kingbase's unbounded `character varying` via
+            // format_type(). A bare passthrough would be invalid DDL for a
+            // target that requires an explicit VARCHAR/CHAR length (MySQL
+            // and its family: VARCHAR/CHARACTER VARYING with no length is a
+            // syntax error there). Default to 255, matching the same
+            // fallback apply_template() already uses when a mapped type's
+            // length is missing.
+            if params.is_none()
+                && profile.supports_display_width
+                && profile.max_varchar_len.is_some()
+                && matches!(
+                    base.as_str(),
+                    "VARCHAR" | "CHARACTER VARYING" | "CHAR" | "CHARACTER" | "NVARCHAR" | "NVARCHAR2" | "VARCHAR2"
+                )
+            {
+                return format!("{}(255)", source_type.trim());
+            }
         }
     }
 
@@ -507,6 +528,36 @@ mod tests {
     fn mysql_keeps_display_width() {
         let t = rewrite_column_type("int(11)", DatabaseType::Mysql, None);
         assert_eq!(t, "int(11)");
+    }
+
+    #[test]
+    fn mysql_defaults_missing_length_on_cross_dialect_varchar() {
+        // Postgres/Kingbase report an unbounded varchar column as a bare
+        // `character varying` (no length) via format_type(). MySQL's
+        // VARCHAR/CHARACTER VARYING requires an explicit length, so passing
+        // that through verbatim is a syntax error (issue #8011).
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(rewrite_column_type("character varying", DatabaseType::Mysql, source), "character varying(255)");
+        assert_eq!(rewrite_column_type("varchar", DatabaseType::Mysql, source), "varchar(255)");
+        assert_eq!(rewrite_column_type("character", DatabaseType::Mysql, source), "character(255)");
+    }
+
+    #[test]
+    fn mysql_keeps_explicit_length_on_cross_dialect_varchar() {
+        let source = Some(DialectKind::Postgres);
+        assert_eq!(
+            rewrite_column_type("character varying(120)", DatabaseType::Mysql, source),
+            "character varying(120)"
+        );
+    }
+
+    #[test]
+    fn mysql_same_dialect_varchar_is_untouched_regardless_of_length() {
+        // Same-dialect metadata (or unknown source dialect) must never be
+        // rewritten — only a genuine cross-dialect gap should trigger the
+        // missing-length default.
+        assert_eq!(rewrite_column_type("varchar(255)", DatabaseType::Mysql, Some(DialectKind::Mysql)), "varchar(255)");
+        assert_eq!(rewrite_column_type("varchar(255)", DatabaseType::Mysql, None), "varchar(255)");
     }
 
     #[test]
