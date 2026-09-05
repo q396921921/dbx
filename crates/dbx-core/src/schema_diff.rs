@@ -263,19 +263,29 @@ fn with_known_length(source_type: &str, character_maximum_length: Option<i32>) -
         return trimmed.to_string();
     }
     // `character_maximum_length` is populated by several drivers for types
-    // where it does NOT mean "declared VARCHAR length" — MySQL's
+    // where it does NOT mean "declared length in this position" — MySQL's
     // information_schema fills it in for TEXT/BLOB family columns (e.g.
     // TEXT -> 65535), and Oracle's DATA_LENGTH is filled in for every
     // column, including DATE (byte length, e.g. 7) and NUMBER. Splicing
     // those in verbatim is wrong twice over: `TEXT(65535)` is silently
     // *reinterpreted* as MEDIUMTEXT by MySQL (real DB verified), and
-    // `DATE(7)` sent to a MySQL target is a straight syntax error — both
-    // regressions the previous unconditional splice introduced. Restrict to
-    // the varying-length string types this is actually meant for, mirroring
-    // the same whitelist `columnDDLDataType` uses in
-    // agents/drivers/kingbase-go/kingbase_metadata.go.
+    // `DATE(7)` sent to a MySQL target is a straight syntax error.
+    //
+    // CHAR/CHARACTER/NCHAR belong on this whitelist alongside the VARCHAR
+    // family, unlike in type_rewrite's *default*-to-255 list: that list
+    // invents a length out of thin air (where CHAR must be excluded — a
+    // bare CHAR is already valid MySQL, meaning CHAR(1)), whereas this
+    // function only *restores* a length the driver already reported
+    // separately. MySQL's own information_schema does this for CHAR too
+    // (DATA_TYPE="char", CHARACTER_MAXIMUM_LENGTH=10 for a CHAR(10) column,
+    // real DB verified) — excluding CHAR here would silently truncate a
+    // real CHAR(10) column down to CHAR(1). Mirrors the same whitelist
+    // `columnDDLDataType` uses in agents/drivers/kingbase-go/kingbase_metadata.go.
     let base_upper = trimmed.to_ascii_uppercase();
-    if !matches!(base_upper.as_str(), "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR") {
+    if !matches!(
+        base_upper.as_str(),
+        "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR" | "CHAR" | "CHARACTER" | "NCHAR" | "VARCHAR2" | "NVARCHAR2"
+    ) {
         return trimmed.to_string();
     }
     match character_maximum_length {
@@ -13027,9 +13037,9 @@ mod tests {
     }
 
     #[test]
-    fn with_known_length_ignores_non_varying_length_types() {
+    fn with_known_length_ignores_non_length_bearing_types() {
         // `character_maximum_length` is populated by several drivers for
-        // columns where it does not mean "declared VARCHAR length" — MySQL's
+        // columns where it does not mean "declared length here" — MySQL's
         // information_schema fills it in for TEXT/BLOB (byte capacity, e.g.
         // TEXT -> 65535), and Oracle's DATA_LENGTH is filled in for every
         // column, DATE and NUMBER included (issue #8011 review round 2).
@@ -13038,8 +13048,22 @@ mod tests {
         assert_eq!(with_known_length("text", Some(65535)), "text");
         assert_eq!(with_known_length("date", Some(7)), "date");
         assert_eq!(with_known_length("number", Some(22)), "number");
-        assert_eq!(with_known_length("char", Some(1)), "char");
-        assert_eq!(with_known_length("character", Some(1)), "character");
+    }
+
+    #[test]
+    fn with_known_length_restores_a_real_char_length() {
+        // Unlike type_rewrite's *default*-to-255 list (which must exclude
+        // CHAR — a bare CHAR is already valid, meaning CHAR(1)), this
+        // function *restores* a length the driver already knows: MySQL's
+        // information_schema reports a CHAR(10) column as DATA_TYPE="char"
+        // with CHARACTER_MAXIMUM_LENGTH=10 (real DB verified). Using
+        // length 1 here would make this assertion pass even with CHAR
+        // wrongly excluded — CHAR(1) and bare CHAR mean the same thing — so
+        // this deliberately uses a length where truncation would show up
+        // (issue #8011 review round 3).
+        assert_eq!(with_known_length("char", Some(10)), "char(10)");
+        assert_eq!(with_known_length("character", Some(10)), "character(10)");
+        assert_eq!(with_known_length("char", None), "char", "no known length means no invented one either");
     }
 
     #[test]
