@@ -3592,6 +3592,7 @@ onUnmounted(() => {
                     "
                     @object-schema-change="(tabId: string, schema: string | undefined) => queryStore.updateSchema(tabId, schema)"
                     @object-browser-viewport-change="(tabId: string, viewport: any) => queryStore.updateObjectBrowserViewport(tabId, viewport)"
+                    @object-browser-search-change="(tabId: string, query: string) => queryStore.updateObjectBrowserSearch(tabId, query)"
                     @structure-editor-saved="
                       (tabId: string, commentChanged: boolean) => {
                         const tab = queryStore.tabs.find((candidate) => candidate.id === tabId);
