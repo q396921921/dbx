@@ -364,7 +364,7 @@ pub fn rewrite_column_type(source_type: &str, target: DatabaseType, source_diale
             // type names at all, with or without a length, so defaulting
             // their length fixes nothing.
             if params.is_none()
-                && profile.supports_display_width
+                && profile.requires_explicit_varchar_length
                 && profile.max_varchar_len.is_some()
                 && matches!(base.as_str(), "VARCHAR" | "CHARACTER VARYING" | "NVARCHAR")
             {
