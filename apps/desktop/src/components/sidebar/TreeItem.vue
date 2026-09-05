@@ -1746,7 +1746,14 @@ function onKeydown(event: KeyboardEvent) {
 .tree-item-connection-tint::before {
   content: "";
   position: absolute;
-  inset: 0 -9999px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* Bleed the tint to the sidebar scroller's own width (see container-type on
+     .connection-tree-scroller) rather than an unbounded -9999px, which used
+     to inflate the scroller's scrollWidth once sidebarAllowHorizontalScroll
+     turned on overflow-x (issue #8061). */
+  width: 100cqw;
   z-index: 0;
   background-color: var(--tree-connection-row-bg);
   border-radius: inherit;
@@ -1801,7 +1808,12 @@ function onKeydown(event: KeyboardEvent) {
 .tree-table-search-control::before {
   content: "";
   position: absolute;
-  inset: 0 -9999px;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  /* See .tree-item-connection-tint::before above: bound to the scroller's
+     own width instead of -9999px so this can't inflate scrollWidth. */
+  width: 100cqw;
   z-index: 0;
   background-color: var(--tree-table-search-row-bg);
   pointer-events: none;
