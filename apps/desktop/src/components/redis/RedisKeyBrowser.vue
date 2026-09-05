@@ -222,8 +222,14 @@ let fetchAllPublicationRollback: null | {
   lastTotalKeys: number;
   bufferedKeyRaws: Set<string>;
 } = null;
-// 展开分组时已定向补扫过的子树（见 fillGroupSubtree）；在 loadKeys 重置。
+// 展开分组时已定向补扫且已扫尽的子树（见 fillGroupSubtree）；在 loadKeys 重置。
 const subtreeFilledGroupIds = new Set<string>();
+// 补扫停在预算上限、尚未扫尽的分组：保存继续扫描所需的 SCAN 游标，供
+// “加载更多”/滚动按展开顺序续扫（见 resumePendingGroupSubtrees）；同样在
+// loadKeys 重置。
+const subtreePendingGroupCursors = new Map<string, number>();
+// 正在补扫中的分组：避免展开与续扫并发重复扫同一子树。
+const subtreeFillingGroupIds = new Set<string>();
 // 刷新前已展开分组的快照（#7173）：刷新首屏重建树时，本轮尚未扫到的分组会被
 // rebuildTree 从 expandedGroupIds 中裁掉；后续 load-more 页面让这些分组重新
 // 出现时，用该快照恢复展开状态。SCAN 游标归零（本轮已扫尽，仍未出现的分组
@@ -937,6 +943,8 @@ async function loadKeys() {
   ttlObservedAtByRaw.clear();
   positiveTtlKeyRaws.clear();
   subtreeFilledGroupIds.clear();
+  subtreePendingGroupCursors.clear();
+  subtreeFillingGroupIds.clear();
   replaceFlatKeyRecords([]);
   treeKeys.value = [];
   treeIndex = null;
@@ -1000,6 +1008,9 @@ async function loadMore(iterationBudget?: ScanIterationBudget) {
   // automatic-fill check as everywhere else instead of relying on the user to
   // notice and click again.
   if (applied && isCurrentScanOperation(requestId, operationId)) {
+    // 主页面推进的同时，按展开顺序续扫一个停在预算上限的子树（#7918）：
+    // 巨大分组靠“加载更多”/滚动逐段补全，而不是一次展开就扫尽。
+    resumePendingGroupSubtrees(requestId);
     void maybeAutoLoadMoreRedisKeys();
   }
 }
@@ -1301,9 +1312,16 @@ function stopFetchAll() {
 
 // 展开分组时的定向补扫：树模式的自动加载只覆盖有界 SCAN 预算内的键，
 // 未扫到的分组在树里完全不存在（搜索能找到、树里看不到）。展开分组时用
-// `前缀:*` 模式以独立游标扫描该子树直至耗尽，让"展开即可见"成立；补扫
-// 结果经 loadedKeyRaws 去重后并入主树，主 SCAN 游标不受影响。
+// `前缀:*` 模式以独立游标扫描该子树，让"展开即可见"成立；补扫结果经
+// loadedKeyRaws 去重后并入主树，主 SCAN 游标不受影响。
 const SUBTREE_SCAN_ITERATIONS_PER_CALL = 8;
+// 单次补扫（一次展开或一次续扫）的预算上限：新并入的键数与 SCAN 迭代数
+// 各设一个，取先到者。巨大前缀（如上万键，#7918）一次展开就扫尽子树会把
+// 集群打满，改为每次交互只推进有界预算；未扫尽的分组把游标留在
+// subtreePendingGroupCursors，由“加载更多”/滚动按展开顺序续扫，折叠后
+// 重新展开也会从断点继续。小于预算的分组仍一次扫完，行为不变。
+const SUBTREE_FILL_MAX_NEW_KEYS = 500;
+const SUBTREE_FILL_MAX_SCAN_ITERATIONS = 50;
 
 function shouldFillGroupSubtree(): boolean {
   return hasMore.value && !useFlatKeySearchRows.value && !isSearchMode.value && !isFetchingAll.value;
@@ -1321,22 +1339,57 @@ function mergeScannedKeys(newKeys: RedisKeyInfo[]) {
 
 async function fillGroupSubtree(group: RedisKeyTreeGroupNode, requestId = searchRequestId) {
   if (subtreeFilledGroupIds.has(group.id)) return;
-  subtreeFilledGroupIds.add(group.id);
+  if (subtreeFillingGroupIds.has(group.id)) return;
+  subtreeFillingGroupIds.add(group.id);
+  // 续扫从上次停在的游标继续，避免把已扫过的前缀重扫一遍
+  const resumeCursor = subtreePendingGroupCursors.get(group.id) ?? 0;
+  subtreePendingGroupCursors.delete(group.id);
   const pattern = redisGroupSubtreePattern(group.pathSegments, redisKeySeparator.value);
-  let cursor = 0;
+  let cursor = resumeCursor;
+  let mergedNewKeys = 0;
+  let iterationsLeft = SUBTREE_FILL_MAX_SCAN_ITERATIONS;
   try {
-    while (requestId === searchRequestId && !isFetchingAll.value) {
+    while (requestId === searchRequestId && !isFetchingAll.value && iterationsLeft > 0) {
       if (flatKeys.value.length >= redisInfiniteScrollMaxKeys.value) break;
-      const result = await api.redisScanKeysBatch(props.connectionId, props.db, cursor, pattern, redisScanPageSize.value, SUBTREE_SCAN_ITERATIONS_PER_CALL, true);
+      if (mergedNewKeys >= SUBTREE_FILL_MAX_NEW_KEYS) break;
+      const iterations = Math.min(SUBTREE_SCAN_ITERATIONS_PER_CALL, iterationsLeft);
+      const result = await api.redisScanKeysBatch(props.connectionId, props.db, cursor, pattern, redisScanPageSize.value, iterations, true);
+      iterationsLeft -= iterations;
       if (requestId !== searchRequestId) return;
-      mergeScannedKeys(collectUniqueRedisKeys(result.keys, loadedKeyRaws));
+      const newKeys = collectUniqueRedisKeys(result.keys, loadedKeyRaws);
+      mergeScannedKeys(newKeys);
+      mergedNewKeys += newKeys.length;
       cursor = result.cursor;
-      if (cursor === 0) break;
+      if (cursor === 0) {
+        subtreeFilledGroupIds.add(group.id);
+        return;
+      }
     }
+    // 子树未扫尽（预算用尽或触到全局键数上限）：保留游标等待续扫
+    subtreePendingGroupCursors.set(group.id, cursor);
   } catch (error) {
-    // 失败不阻塞浏览；下次展开该分组会重试
-    subtreeFilledGroupIds.delete(group.id);
+    // 失败不阻塞浏览；已并入的进度保留在游标里，下次展开/续扫从断点重试
+    subtreePendingGroupCursors.set(group.id, cursor);
     toast(errorMessage(error), 5000);
+  } finally {
+    subtreeFillingGroupIds.delete(group.id);
+  }
+}
+
+// “加载更多”/滚动推进主扫描的同时，按展开顺序续扫一个未扫尽的子树：巨大
+// 分组不会一次扫尽，用户每点一次“加载更多”（或滚动触底触发 loadMore）就
+// 前进一段有界预算，循环往复直至扫尽。
+function resumePendingGroupSubtrees(requestId = searchRequestId) {
+  if (!shouldFillGroupSubtree()) return;
+  for (const groupId of subtreePendingGroupCursors.keys()) {
+    const group = treeIndex?.groupById.get(groupId);
+    if (!group) {
+      // 分组已不存在（键被删除或树被重建），游标作废
+      subtreePendingGroupCursors.delete(groupId);
+      continue;
+    }
+    void fillGroupSubtree(group, requestId);
+    return;
   }
 }
 
