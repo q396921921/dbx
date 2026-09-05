@@ -1342,7 +1342,14 @@ defineExpose({
         </Pane>
         <Pane v-if="(resultsPaneOpen || resultOnly) && !editorOnly" class="min-h-0" :size="resultOnly ? 100 : resultsPaneSize" :min-size="resultOnly ? 100 : 20">
           <div class="h-full flex flex-col">
-            <div v-if="hasQueryOutput" class="flex h-10 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
+            <!--
+              The shared result surface (resultOnly) is always mounted regardless of
+              whether the active tab has run a query yet, and this toolbar is the only
+              place that renders the "hide results" chevron (see handleHideResultsPane).
+              Gating it on hasQueryOutput alone left users with an always-open, empty
+              shared pane and no way to collapse it (#8233).
+            -->
+            <div v-if="hasQueryOutput || resultOnly" class="flex h-10 shrink-0 items-center gap-1 border-b bg-muted/20 px-2">
               <Button
                 v-if="activeTab.mode === 'query' && activeTab.result"
                 variant="ghost"
