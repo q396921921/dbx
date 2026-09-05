@@ -3509,6 +3509,7 @@ onUnmounted(() => {
                   class="flex-1 min-h-0"
                   @update:open="(open: boolean) => (open ? activateSettingsPage() : closeSettingsPage())"
                   @check-updates="checkUpdates()"
+                  @ai-config-deep-link-handled="settingsAiConfigDraft = null"
                 />
                 <div v-if="queryStore.tabs.length > 0" v-show="!driverStoreActive && !settingsStore.settingsPageActive" class="flex flex-col flex-1 min-h-0">
                   <SqlEditorWorkspace
