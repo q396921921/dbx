@@ -163,102 +163,99 @@ async fn start_transport_layers_internal(
             LayerEndpoint { host: next_host, port: next_port }
         };
 
-        let local_port = match (layer, &ssh_chains[index]) {
-            (TransportLayerConfig::Ssh(_), Some(chain)) if chain.len() > 1 => {
-                if is_last && final_ssh_socks5 {
-                    return Err(
-                        "Dynamic SOCKS5 routing does not support a multi-hop SSH (ProxyJump) profile yet."
-                            .to_string(),
-                    );
+        let local_port =
+            match (layer, &ssh_chains[index]) {
+                (TransportLayerConfig::Ssh(_), Some(chain)) if chain.len() > 1 => {
+                    if is_last && final_ssh_socks5 {
+                        return Err("Dynamic SOCKS5 routing does not support a multi-hop SSH (ProxyJump) profile yet."
+                            .to_string());
+                    }
+                    if is_last && final_ssh_local_port.is_some() {
+                        return Err("A fixed local port is not supported for a multi-hop SSH (ProxyJump) profile yet."
+                            .to_string());
+                    }
+                    ssh_tunnels
+                        .start_chain(&layer_id, chain, &target_endpoint.host, target_endpoint.port)
+                        .await
+                        .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
                 }
-                if is_last && final_ssh_local_port.is_some() {
-                    return Err(
-                        "A fixed local port is not supported for a multi-hop SSH (ProxyJump) profile yet."
-                            .to_string(),
-                    );
+                (TransportLayerConfig::Ssh(_), Some(chain)) if is_last && final_ssh_socks5 => {
+                    let resolved = &chain[0];
+                    ssh_tunnels
+                        .start_socks5_proxy(
+                            &layer_id,
+                            &connect_endpoint.host,
+                            connect_endpoint.port,
+                            &resolved.host,
+                            resolved.port,
+                            &resolved.user,
+                            &resolved.password,
+                            &resolved.key_path,
+                            &resolved.key_passphrase,
+                            resolved.use_ssh_agent,
+                            &resolved.ssh_agent_sock_path,
+                            &resolved.auth_method,
+                            effective_ssh_connect_timeout_secs(resolved.connect_timeout_secs),
+                            resolved.allow_exec_channel_proxy,
+                        )
+                        .await
+                        .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
                 }
-                ssh_tunnels
-                    .start_chain(&layer_id, chain, &target_endpoint.host, target_endpoint.port)
-                    .await
-                    .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
-            }
-            (TransportLayerConfig::Ssh(_), Some(chain)) if is_last && final_ssh_socks5 => {
-                let resolved = &chain[0];
-                ssh_tunnels
-                    .start_socks5_proxy(
+                (TransportLayerConfig::Ssh(_), Some(chain)) => {
+                    let resolved = &chain[0];
+                    ssh_tunnels
+                        .start_tunnel_on_local_port(
+                            &layer_id,
+                            &connect_endpoint.host,
+                            connect_endpoint.port,
+                            &resolved.host,
+                            resolved.port,
+                            &resolved.user,
+                            &resolved.password,
+                            &resolved.key_path,
+                            &resolved.key_passphrase,
+                            resolved.use_ssh_agent,
+                            &resolved.ssh_agent_sock_path,
+                            &resolved.auth_method,
+                            effective_ssh_connect_timeout_secs(resolved.connect_timeout_secs),
+                            &target_endpoint.host,
+                            target_endpoint.port,
+                            is_last && resolved.expose_lan,
+                            resolved.allow_exec_channel_proxy,
+                            if is_last { final_ssh_local_port } else { None },
+                        )
+                        .await
+                        .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
+                }
+                (TransportLayerConfig::Proxy(proxy), None) => proxy_tunnels
+                    .start_tunnel(
                         &layer_id,
+                        proxy.proxy_type,
                         &connect_endpoint.host,
                         connect_endpoint.port,
-                        &resolved.host,
-                        resolved.port,
-                        &resolved.user,
-                        &resolved.password,
-                        &resolved.key_path,
-                        &resolved.key_passphrase,
-                        resolved.use_ssh_agent,
-                        &resolved.ssh_agent_sock_path,
-                        &resolved.auth_method,
-                        effective_ssh_connect_timeout_secs(resolved.connect_timeout_secs),
-                        resolved.allow_exec_channel_proxy,
-                    )
-                    .await
-                    .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
-            }
-            (TransportLayerConfig::Ssh(_), Some(chain)) => {
-                let resolved = &chain[0];
-                ssh_tunnels
-                    .start_tunnel_on_local_port(
-                        &layer_id,
-                        &connect_endpoint.host,
-                        connect_endpoint.port,
-                        &resolved.host,
-                        resolved.port,
-                        &resolved.user,
-                        &resolved.password,
-                        &resolved.key_path,
-                        &resolved.key_passphrase,
-                        resolved.use_ssh_agent,
-                        &resolved.ssh_agent_sock_path,
-                        &resolved.auth_method,
-                        effective_ssh_connect_timeout_secs(resolved.connect_timeout_secs),
+                        &proxy.username,
+                        &proxy.password,
                         &target_endpoint.host,
                         target_endpoint.port,
-                        is_last && resolved.expose_lan,
-                        resolved.allow_exec_channel_proxy,
-                        if is_last { final_ssh_local_port } else { None },
                     )
                     .await
-                    .map_err(|err| format!("SSH layer {} failed: {err}", index + 1))?
-            }
-            (TransportLayerConfig::Proxy(proxy), None) => proxy_tunnels
-                .start_tunnel(
-                    &layer_id,
-                    proxy.proxy_type,
-                    &connect_endpoint.host,
-                    connect_endpoint.port,
-                    &proxy.username,
-                    &proxy.password,
-                    &target_endpoint.host,
-                    target_endpoint.port,
-                )
-                .await
-                .map_err(|err| format!("Proxy layer {} failed: {err}", index + 1))?,
-            (TransportLayerConfig::HttpTunnel(http), None) => http_tunnels
-                .start_tunnel(
-                    &layer_id,
-                    &http.url,
-                    &http.token,
-                    http.connect_timeout_secs,
-                    &target_endpoint.host,
-                    target_endpoint.port,
-                )
-                .await
-                .map_err(|err| format!("HTTP tunnel layer {} failed: {err}", index + 1))?,
-            (TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_), Some(_))
-            | (TransportLayerConfig::Ssh(_), None) => {
-                unreachable!("resolve_ssh_layer_chains produces Some(_) iff the layer is TransportLayerConfig::Ssh")
-            }
-        };
+                    .map_err(|err| format!("Proxy layer {} failed: {err}", index + 1))?,
+                (TransportLayerConfig::HttpTunnel(http), None) => http_tunnels
+                    .start_tunnel(
+                        &layer_id,
+                        &http.url,
+                        &http.token,
+                        http.connect_timeout_secs,
+                        &target_endpoint.host,
+                        target_endpoint.port,
+                    )
+                    .await
+                    .map_err(|err| format!("HTTP tunnel layer {} failed: {err}", index + 1))?,
+                (TransportLayerConfig::Proxy(_) | TransportLayerConfig::HttpTunnel(_), Some(_))
+                | (TransportLayerConfig::Ssh(_), None) => {
+                    unreachable!("resolve_ssh_layer_chains produces Some(_) iff the layer is TransportLayerConfig::Ssh")
+                }
+            };
 
         final_local_port = local_port;
         next_connect_endpoint = Some(LayerEndpoint::localhost(local_port));

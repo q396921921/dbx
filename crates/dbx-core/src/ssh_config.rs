@@ -443,8 +443,7 @@ mod tests {
         // Mirrors issue #7706: `target` (ProxyJump gateway) resolves to
         // [gateway, target], gateway dialed first.
         let ssh = config("target");
-        let entries =
-            [jump_entry("gateway", "1.1.1.1", None), jump_entry("target", "1.1.1.2", Some("gateway"))];
+        let entries = [jump_entry("gateway", "1.1.1.1", None), jump_entry("target", "1.1.1.2", Some("gateway"))];
 
         let chain = resolve_chain_from_entries(&ssh, &entries);
 
@@ -459,8 +458,7 @@ mod tests {
         let mut ssh = config("target");
         ssh.auth_method = "key".to_string();
         ssh.key_path = "/home/user/.ssh/id_rsa".to_string();
-        let entries =
-            [jump_entry("gateway", "1.1.1.1", None), jump_entry("target", "1.1.1.2", Some("gateway"))];
+        let entries = [jump_entry("gateway", "1.1.1.1", None), jump_entry("target", "1.1.1.2", Some("gateway"))];
 
         let chain = resolve_chain_from_entries(&ssh, &entries);
 
@@ -479,9 +477,10 @@ mod tests {
 
         let chain = resolve_chain_from_entries(&ssh, &entries);
 
-        assert_eq!(chain.iter().map(|hop| hop.host.as_str()).collect::<Vec<_>>(), vec![
-            "1.1.1.1", "1.1.1.2", "1.1.1.3"
-        ]);
+        assert_eq!(
+            chain.iter().map(|hop| hop.host.as_str()).collect::<Vec<_>>(),
+            vec!["1.1.1.1", "1.1.1.2", "1.1.1.3"]
+        );
     }
 
     #[test]
