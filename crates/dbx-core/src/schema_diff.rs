@@ -2643,26 +2643,39 @@ pub fn diff_columns(source: &[ColumnInfo], target: &[ColumnInfo]) -> Vec<ColumnD
     diff_columns_with_options(source, target, false, false, false, 0.5)
 }
 
-fn normalize_mysql_integer_type_for_comparison(data_type: &str) -> String {
+/// Signature of a MySQL column type used to decide whether an integer display
+/// width difference is real or just MySQL echoing back its own default width.
+struct MysqlIntegerTypeSignature {
+    /// Whole normalized type string, used to compare non-integer types as-is.
+    normalized: String,
+    /// `"{base} {suffix}"` (e.g. `"int unsigned"`) when `normalized` is a
+    /// recognized integer type, regardless of whether a width is present.
+    integer_key: Option<String>,
+    /// The explicit display width, when present on a recognized integer type.
+    width: Option<u32>,
+}
+
+fn parse_mysql_integer_type(data_type: &str) -> MysqlIntegerTypeSignature {
     let normalized = data_type.split_whitespace().collect::<Vec<_>>().join(" ").to_ascii_lowercase();
+    let is_integer_base =
+        |base: &str| matches!(base, "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year");
     let Some(open) = normalized.find('(') else {
-        return normalized;
+        let base = normalized.split(' ').next().unwrap_or(&normalized);
+        let integer_key = is_integer_base(base).then(|| normalized.clone());
+        return MysqlIntegerTypeSignature { normalized, integer_key, width: None };
     };
     let Some(close) = normalized[open + 1..].find(')').map(|index| open + 1 + index) else {
-        return normalized;
+        return MysqlIntegerTypeSignature { normalized, integer_key: None, width: None };
     };
     let base = normalized[..open].trim();
-    let width = normalized[open + 1..close].trim();
-    let integer_type = matches!(base, "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "year");
-    if !integer_type || width.is_empty() || !width.bytes().all(|byte| byte.is_ascii_digit()) {
-        return normalized;
+    let width_str = normalized[open + 1..close].trim();
+    if !is_integer_base(base) || width_str.is_empty() || !width_str.bytes().all(|byte| byte.is_ascii_digit()) {
+        return MysqlIntegerTypeSignature { normalized, integer_key: None, width: None };
     }
     let suffix = normalized[close + 1..].trim();
-    if suffix.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base} {suffix}")
-    }
+    let integer_key = Some(if suffix.is_empty() { base.to_string() } else { format!("{base} {suffix}") });
+    let width = width_str.parse().ok();
+    MysqlIntegerTypeSignature { normalized, integer_key, width }
 }
 
 fn column_types_equal_for_dialects(
@@ -2674,10 +2687,25 @@ fn column_types_equal_for_dialects(
     if source_type.eq_ignore_ascii_case(target_type) {
         return true;
     }
-    source_dialect == Some(DialectKind::Mysql)
-        && target_dialect == Some(DialectKind::Mysql)
-        && normalize_mysql_integer_type_for_comparison(source_type)
-            == normalize_mysql_integer_type_for_comparison(target_type)
+    if source_dialect != Some(DialectKind::Mysql) || target_dialect != Some(DialectKind::Mysql) {
+        return false;
+    }
+    let source = parse_mysql_integer_type(source_type);
+    let target = parse_mysql_integer_type(target_type);
+    match (source.integer_key, target.integer_key) {
+        // Same integer family (e.g. both "int unsigned"): a display width present on only one
+        // side is MySQL filling in its own default and not a real difference, but two explicit,
+        // differing widths (e.g. int(11) vs int(15)) are a genuine schema difference.
+        (Some(source_key), Some(target_key)) => {
+            source_key == target_key
+                && match (source.width, target.width) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => true,
+                }
+        }
+        (None, None) => source.normalized == target.normalized,
+        _ => false,
+    }
 }
 
 fn column_type_similarity_score(source_type: &str, target_type: &str) -> f64 {
@@ -10066,6 +10094,49 @@ mod tests {
 
         assert_eq!(diffs.iter().map(|diff| diff.name.as_str()).collect::<Vec<_>>(), vec!["amount", "name"]);
         assert!(diffs.iter().all(|diff| diff.changes.iter().any(|change| change.starts_with("type:"))));
+    }
+
+    // Regression for #7615: comparing two MySQL databases where an integer column has
+    // different EXPLICIT display widths on both sides (e.g. `int(11)` vs `int(15)`) must
+    // still be reported as a type difference. `data_type` values below are exactly what
+    // `information_schema.COLUMNS.COLUMN_TYPE` returns on a real MySQL 5.7 server for the
+    // DDL in the issue (MySQL 8.0.19+ drops these widths entirely, so this only reproduces
+    // on pre-8.0.19 servers, which is why the issue's own repro needed a specific version).
+    #[test]
+    fn mysql_same_dialect_detects_explicit_integer_display_width_mismatch() {
+        let source = vec![column("id", "int(11)", Some("ID")), column("name", "varchar(20)", Some("名称"))];
+        let target = vec![column("id", "int(15)", Some("ID")), column("name", "varchar(20)", Some("名称"))];
+
+        let diffs = diff_columns_with_dialect_options(
+            &source,
+            &target,
+            false,
+            false,
+            false,
+            0.5,
+            Some(DialectKind::Mysql),
+            Some(DialectKind::Mysql),
+        );
+
+        assert_eq!(diffs.iter().map(|diff| diff.name.as_str()).collect::<Vec<_>>(), vec!["id"]);
+        assert!(diffs[0].changes.iter().any(|change| change.starts_with("type:")), "{:?}", diffs[0].changes);
+
+        // Same scenario the maintainer's own regression test already covers must keep passing:
+        // tinyint(1) (a common MySQL boolean idiom) vs tinyint(4) (the server's own default
+        // display width for tinyint) is likewise a real, explicit difference, not noise.
+        let source = vec![column("flag", "tinyint(1)", None)];
+        let target = vec![column("flag", "tinyint(4)", None)];
+        let diffs = diff_columns_with_dialect_options(
+            &source,
+            &target,
+            false,
+            false,
+            false,
+            0.5,
+            Some(DialectKind::Mysql),
+            Some(DialectKind::Mysql),
+        );
+        assert_eq!(diffs.iter().map(|diff| diff.name.as_str()).collect::<Vec<_>>(), vec!["flag"]);
     }
 
     #[test]
