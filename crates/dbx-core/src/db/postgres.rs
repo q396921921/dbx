@@ -8054,7 +8054,13 @@ pub async fn list_sequences(pool: &Pool, schema: &str, with_last_values: bool) -
     let (rows, is_legacy) = match postgres_query_cached(&client, postgres_sequences_sql(), &[&schema]).await {
         Ok(rows) => (rows, false),
         Err(primary_error) => match postgres_query_cached(&client, postgres_sequences_compat_sql(), &[&schema]).await {
-            Ok(rows) => (rows, true),
+            Ok(rows) => {
+                log::debug!(
+                    "[postgres][sequences:compat-used] pg_sequence catalog unavailable ({}); serving sequence metadata from information_schema.sequences",
+                    pg_error_to_string(primary_error)
+                );
+                (rows, true)
+            }
             Err(_) => return Err(primary_error.to_string()),
         },
     };
@@ -11416,6 +11422,7 @@ mod tests {
 
         let demo_seq = sequences.iter().find(|s| s.name == "demo_seq").expect("demo_seq present");
         assert_eq!(demo_seq.last_value.as_deref(), Some("5"));
+        assert_eq!(demo_seq.start_value.as_deref(), Some("5"));
         assert_eq!(demo_seq.increment, "1");
         assert!(!demo_seq.cycle);
     }
