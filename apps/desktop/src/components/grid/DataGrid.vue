@@ -5997,6 +5997,11 @@ function captureViewportAnchorForRefresh(): { row?: PersistedDataGridSelection; 
   if (showTranspose.value || displayItems.value.length === 0) return null;
   const scroller = useCanvasGridRows.value ? canvasScrollerElement() : gridScrollerElement();
   if (!scroller) return null;
+  // Already viewing the top of the grid: don't anchor to the row currently
+  // there. Anchoring would re-pin that row to the same on-screen offset even
+  // after a refresh prepends new rows above it (e.g. newly inserted rows
+  // under a DESC sort), pushing the new rows above the visible area (#8339).
+  if (scroller.scrollTop <= 0) return null;
   const rowHeight = useCanvasGridRows.value ? CANVAS_DATA_GRID_ROW_HEIGHT : DOM_DATA_GRID_ROW_HEIGHT;
   const fallbackDisplayIndex = Math.max(0, Math.min(displayItems.value.length - 1, Math.floor(scroller.scrollTop / rowHeight)));
   const item = displayItems.value[fallbackDisplayIndex];
