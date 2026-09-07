@@ -1109,6 +1109,9 @@ fn validate_data_grid_save(options: &DataGridSaveStatementOptions) -> Option<Str
     if let Some(error) = validate_oracle_keyless_lob_predicate(options) {
         return Some(error);
     }
+    if let Some(error) = validate_keyless_row_uniqueness(options) {
+        return Some(error);
+    }
 
     let save_columns = effective_columns(options);
     let not_null_columns: Vec<String> = options
@@ -1222,6 +1225,58 @@ fn validate_oracle_keyless_lob_predicate(options: &DataGridSaveStatementOptions)
     // LOB equality is unsupported in Oracle-compatible SQL. Refuse unsafe
     // keyless writes instead of dropping LOB predicates and risking extra rows.
     Some("Cannot safely update or delete this Oracle-compatible row because the table has LOB columns but no primary key or ROWID identifier.".to_string())
+}
+
+/// Without a primary key, `build_row_where` identifies a row by matching every
+/// column's current value. If another loaded row has identical values in all of
+/// those columns, that WHERE clause is ambiguous and silently applies the edit
+/// to every matching physical row instead of just the one the user touched.
+/// Refuse the save instead of corrupting the other row(s).
+fn validate_keyless_row_uniqueness(options: &DataGridSaveStatementOptions) -> Option<String> {
+    if !options.table_meta.primary_keys.is_empty() || !uses_keyless_row_predicate(options.database_type) {
+        return None;
+    }
+    if options.dirty_rows.is_empty() && options.deleted_rows.is_empty() {
+        return None;
+    }
+
+    let save_columns = effective_columns(options);
+    let compared_indexes: Vec<usize> = save_columns
+        .iter()
+        .enumerate()
+        .filter(|(_, column)| {
+            !column.as_deref().is_some_and(|column| is_oracle_row_id(options.database_type, Some(column)))
+        })
+        .map(|(index, _)| index)
+        .collect();
+    if compared_indexes.is_empty() {
+        return None;
+    }
+
+    let rows_match = |left: &[Value], right: &[Value]| {
+        compared_indexes
+            .iter()
+            .all(|&index| left.get(index).unwrap_or(&Value::Null) == right.get(index).unwrap_or(&Value::Null))
+    };
+
+    let touched_row_indexes =
+        options.dirty_rows.iter().map(|(row_index, _)| *row_index).chain(options.deleted_rows.iter().copied());
+    for row_index in touched_row_indexes {
+        let Some(row) = options.rows.get(row_index) else {
+            continue;
+        };
+        let has_duplicate = options
+            .rows
+            .iter()
+            .enumerate()
+            .any(|(other_index, other_row)| other_index != row_index && rows_match(row, other_row));
+        if has_duplicate {
+            return Some(
+                "Cannot safely update or delete this row: the table has no primary key and another row currently has identical values in every column, so the change can't be targeted at just one row. Add a primary key or unique index, or make the rows distinguishable, before editing.".to_string(),
+            );
+        }
+    }
+    None
 }
 
 fn validate_clickhouse_mutable_updates(options: &DataGridSaveStatementOptions) -> Option<String> {
@@ -6735,6 +6790,70 @@ mod tests {
         );
         assert!(result.statements.is_empty());
         assert!(result.rollback_statements.is_empty());
+    }
+
+    #[test]
+    fn rejects_sqlite_keyless_update_when_another_row_is_identical() {
+        // Regression test for https://github.com/t8y2/dbx/issues/8321: a SQLite
+        // table with no primary key, two rows inserted with only `stat_date`
+        // filled in. Editing row 0's `period` must not silently also rewrite
+        // row 1, which currently has identical values in every other column.
+        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
+            database_type: Some(DatabaseType::Sqlite),
+            identifier_quote: None,
+            table_meta: DataGridTableMeta {
+                catalog: None,
+                database: None,
+                schema: None,
+                table_name: "daily_stats".to_string(),
+                primary_keys: vec![],
+                columns: Some(vec![column("stat_date", "TEXT", false, None), column("period", "TEXT", true, None)]),
+            },
+            columns: vec!["stat_date".to_string(), "period".to_string()],
+            source_columns: None,
+            rows: vec![vec![json!("2026-09-07"), Value::Null], vec![json!("2026-09-07"), Value::Null]],
+            dirty_rows: vec![(0, vec![(1, json!("早上"))])],
+            deleted_rows: vec![],
+            new_rows: vec![],
+        });
+
+        assert_eq!(
+            result.validation_error.as_deref(),
+            Some(
+                "Cannot safely update or delete this row: the table has no primary key and another row currently has identical values in every column, so the change can't be targeted at just one row. Add a primary key or unique index, or make the rows distinguishable, before editing."
+            )
+        );
+        assert!(result.statements.is_empty());
+    }
+
+    #[test]
+    fn allows_sqlite_keyless_update_when_rows_are_distinguishable() {
+        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
+            database_type: Some(DatabaseType::Sqlite),
+            identifier_quote: None,
+            table_meta: DataGridTableMeta {
+                catalog: None,
+                database: None,
+                schema: None,
+                table_name: "daily_stats".to_string(),
+                primary_keys: vec![],
+                columns: Some(vec![column("stat_date", "TEXT", false, None), column("period", "TEXT", true, None)]),
+            },
+            columns: vec!["stat_date".to_string(), "period".to_string()],
+            source_columns: None,
+            rows: vec![vec![json!("2026-09-07"), json!("早上")], vec![json!("2026-09-07"), json!("中午")]],
+            dirty_rows: vec![(0, vec![(1, json!("上午"))])],
+            deleted_rows: vec![],
+            new_rows: vec![],
+        });
+
+        assert_eq!(result.validation_error, None);
+        assert_eq!(
+            result.statements,
+            vec![
+                r#"UPDATE "daily_stats" SET "period" = '上午' WHERE "stat_date" = '2026-09-07' AND "period" = '早上';"#
+            ]
+        );
     }
 
     #[test]
