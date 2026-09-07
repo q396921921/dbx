@@ -33,6 +33,11 @@ pub(crate) const DBX_NEO4J_ELEMENT_ID_COLUMN: &str = "__DBX_ELEMENT_ID";
 pub(crate) const DBX_TDENGINE_TBNAME_COLUMN: &str = "tbname";
 const DATA_GRID_COLUMN_DISTINCT_VALUES_DEFAULT_LIMIT: usize = 1000;
 const DATA_GRID_COLUMN_DISTINCT_VALUES_MAX_LIMIT: usize = 1000;
+/// Alias for the single cell a keyless guard query returns.
+const KEYLESS_GUARD_COUNT_ALIAS: &str = "dbx_keyless_row_matches";
+const KEYLESS_AMBIGUOUS_ROW_ERROR: &str = "Cannot safely update or delete this row: the table has no primary key, so the row is identified by matching every column value, and more than one row in the table matches that condition. Add a primary key or unique index, or make the rows distinguishable, before editing.";
+const KEYLESS_UNIDENTIFIABLE_ROW_ERROR: &str = "Cannot safely update or delete this row: the table has no primary key and none of the result columns map to a table column, so there is no condition that can target a single row. Add a primary key, or edit the table directly, before saving.";
+
 const MYSQL_DATA_GRID_BATCH_MAX_ROWS: usize = 500;
 const MYSQL_DATA_GRID_BATCH_TARGET_SQL_BYTES: usize = 256 * 1024;
 const ORACLE_SQL_LITERAL_MAX_BYTES: usize = 4000;
@@ -305,6 +310,23 @@ pub struct HiveTablePropertiesSqlOptions {
     pub property_name: String,
 }
 
+/// A server-side check that must pass before a keyless save may run.
+///
+/// Without a primary key a row is identified by matching every column value,
+/// so the same predicate can match physical rows the loaded page never saw.
+/// `sql` counts, on the server, how many rows one of the predicates this save
+/// actually sends to the database matches. The save must be refused with
+/// `message` unless the returned count is at most `max_matched_rows`, and also
+/// refused when the count cannot be obtained at all — an unverified keyless
+/// write is exactly the ambiguous write this guard exists to prevent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DataGridSaveGuard {
+    pub sql: String,
+    pub max_matched_rows: u32,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataGridSavePreparation {
@@ -314,6 +336,9 @@ pub struct DataGridSavePreparation {
     pub rollback_statements: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_schema: Option<String>,
+    /// Checks the caller must run — and pass — before executing `statements`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyless_guards: Vec<DataGridSaveGuard>,
 }
 
 pub fn prepare_data_grid_save(options: DataGridSaveStatementOptions) -> DataGridSavePreparation {
@@ -335,14 +360,18 @@ pub fn prepare_data_grid_save_for_driver_profile(
                 driver_profile,
                 &options.table_meta,
             ),
+            keyless_guards: Vec::new(),
         };
     }
 
+    let mut keyless_guards = Vec::new();
+    let statements = build_data_grid_save_statements(&options, driver_profile, &mut keyless_guards);
     DataGridSavePreparation {
         validation_error: None,
-        statements: build_data_grid_save_statements(&options, driver_profile),
+        statements,
         rollback_statements: build_data_grid_rollback_statements(&options, driver_profile),
         execution_schema: data_grid_save_execution_schema(options.database_type, driver_profile, &options.table_meta),
+        keyless_guards,
     }
 }
 
@@ -1109,7 +1138,7 @@ fn validate_data_grid_save(options: &DataGridSaveStatementOptions) -> Option<Str
     if let Some(error) = validate_oracle_keyless_lob_predicate(options) {
         return Some(error);
     }
-    if let Some(error) = validate_keyless_row_uniqueness(options) {
+    if let Some(error) = validate_keyless_row_predicate(options) {
         return Some(error);
     }
 
@@ -1227,53 +1256,37 @@ fn validate_oracle_keyless_lob_predicate(options: &DataGridSaveStatementOptions)
     Some("Cannot safely update or delete this Oracle-compatible row because the table has LOB columns but no primary key or ROWID identifier.".to_string())
 }
 
-/// Without a primary key, `build_row_where` identifies a row by matching every
-/// column's current value. If another loaded row has identical values in all of
-/// those columns, that WHERE clause is ambiguous and silently applies the edit
-/// to every matching physical row instead of just the one the user touched.
-/// Refuse the save instead of corrupting the other row(s).
-fn validate_keyless_row_uniqueness(options: &DataGridSaveStatementOptions) -> Option<String> {
+/// Without a primary key a row can only be addressed by matching every column
+/// value, and `build_row_where` drops columns that have no source column of
+/// their own. When nothing is left, the generated predicate is empty and the
+/// UPDATE/DELETE would target the whole table, so there is neither a reliable
+/// row identifier nor anything a server-side check could count: refuse.
+///
+/// Whether a non-empty predicate really addresses a single physical row cannot
+/// be decided here — the loaded page is not the table. That decision belongs to
+/// the `keyless_guards` this preparation emits, which count the matches of the
+/// exact predicate on the server.
+fn validate_keyless_row_predicate(options: &DataGridSaveStatementOptions) -> Option<String> {
     if !options.table_meta.primary_keys.is_empty() || !uses_keyless_row_predicate(options.database_type) {
         return None;
     }
-    if options.dirty_rows.is_empty() && options.deleted_rows.is_empty() {
-        return None;
-    }
-
     let save_columns = effective_columns(options);
-    let compared_indexes: Vec<usize> = save_columns
-        .iter()
-        .enumerate()
-        .filter(|(_, column)| {
-            !column.as_deref().is_some_and(|column| is_oracle_row_id(options.database_type, Some(column)))
-        })
-        .map(|(index, _)| index)
-        .collect();
-    if compared_indexes.is_empty() {
-        return None;
-    }
-
-    let rows_match = |left: &[Value], right: &[Value]| {
-        compared_indexes
-            .iter()
-            .all(|&index| left.get(index).unwrap_or(&Value::Null) == right.get(index).unwrap_or(&Value::Null))
-    };
-
+    let column_info = options.table_meta.columns.as_deref().unwrap_or(&[]);
     let touched_row_indexes =
         options.dirty_rows.iter().map(|(row_index, _)| *row_index).chain(options.deleted_rows.iter().copied());
     for row_index in touched_row_indexes {
         let Some(row) = options.rows.get(row_index) else {
             continue;
         };
-        let has_duplicate = options
-            .rows
-            .iter()
-            .enumerate()
-            .any(|(other_index, other_row)| other_index != row_index && rows_match(row, other_row));
-        if has_duplicate {
-            return Some(
-                "Cannot safely update or delete this row: the table has no primary key and another row currently has identical values in every column, so the change can't be targeted at just one row. Add a primary key or unique index, or make the rows distinguishable, before editing.".to_string(),
-            );
+        let predicate = build_row_where(
+            options.database_type,
+            &save_columns,
+            row,
+            column_info,
+            options.identifier_quote.as_deref(),
+        );
+        if predicate.trim().is_empty() {
+            return Some(KEYLESS_UNIDENTIFIABLE_ROW_ERROR.to_string());
         }
     }
     None
@@ -1357,9 +1370,15 @@ fn validate_inserted_primary_keys(options: &DataGridSaveStatementOptions) -> Opt
     None
 }
 
+/// Builds the statements the save executes, and alongside them the server-side
+/// guards for every keyless predicate those statements actually send. The guard
+/// is derived from the same `where_clause` value the UPDATE/DELETE carries, so
+/// the safety decision can never be made against a different set of columns or
+/// values than the mutation itself uses.
 fn build_data_grid_save_statements(
     options: &DataGridSaveStatementOptions,
     driver_profile: Option<&str>,
+    keyless_guards: &mut Vec<DataGridSaveGuard>,
 ) -> Vec<String> {
     if options.database_type == Some(DatabaseType::Neo4j) {
         return build_neo4j_data_grid_save_statements(options);
@@ -1389,6 +1408,17 @@ fn build_data_grid_save_statements(
     let mut statements = Vec::new();
     let primary_key_set: Vec<String> =
         options.table_meta.primary_keys.iter().map(|primary_key| normalize_column_name(primary_key)).collect();
+
+    let guards_keyless_predicates = primary_key_set.is_empty() && uses_keyless_row_predicate(options.database_type);
+    let mut guarded_predicates: Vec<String> = Vec::new();
+    let guard_predicate = |predicate: &str, guarded: &mut Vec<String>| {
+        if !guards_keyless_predicates || predicate.trim().is_empty() {
+            return;
+        }
+        if !guarded.iter().any(|existing| existing == predicate) {
+            guarded.push(predicate.to_string());
+        }
+    };
 
     let batch_mysql_writes = supports_mysql_data_grid_batch(options);
     let mut update_sets: Option<String> = None;
@@ -1433,6 +1463,7 @@ fn build_data_grid_save_statements(
             column_info,
             options.identifier_quote.as_deref(),
         );
+        guard_predicate(&where_clause, &mut guarded_predicates);
         if batch_mysql_writes {
             if update_sets.as_deref().is_some_and(|current| current != sets) {
                 let current_sets = update_sets.take().unwrap_or_default();
@@ -1468,6 +1499,7 @@ fn build_data_grid_save_statements(
             column_info,
             options.identifier_quote.as_deref(),
         );
+        guard_predicate(&where_clause, &mut guarded_predicates);
         if batch_mysql_writes {
             delete_predicates.push(where_clause);
         } else {
@@ -1536,6 +1568,12 @@ fn build_data_grid_save_statements(
             format!("INSERT INTO {table} ({columns}) VALUES ({values})"),
         ));
     }
+
+    keyless_guards.extend(guarded_predicates.into_iter().map(|predicate| DataGridSaveGuard {
+        sql: format!("SELECT COUNT(*) AS {KEYLESS_GUARD_COUNT_ALIAS} FROM {table} WHERE ({predicate})"),
+        max_matched_rows: 1,
+        message: KEYLESS_AMBIGUOUS_ROW_ERROR.to_string(),
+    }));
 
     statements
 }
@@ -6792,13 +6830,8 @@ mod tests {
         assert!(result.rollback_statements.is_empty());
     }
 
-    #[test]
-    fn rejects_sqlite_keyless_update_when_another_row_is_identical() {
-        // Regression test for https://github.com/t8y2/dbx/issues/8321: a SQLite
-        // table with no primary key, two rows inserted with only `stat_date`
-        // filled in. Editing row 0's `period` must not silently also rewrite
-        // row 1, which currently has identical values in every other column.
-        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
+    fn daily_stats_keyless_options() -> DataGridSaveStatementOptions {
+        DataGridSaveStatementOptions {
             database_type: Some(DatabaseType::Sqlite),
             identifier_quote: None,
             table_meta: DataGridTableMeta {
@@ -6815,37 +6848,75 @@ mod tests {
             dirty_rows: vec![(0, vec![(1, json!("早上"))])],
             deleted_rows: vec![],
             new_rows: vec![],
-        });
+        }
+    }
 
-        assert_eq!(
-            result.validation_error.as_deref(),
-            Some(
-                "Cannot safely update or delete this row: the table has no primary key and another row currently has identical values in every column, so the change can't be targeted at just one row. Add a primary key or unique index, or make the rows distinguishable, before editing."
-            )
-        );
-        assert!(result.statements.is_empty());
+    /// The predicate a guard counts must be byte-identical to the one its
+    /// statement carries, otherwise the safety decision is made against a
+    /// different set of columns or values than the mutation actually uses.
+    fn assert_guards_cover_statement_predicates(preparation: &DataGridSavePreparation) {
+        for guard in &preparation.keyless_guards {
+            assert_eq!(guard.max_matched_rows, 1);
+            let predicate = guard
+                .sql
+                .split_once(" WHERE (")
+                .and_then(|(_, rest)| rest.strip_suffix(')'))
+                .unwrap_or_else(|| panic!("guard is not a counting query: {}", guard.sql));
+            assert!(
+                preparation.statements.iter().any(|statement| statement.contains(&format!("WHERE {predicate}"))),
+                "no statement carries the guarded predicate {predicate:?}"
+            );
+        }
+        for statement in &preparation.statements {
+            let Some((_, predicate)) = statement.split_once(" WHERE ") else {
+                continue;
+            };
+            let predicate = predicate.trim_end_matches(';');
+            assert!(
+                preparation.keyless_guards.iter().any(|guard| guard.sql.ends_with(&format!("WHERE ({predicate})"))),
+                "predicate {predicate:?} is sent to the database without a guard"
+            );
+        }
     }
 
     #[test]
-    fn allows_sqlite_keyless_update_when_rows_are_distinguishable() {
-        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
-            database_type: Some(DatabaseType::Sqlite),
-            identifier_quote: None,
-            table_meta: DataGridTableMeta {
-                catalog: None,
-                database: None,
-                schema: None,
-                table_name: "daily_stats".to_string(),
-                primary_keys: vec![],
-                columns: Some(vec![column("stat_date", "TEXT", false, None), column("period", "TEXT", true, None)]),
-            },
-            columns: vec!["stat_date".to_string(), "period".to_string()],
-            source_columns: None,
-            rows: vec![vec![json!("2026-09-07"), json!("早上")], vec![json!("2026-09-07"), json!("中午")]],
-            dirty_rows: vec![(0, vec![(1, json!("上午"))])],
-            deleted_rows: vec![],
-            new_rows: vec![],
-        });
+    fn guards_sqlite_keyless_update_with_a_server_side_row_count() {
+        // Regression test for https://github.com/t8y2/dbx/issues/8321: a SQLite
+        // table with no primary key, two rows inserted with only `stat_date`
+        // filled in. Editing row 0's `period` must not silently also rewrite
+        // row 1, which has identical values in every column. Whether a second
+        // matching row exists cannot be answered from the loaded page, so the
+        // save carries a guard that counts the matches on the server.
+        let result = prepare_data_grid_save(daily_stats_keyless_options());
+
+        assert_eq!(result.validation_error, None);
+        assert_eq!(
+            result.statements,
+            vec![
+                r#"UPDATE "daily_stats" SET "period" = '早上' WHERE "stat_date" = '2026-09-07' AND "period" IS NULL;"#
+            ]
+        );
+        assert_eq!(
+            result.keyless_guards,
+            vec![DataGridSaveGuard {
+                sql: r#"SELECT COUNT(*) AS dbx_keyless_row_matches FROM "daily_stats" WHERE ("stat_date" = '2026-09-07' AND "period" IS NULL)"#
+                    .to_string(),
+                max_matched_rows: 1,
+                message: KEYLESS_AMBIGUOUS_ROW_ERROR.to_string(),
+            }]
+        );
+        assert_guards_cover_statement_predicates(&result);
+    }
+
+    #[test]
+    fn guards_sqlite_keyless_update_even_when_the_loaded_page_looks_unique() {
+        // The duplicate row may live outside the loaded/filtered page, so a
+        // page that shows only distinguishable rows proves nothing and must
+        // still be verified on the server.
+        let mut options = daily_stats_keyless_options();
+        options.rows = vec![vec![json!("2026-09-07"), json!("早上")], vec![json!("2026-09-07"), json!("中午")]];
+        options.dirty_rows = vec![(0, vec![(1, json!("上午"))])];
+        let result = prepare_data_grid_save(options);
 
         assert_eq!(result.validation_error, None);
         assert_eq!(
@@ -6854,6 +6925,66 @@ mod tests {
                 r#"UPDATE "daily_stats" SET "period" = '上午' WHERE "stat_date" = '2026-09-07' AND "period" = '早上';"#
             ]
         );
+        assert_eq!(result.keyless_guards.len(), 1);
+        assert_guards_cover_statement_predicates(&result);
+    }
+
+    #[test]
+    fn guards_keyless_predicate_without_the_columns_the_predicate_omits() {
+        // `build_row_where` drops result columns that have no source column, so
+        // a guard built from the visible values would decide uniqueness using
+        // `total`, a value the mutation predicate never mentions.
+        let mut options = daily_stats_keyless_options();
+        options.table_meta.columns =
+            Some(vec![column("stat_date", "TEXT", false, None), column("period", "TEXT", true, None)]);
+        options.columns = vec!["stat_date".to_string(), "period".to_string(), "total".to_string()];
+        options.source_columns = Some(vec![Some("stat_date".to_string()), Some("period".to_string()), None]);
+        options.rows =
+            vec![vec![json!("2026-09-07"), Value::Null, json!(1)], vec![json!("2026-09-07"), Value::Null, json!(2)]];
+        let result = prepare_data_grid_save(options);
+
+        assert_eq!(result.validation_error, None);
+        assert_eq!(result.keyless_guards.len(), 1);
+        assert!(!result.keyless_guards[0].sql.contains("total"));
+        assert_guards_cover_statement_predicates(&result);
+    }
+
+    #[test]
+    fn guards_keyless_delete_and_deduplicates_identical_predicates() {
+        let mut options = daily_stats_keyless_options();
+        options.dirty_rows = vec![];
+        options.deleted_rows = vec![0, 1];
+        let result = prepare_data_grid_save(options);
+
+        assert_eq!(result.validation_error, None);
+        assert_eq!(result.statements.len(), 2);
+        // Both rows produce the same predicate; one guard covers both.
+        assert_eq!(result.keyless_guards.len(), 1);
+        assert_guards_cover_statement_predicates(&result);
+    }
+
+    #[test]
+    fn omits_keyless_guards_when_the_table_has_a_primary_key() {
+        let mut options = daily_stats_keyless_options();
+        options.table_meta.primary_keys = vec!["stat_date".to_string()];
+        let result = prepare_data_grid_save(options);
+
+        assert_eq!(result.validation_error, None);
+        assert!(result.keyless_guards.is_empty());
+    }
+
+    #[test]
+    fn rejects_keyless_edit_when_no_column_can_address_the_row() {
+        // Every result column is computed, so `build_row_where` produces an
+        // empty predicate: there is neither a row identifier nor anything a
+        // server-side count could check, and the write must stay disabled.
+        let mut options = daily_stats_keyless_options();
+        options.source_columns = Some(vec![None, None]);
+        let result = prepare_data_grid_save(options);
+
+        assert_eq!(result.validation_error.as_deref(), Some(KEYLESS_UNIDENTIFIABLE_ROW_ERROR));
+        assert!(result.statements.is_empty());
+        assert!(result.keyless_guards.is_empty());
     }
 
     #[test]
