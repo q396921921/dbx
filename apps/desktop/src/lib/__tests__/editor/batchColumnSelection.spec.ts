@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion } from "@/lib/editor/batchColumnSelection";
+import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion, shouldSwallowSelectStar } from "@/lib/editor/batchColumnSelection";
 
 describe("batchColumnSelectionColumnList", () => {
   it("keeps a typed qualifier on every projection after the first", () => {
@@ -13,15 +13,41 @@ describe("batchColumnSelectionColumnList", () => {
 
 describe("batchColumnSelectionReplaceTo", () => {
   it("consumes the auto-inserted INSERT closing parenthesis", () => {
-    expect(batchColumnSelectionReplaceTo({ to: 20, mode: "insert", nextCharacter: ")" })).toBe(21);
+    expect(batchColumnSelectionReplaceTo({ from: 20, to: 20, mode: "insert", nextCharacter: ")" })).toBe(21);
   });
 
   it("keeps the replacement boundary when INSERT has no closing parenthesis", () => {
-    expect(batchColumnSelectionReplaceTo({ to: 20, mode: "insert", nextCharacter: "" })).toBe(20);
+    expect(batchColumnSelectionReplaceTo({ from: 20, to: 20, mode: "insert", nextCharacter: "" })).toBe(20);
   });
 
   it("continues consuming a matching closing identifier quote", () => {
-    expect(batchColumnSelectionReplaceTo({ to: 20, mode: "select", nextCharacter: '"', replaceClosingQuote: '"' })).toBe(21);
+    expect(batchColumnSelectionReplaceTo({ from: 20, to: 20, mode: "select", nextCharacter: '"', replaceClosingQuote: '"' })).toBe(21);
+  });
+
+  it("consumes a lone SELECT * immediately after an empty-prefix completion (#9433-adjacent)", () => {
+    // "SELECT |* FROM users" — nothing typed, cursor sits right before the wildcard.
+    expect(batchColumnSelectionReplaceTo({ from: 7, to: 7, mode: "select", nextCharacter: "*" })).toBe(8);
+  });
+
+  it("does not consume a `*` that is a multiplication operator, not the wildcard", () => {
+    // "SELECT pri|*qty FROM t" — "pri" is a real typed prefix, so from < to;
+    // the `*` here belongs to the user's expression and must survive.
+    expect(batchColumnSelectionReplaceTo({ from: 7, to: 10, mode: "select", nextCharacter: "*" })).toBe(10);
+  });
+});
+
+describe("shouldSwallowSelectStar", () => {
+  it("swallows a bare `*` only when the completion replaced nothing", () => {
+    expect(shouldSwallowSelectStar(7, 7, "*")).toBe(true);
+  });
+
+  it("leaves a `*` alone once a real prefix was replaced", () => {
+    expect(shouldSwallowSelectStar(7, 10, "*")).toBe(false);
+  });
+
+  it("leaves any other trailing character alone", () => {
+    expect(shouldSwallowSelectStar(7, 7, " ")).toBe(false);
+    expect(shouldSwallowSelectStar(7, 7, "")).toBe(false);
   });
 });
 

@@ -9,13 +9,26 @@ export function shouldResolveSqlColumnCompletion(options: { suggestColumns: bool
 }
 
 /**
+ * A completion accepted with nothing typed (`from === to`) right before a
+ * lone `*` is always the SELECT wildcard token, never multiplication —
+ * multiplication requires an operand immediately before the cursor, which
+ * makes `from` trail behind `to` instead. Swallowing that `*` here is what
+ * turns `SELECT |* FROM t` into `SELECT id, name FROM t` instead of leaving
+ * the stale `*` behind as `SELECT id, name* FROM t`.
+ */
+export function shouldSwallowSelectStar(from: number, to: number, nextCharacter: string): boolean {
+  return from === to && nextCharacter === "*";
+}
+
+/**
  * The INSERT batch action writes its own closing parenthesis before VALUES.
  * Consume an existing one (normally inserted by CodeMirror's auto-close
  * brackets extension) so the resulting statement has exactly one `)`.
  */
-export function batchColumnSelectionReplaceTo(options: { to: number; mode: BatchColumnSelectionMode; nextCharacter: string; replaceClosingQuote?: string }): number {
-  const { to, mode, nextCharacter, replaceClosingQuote } = options;
-  return replaceClosingQuote === nextCharacter || (mode === "insert" && nextCharacter === ")") ? to + 1 : to;
+export function batchColumnSelectionReplaceTo(options: { from: number; to: number; mode: BatchColumnSelectionMode; nextCharacter: string; replaceClosingQuote?: string }): number {
+  const { from, to, mode, nextCharacter, replaceClosingQuote } = options;
+  const swallowNext = replaceClosingQuote === nextCharacter || (mode === "insert" && nextCharacter === ")") || shouldSwallowSelectStar(from, to, nextCharacter);
+  return swallowNext ? to + 1 : to;
 }
 
 export function batchColumnSelectionInsertReplacement(options: { document: string; to: number; columns: string; valuesKeyword: "values" | "VALUES"; valueCount: number }): { replaceTo: number; insert: string } {

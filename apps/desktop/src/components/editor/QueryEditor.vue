@@ -160,7 +160,7 @@ import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignm
 import { searchKeymapWithoutModD } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { appendSqlCompletionSpace } from "@/lib/editor/sqlCompletionInsertion";
-import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion } from "@/lib/editor/batchColumnSelection";
+import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion, shouldSwallowSelectStar } from "@/lib/editor/batchColumnSelection";
 import { compareSqlCompletions, completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
 import { clampEditorFontSize, createEditorWheelZoomGestureGuard, createEditorZoomCommitScheduler, fontSizeFromGestureScale, fontSizeFromWheelDelta } from "@/lib/editor/editorZoom";
 import { buildSqlShortcutExecutionSql, enabledSqlShortcutActions, resolveSqlShortcutForDatabase, uniqueSqlShortcutBindings } from "@/lib/sql/sqlShortcutActions";
@@ -4445,6 +4445,7 @@ function applyBatchColumnSelection(view: EditorViewType, item: BatchColumnSelect
     session.qualifier,
   );
   let replaceTo = batchColumnSelectionReplaceTo({
+    from,
     to,
     mode: session.mode,
     nextCharacter: view.state.sliceDoc(to, to + 1),
@@ -4653,7 +4654,8 @@ function completionOptionForItem(item: QueryCompletionItem | BatchColumnSelectio
       apply(view: EditorViewType, completionItem: unknown, from: number, to: number) {
         record();
         markCompletionAccepted(item);
-        const replaceTo = "replaceClosingQuote" in item && item.replaceClosingQuote === view.state.sliceDoc(to, to + 1) ? to + 1 : to;
+        const nextCharacter = view.state.sliceDoc(to, to + 1);
+        const replaceTo = ("replaceClosingQuote" in item && item.replaceClosingQuote === nextCharacter) || shouldSwallowSelectStar(from, to, nextCharacter) ? to + 1 : to;
         if (typeof originalApply === "function") {
           originalApply(view, completionItem as never, from, replaceTo);
         } else {
@@ -4683,7 +4685,8 @@ function completionOptionForItem(item: QueryCompletionItem | BatchColumnSelectio
     apply(view: EditorViewType, _completionItem: unknown, from: number, to: number) {
       record();
       markCompletionAccepted(item);
-      const replaceTo = "replaceClosingQuote" in item && item.replaceClosingQuote === view.state.sliceDoc(to, to + 1) ? to + 1 : to;
+      const nextCharacterAtCursor = view.state.sliceDoc(to, to + 1);
+      const replaceTo = ("replaceClosingQuote" in item && item.replaceClosingQuote === nextCharacterAtCursor) || shouldSwallowSelectStar(from, to, nextCharacterAtCursor) ? to + 1 : to;
       const insert = appendSqlCompletionSpace(item.apply ?? item.label, {
         enabled: ("appendSpace" in item && item.appendSpace === true) || (shouldInsertSqlCompletionSpace() && settingsStore.editorSettings.insertSpaceAfterCompletion),
         itemType: item.type,
