@@ -337,6 +337,55 @@ describe("SELECT star expansion", () => {
     ).toBe(`id, ${qualifierSql}.${quotedColumn}`);
   });
 
+  it("does not quote all-uppercase Oracle columns when expanding alias.* (regression #9163)", () => {
+    const sql = "SELECT t.* FROM device_table AS t";
+    const cursor = sql.indexOf("*") + 1;
+    const context = sqlCompletionContextFromSemantic(buildSqlSemanticModel(sql, cursor, { databaseType: "oracle", dialect: "mysql" }), getSqlCompletionContext(sql, cursor, { databaseType: "oracle", dialect: "mysql" }));
+
+    expect(
+      buildSelectStarExpansion(
+        context,
+        new Map([
+          [
+            "device_table",
+            [
+              { name: "AGENT_NAME", table: "device_table" },
+              { name: "PROTOCOL", table: "device_table" },
+              { name: "created at", table: "device_table" },
+            ],
+          ],
+        ]),
+        "mysql",
+        "t",
+        "oracle",
+      ),
+    ).toBe('AGENT_NAME, t.PROTOCOL, t."created at"');
+  });
+
+  it("does not quote all-uppercase Oracle columns for an unqualified star when only databaseType is set", () => {
+    const sql = "SELECT * FROM device_table";
+    const cursor = "SELECT *".length;
+    const context = sqlCompletionContextFromSemantic(buildSqlSemanticModel(sql, cursor, { databaseType: "oracle" }), getSqlCompletionContext(sql, cursor, { databaseType: "oracle" }));
+
+    expect(
+      buildSelectStarExpansion(
+        context,
+        new Map([
+          [
+            "device_table",
+            [
+              { name: "AGENT_NAME", table: "device_table" },
+              { name: "SPARE1", table: "device_table" },
+            ],
+          ],
+        ]),
+        undefined,
+        undefined,
+        "oracle",
+      ),
+    ).toBe("AGENT_NAME, SPARE1");
+  });
+
   it("expands an unqualified star from result columns when the table has an alias", () => {
     const sql = "select *\nfrom apis as ap\nlimit 100;";
     const cursor = "select *".length;
