@@ -4419,6 +4419,25 @@ function renderBatchColumnSelectionCheckbox(completion: Completion, _state: impo
   return checkbox;
 }
 
+// The checkbox above only guards its own hitbox. A mousedown/click anywhere
+// else in the row (the label, detail text, icon — most of the row's area)
+// falls through to CodeMirror's own list-item handler, which accepts that
+// row as a single completion and discards every other checked field. Guard
+// the whole row the same way, at the document level, since the completion
+// tooltip renders outside the editor's own DOM (see tooltipParent above).
+function onBatchColumnSelectionRowGuard(event: MouseEvent) {
+  if (event.button !== 0 || !batchColumnSelectionSession) return;
+  const target = event.target;
+  if (!(target instanceof Element) || target.closest("input.cm-batch-column-selection-checkbox")) return;
+  const hit = batchColumnSelectionMarkerAtPoint(event.clientX, event.clientY);
+  if (!hit || hit.marker.sessionKey !== batchColumnSelectionSession.key) return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.type !== "mousedown") return;
+  const currentView = view.value;
+  if (currentView) toggleBatchColumnSelection(currentView, hit.marker.sessionKey, hit.marker.candidateKey);
+}
+
 function renderBatchColumnSelectionActionMarker(completion: Completion): Node | null {
   const action = (completion as QueryCompletionOption).dbxBatchColumnSelectionAction;
   if (!action) return null;
@@ -7173,6 +7192,8 @@ onMounted(async () => {
   batchColumnSelectionTooltipParents.set(view.value, tooltipParent);
   postCompositionKeyGuardCleanup = postCompositionKeyGuard.attach(view.value.contentDOM);
   registerEditorScrollbarPointerGuard(view.value);
+  document.addEventListener("mousedown", onBatchColumnSelectionRowGuard, true);
+  document.addEventListener("click", onBatchColumnSelectionRowGuard, true);
   view.value.scrollDOM.addEventListener("scroll", scheduleEditorViewportEmit, {
     passive: true,
   });
@@ -7697,6 +7718,8 @@ onBeforeUnmount(() => {
   contextMenuPointerCleanup?.();
   postCompositionKeyGuardCleanup?.();
   postCompositionKeyGuardCleanup = null;
+  document.removeEventListener("mousedown", onBatchColumnSelectionRowGuard, true);
+  document.removeEventListener("click", onBatchColumnSelectionRowGuard, true);
   zoomCommitScheduler.dispose();
   view.value?.destroy();
 });
