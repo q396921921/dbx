@@ -160,7 +160,7 @@ import { buildQueryEditorLineNumbersExtension, createQueryEditorLineNumberAlignm
 import { searchKeymapWithoutModD } from "@/lib/editor/codemirrorSearchKeymap";
 import { defaultKeymapForGlobalShortcuts } from "@/lib/editor/codemirrorDefaultKeymap";
 import { appendSqlCompletionSpace } from "@/lib/editor/sqlCompletionInsertion";
-import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion, shouldSwallowSelectStar } from "@/lib/editor/batchColumnSelection";
+import { batchColumnSelectionColumnList, batchColumnSelectionInsertReplacement, batchColumnSelectionReplaceTo, completionReplacementTo, isBatchColumnSelectionCompletionActive, shouldResolveSqlColumnCompletion } from "@/lib/editor/batchColumnSelection";
 import { compareSqlCompletions, completionLabelPresentation } from "@/lib/editor/sqlCompletionPresentation";
 import { clampEditorFontSize, createEditorWheelZoomGestureGuard, createEditorZoomCommitScheduler, fontSizeFromGestureScale, fontSizeFromWheelDelta } from "@/lib/editor/editorZoom";
 import { buildSqlShortcutExecutionSql, enabledSqlShortcutActions, resolveSqlShortcutForDatabase, uniqueSqlShortcutBindings } from "@/lib/sql/sqlShortcutActions";
@@ -4002,6 +4002,7 @@ interface BatchColumnSelectionSession {
   from: number;
   to: number;
   replaceClosingQuote?: SqlCompletionItem["replaceClosingQuote"];
+  replaceSelectWildcard?: true;
   candidates: BatchColumnSelectionCandidate[];
   selectedKeys: Set<string>;
   completionOptions: Map<string, QueryCompletionOption>;
@@ -4201,6 +4202,7 @@ function prepareBatchColumnSelectionSession(items: SqlCompletionItem[], document
       from,
       to,
       replaceClosingQuote: selectableItems[0]!.replaceClosingQuote,
+      replaceSelectWildcard: selectableItems[0]!.replaceSelectWildcard,
       candidates,
       selectedKeys: new Set(),
       completionOptions: new Map(),
@@ -4450,6 +4452,7 @@ function applyBatchColumnSelection(view: EditorViewType, item: BatchColumnSelect
     mode: session.mode,
     nextCharacter: view.state.sliceDoc(to, to + 1),
     replaceClosingQuote: session.replaceClosingQuote,
+    replaceSelectWildcard: session.replaceSelectWildcard,
   });
   let insert = columns;
   if (session.mode === "insert") {
@@ -4655,7 +4658,13 @@ function completionOptionForItem(item: QueryCompletionItem | BatchColumnSelectio
         record();
         markCompletionAccepted(item);
         const nextCharacter = view.state.sliceDoc(to, to + 1);
-        const replaceTo = ("replaceClosingQuote" in item && item.replaceClosingQuote === nextCharacter) || shouldSwallowSelectStar(from, to, nextCharacter) ? to + 1 : to;
+        const replaceTo = completionReplacementTo({
+          from,
+          to,
+          nextCharacter,
+          replaceClosingQuote: "replaceClosingQuote" in item ? item.replaceClosingQuote : undefined,
+          replaceSelectWildcard: "replaceSelectWildcard" in item ? item.replaceSelectWildcard : undefined,
+        });
         if (typeof originalApply === "function") {
           originalApply(view, completionItem as never, from, replaceTo);
         } else {
@@ -4686,7 +4695,13 @@ function completionOptionForItem(item: QueryCompletionItem | BatchColumnSelectio
       record();
       markCompletionAccepted(item);
       const nextCharacterAtCursor = view.state.sliceDoc(to, to + 1);
-      const replaceTo = ("replaceClosingQuote" in item && item.replaceClosingQuote === nextCharacterAtCursor) || shouldSwallowSelectStar(from, to, nextCharacterAtCursor) ? to + 1 : to;
+      const replaceTo = completionReplacementTo({
+        from,
+        to,
+        nextCharacter: nextCharacterAtCursor,
+        replaceClosingQuote: "replaceClosingQuote" in item ? item.replaceClosingQuote : undefined,
+        replaceSelectWildcard: "replaceSelectWildcard" in item ? item.replaceSelectWildcard : undefined,
+      });
       const insert = appendSqlCompletionSpace(item.apply ?? item.label, {
         enabled: ("appendSpace" in item && item.appendSpace === true) || (shouldInsertSqlCompletionSpace() && settingsStore.editorSettings.insertSpaceAfterCompletion),
         itemType: item.type,

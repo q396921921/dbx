@@ -8,16 +8,13 @@ export function shouldResolveSqlColumnCompletion(options: { suggestColumns: bool
   return options.suggestColumns && options.hasReferencedTables && (options.prefix.length > 0 || options.typedActivation || options.selectListColumnContext);
 }
 
-/**
- * A completion accepted with nothing typed (`from === to`) right before a
- * lone `*` is always the SELECT wildcard token, never multiplication —
- * multiplication requires an operand immediately before the cursor, which
- * makes `from` trail behind `to` instead. Swallowing that `*` here is what
- * turns `SELECT |* FROM t` into `SELECT id, name FROM t` instead of leaving
- * the stale `*` behind as `SELECT id, name* FROM t`.
- */
-export function shouldSwallowSelectStar(from: number, to: number, nextCharacter: string): boolean {
-  return from === to && nextCharacter === "*";
+export function shouldSwallowSelectStar(from: number, to: number, nextCharacter: string, replaceSelectWildcard = false): boolean {
+  return replaceSelectWildcard && from === to && nextCharacter === "*";
+}
+
+export function completionReplacementTo(options: { from: number; to: number; nextCharacter: string; replaceClosingQuote?: string; replaceSelectWildcard?: boolean }): number {
+  const { from, to, nextCharacter, replaceClosingQuote, replaceSelectWildcard } = options;
+  return replaceClosingQuote === nextCharacter || shouldSwallowSelectStar(from, to, nextCharacter, replaceSelectWildcard) ? to + 1 : to;
 }
 
 /**
@@ -25,10 +22,10 @@ export function shouldSwallowSelectStar(from: number, to: number, nextCharacter:
  * Consume an existing one (normally inserted by CodeMirror's auto-close
  * brackets extension) so the resulting statement has exactly one `)`.
  */
-export function batchColumnSelectionReplaceTo(options: { from: number; to: number; mode: BatchColumnSelectionMode; nextCharacter: string; replaceClosingQuote?: string }): number {
-  const { from, to, mode, nextCharacter, replaceClosingQuote } = options;
-  const swallowNext = replaceClosingQuote === nextCharacter || (mode === "insert" && nextCharacter === ")") || shouldSwallowSelectStar(from, to, nextCharacter);
-  return swallowNext ? to + 1 : to;
+export function batchColumnSelectionReplaceTo(options: { from: number; to: number; mode: BatchColumnSelectionMode; nextCharacter: string; replaceClosingQuote?: string; replaceSelectWildcard?: boolean }): number {
+  const { from, to, mode, nextCharacter, replaceClosingQuote, replaceSelectWildcard } = options;
+  if (mode === "insert" && nextCharacter === ")") return to + 1;
+  return completionReplacementTo({ from, to, nextCharacter, replaceClosingQuote, replaceSelectWildcard });
 }
 
 export function batchColumnSelectionInsertReplacement(options: { document: string; to: number; columns: string; valuesKeyword: "values" | "VALUES"; valueCount: number }): { replaceTo: number; insert: string } {
