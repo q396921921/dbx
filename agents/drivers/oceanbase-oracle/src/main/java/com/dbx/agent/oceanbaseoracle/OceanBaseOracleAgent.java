@@ -15,6 +15,7 @@ import com.dbx.agent.MetadataListConstraints;
 import com.dbx.agent.ObjectInfo;
 import com.dbx.agent.ObjectSource;
 import com.dbx.agent.OracleObjectPrivilege;
+import com.dbx.agent.PartitionInfo;
 import com.dbx.agent.TableInfo;
 import com.dbx.agent.TriggerInfo;
 
@@ -32,6 +33,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.regex.Matcher;
 
 public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     private static final long MICROS_PER_SECOND = 1_000_000L;
@@ -348,11 +351,12 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public ObjectSource getObjectSource(String schema, String name, String objectType) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String objectName = normalizeObjectName(name);
             String normalizedType = normalizeObjectSourceType(objectType);
             String source;
             SQLException metadataError = null;
             try {
-                source = queryDbmsMetadataSource(owner, name, normalizedType);
+                source = queryDbmsMetadataSource(owner, objectName, normalizedType);
             } catch (SQLException e) {
                 metadataError = e;
                 source = null;
@@ -362,7 +366,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
                 try {
                     // OceanBase versions and tenant privileges differ in DBMS_METADATA coverage.
                     // Oracle-compatible dictionary views keep schema compare and source editing usable.
-                    source = queryDictionarySource(owner, name, normalizedType);
+                    source = queryDictionarySource(owner, objectName, normalizedType);
                 } catch (SQLException fallbackError) {
                     if (metadataError != null) {
                         metadataError.addSuppressed(fallbackError);
@@ -374,7 +378,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             if (metadataError != null && (source == null || source.trim().isEmpty())) {
                 throw metadataError;
             }
-            return new ObjectSource(name, normalizedType, owner, source == null ? "" : source);
+            return new ObjectSource(objectName, normalizedType, owner, source == null ? "" : source);
         });
     }
 
@@ -481,6 +485,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public List<ColumnInfo> getColumns(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT c.COLUMN_NAME, c.DATA_TYPE, c.NULLABLE, c.DATA_PRECISION, c.DATA_SCALE,
                     c.DATA_LENGTH, c.CHAR_LENGTH, c.DATA_DEFAULT, cc.COMMENTS,
@@ -502,9 +507,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             List<ColumnInfo> result = new ArrayList<>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
-                stmt.setString(2, table);
+                stmt.setString(2, tableName);
                 stmt.setString(3, owner);
-                stmt.setString(4, table);
+                stmt.setString(4, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         // Oracle-compatible DATA_DEFAULT is LONG-like; read it before other metadata fields.
@@ -536,45 +541,123 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public String getTableDdl(String schema, String table) {
-        List<IndexInfo> indexes;
-        try {
-            indexes = listIndexes(schema, table);
-        } catch (RuntimeException e) {
-            indexes = Collections.emptyList();
-        }
-
-        List<ForeignKeyInfo> foreignKeys;
-        try {
-            foreignKeys = listForeignKeys(schema, table);
-        } catch (RuntimeException e) {
-            foreignKeys = Collections.emptyList();
-        }
-
-        String tableComment = null;
-        try {
-            tableComment = getTableComment(schema, table);
-        } catch (RuntimeException e) {
-            // Table comment is optional; DDL generation should still succeed without it.
-        }
-
-        String ddl = DdlBuilder.buildTableDdl(
-            schema,
-            table,
-            getColumns(schema, table),
-            indexes,
-            foreignKeys,
-            java.util.Collections.emptyList(),
-            false,
-            true,
-            tableComment
-        );
-        try {
+        return unchecked(() -> {
             String owner = normalizeSchema(schema);
-            return DdlBuilder.appendTrailingSql(ddl, queryObjectGrantSql(owner, table));
-        } catch (RuntimeException | SQLException ignored) {
-            // Privilege metadata is optional; CREATE TABLE DDL should still succeed without it.
+            String tableName = normalizeObjectName(table);
+            String ddl = queryDbmsMetadataSource(owner, tableName, "TABLE");
+            if (ddl == null || ddl.isBlank()) {
+                throw new SQLException("DBMS_METADATA.GET_DDL returned empty DDL for " + owner + "." + tableName);
+            }
+            // OceanBase 4.2.5 omits the owner from CREATE TABLE, even for another schema.
+            var header = Pattern.compile("(?i)^(\\s*CREATE\\s+(?:GLOBAL\\s+TEMPORARY\\s+)?TABLE\\s+)"
+                + Pattern.quote(quoteIdentifier(tableName)) + "(?=\\s*\\()").matcher(ddl);
+            if (header.find()) {
+                ddl = header.replaceFirst(Matcher.quoteReplacement(header.group(1) + quoteIdentifier(owner) + "." + quoteIdentifier(tableName)));
+            }
+            ddl = ddl.strip();
+            if (!ddl.endsWith(";")) ddl += ";";
+
+            // GET_DDL(TABLE) includes constraints/partitioning, but not secondary indexes or comments.
+            String indexSql = """
+                SELECT i.INDEX_NAME FROM ALL_INDEXES i
+                WHERE i.TABLE_OWNER = ? AND i.TABLE_NAME = ?
+                  AND NOT EXISTS (SELECT 1 FROM ALL_CONSTRAINTS c
+                    WHERE c.OWNER = i.OWNER AND c.INDEX_NAME = i.INDEX_NAME
+                      AND c.CONSTRAINT_TYPE IN ('P', 'U'))
+                  AND NOT (i.INDEX_NAME = 'IDX_FOR_HEAP_GTT_' || i.TABLE_NAME
+                    AND EXISTS (SELECT 1 FROM ALL_TABLES t WHERE t.OWNER = i.TABLE_OWNER
+                      AND t.TABLE_NAME = i.TABLE_NAME AND t.TEMPORARY = 'Y')
+                    AND EXISTS (SELECT 1 FROM ALL_IND_COLUMNS c WHERE c.INDEX_OWNER = i.OWNER
+                      AND c.INDEX_NAME = i.INDEX_NAME AND c.COLUMN_NAME = 'SYS_SESSION_ID'))
+                ORDER BY i.INDEX_NAME
+                """;
+            List<String> indexNames = new ArrayList<>();
+            try (var stmt = requireConnection().prepareStatement(indexSql)) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) indexNames.add(rs.getString(1));
+                }
+            }
+            for (String index : indexNames) {
+                String indexDdl = queryDbmsMetadataSource(owner, index, "INDEX");
+                if (indexDdl == null || indexDdl.isBlank()) throw new SQLException("Empty index DDL: " + index);
+                ddl = DdlBuilder.appendTrailingSql(ddl, indexDdl);
+            }
+            String tableRef = quoteIdentifier(owner) + "." + quoteIdentifier(tableName);
+            String comment = getTableComment(owner, tableName);
+            if (comment != null && !comment.isBlank()) {
+                ddl = DdlBuilder.appendTrailingSql(ddl, "COMMENT ON TABLE " + tableRef + " IS '" + comment.replace("'", "''") + "';");
+            }
+            String commentSql = "SELECT COLUMN_NAME, COMMENTS FROM ALL_COL_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ? AND COMMENTS IS NOT NULL ORDER BY COLUMN_NAME";
+            try (var stmt = requireConnection().prepareStatement(commentSql)) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        String text = rs.getString("COMMENTS");
+                        if (text == null || text.isBlank()) continue;
+                        ddl = DdlBuilder.appendTrailingSql(ddl, "COMMENT ON COLUMN " + tableRef + "." + quoteIdentifier(rs.getString("COLUMN_NAME")) + " IS '" + text.replace("'", "''") + "';");
+                    }
+                }
+            }
+            try {
+                ddl = DdlBuilder.appendTrailingSql(ddl, queryObjectGrantSql(owner, tableName));
+            } catch (RuntimeException | SQLException ignored) {
+                // Privilege metadata remains optional for users without access to grant views.
+            }
             return ddl;
-        }
+        });
+    }
+
+    private static String quoteIdentifier(String name) {
+        return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    @Override
+    public List<PartitionInfo> listPartitions(String schema, String table) {
+        return queryPartitions(schema, table, false);
+    }
+
+    @Override
+    public List<PartitionInfo> listSubpartitions(String schema, String table) {
+        return queryPartitions(schema, table, true);
+    }
+
+    private List<PartitionInfo> queryPartitions(String schema, String table, boolean subpartition) {
+        return unchecked(() -> {
+            String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
+            String prefix = subpartition ? "SUBPARTITION" : "PARTITION";
+            String keysView = subpartition ? "ALL_SUBPART_KEY_COLUMNS" : "ALL_PART_KEY_COLUMNS";
+            List<String> keys = new ArrayList<>();
+            try (var stmt = requireConnection().prepareStatement("SELECT COLUMN_NAME FROM " + keysView
+                + " WHERE OWNER = ? AND NAME = ? AND OBJECT_TYPE = 'TABLE' ORDER BY COLUMN_POSITION")) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) keys.add(quoteIdentifier(rs.getString(1)));
+                }
+            }
+            String sql = "SELECT p." + prefix + "_NAME AS NAME, p." + prefix + "_POSITION AS POSITION, p.HIGH_VALUE, t."
+                + prefix + "ING_TYPE AS PARTITION_TYPE FROM " + (subpartition ? "ALL_TAB_SUBPARTITIONS" : "ALL_TAB_PARTITIONS")
+                + " p JOIN ALL_PART_TABLES t ON t.OWNER = p.TABLE_OWNER AND t.TABLE_NAME = p.TABLE_NAME"
+                + " WHERE p.TABLE_OWNER = ? AND p.TABLE_NAME = ? ORDER BY "
+                + (subpartition ? "p.PARTITION_NAME, " : "") + "p." + prefix + "_POSITION";
+            List<PartitionInfo> result = new ArrayList<>();
+            try (var stmt = requireConnection().prepareStatement(sql)) {
+                stmt.setString(1, owner);
+                stmt.setString(2, tableName);
+                try (ResultSet rs = stmt.executeQuery()) {
+                    while (rs.next()) {
+                        String value = rs.getString("HIGH_VALUE");
+                        result.add(new PartitionInfo(rs.getString("NAME"), rs.getInt("POSITION"), value == null ? "" : value,
+                            rs.getString("PARTITION_TYPE"), String.join(", ", keys)));
+                    }
+                }
+            }
+            return result;
+        });
     }
 
     private String queryObjectGrantSql(String owner, String table) throws SQLException {
@@ -698,10 +781,11 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public String getTableComment(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
             String sql = "SELECT COMMENTS FROM ALL_TAB_COMMENTS WHERE OWNER = ? AND TABLE_NAME = ? AND TABLE_TYPE = 'TABLE'";
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
-                stmt.setString(2, table);
+                stmt.setString(2, tableName);
                 try (var rs = stmt.executeQuery()) {
                     if (rs.next()) {
                         String comment = rs.getString("COMMENTS");
@@ -717,6 +801,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public List<IndexInfo> listIndexes(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT i.INDEX_NAME, ic.COLUMN_NAME, ic.COLUMN_POSITION, i.UNIQUENESS,
                     c.CONSTRAINT_TYPE, i.INDEX_TYPE
@@ -741,7 +826,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             Map<String, String> typeByIndex = new LinkedHashMap<>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
-                stmt.setString(2, table);
+                stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         String indexName = rs.getString("INDEX_NAME");
@@ -775,6 +860,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public List<ForeignKeyInfo> listForeignKeys(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT c.CONSTRAINT_NAME, cc.COLUMN_NAME, rc.TABLE_NAME, rcc.COLUMN_NAME
                 FROM ALL_CONSTRAINTS c
@@ -791,7 +877,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             List<ForeignKeyInfo> result = new ArrayList<>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
-                stmt.setString(2, table);
+                stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         result.add(new ForeignKeyInfo(
@@ -811,6 +897,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
     public List<TriggerInfo> listTriggers(String schema, String table) {
         return unchecked(() -> {
             String owner = normalizeSchema(schema);
+            String tableName = normalizeObjectName(table);
             String sql = """
                 SELECT TRIGGER_NAME, TRIGGERING_EVENT, TRIGGER_TYPE
                 FROM ALL_TRIGGERS
@@ -821,7 +908,7 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
             List<TriggerInfo> result = new ArrayList<>();
             try (var stmt = requireConnection().prepareStatement(sql)) {
                 stmt.setString(1, owner);
-                stmt.setString(2, table);
+                stmt.setString(2, tableName);
                 try (ResultSet rs = stmt.executeQuery()) {
                     while (rs.next()) {
                         result.add(new TriggerInfo(rs.getString(1), rs.getString(2), rs.getString(3)));
@@ -834,6 +921,9 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
 
     @Override
     public String setSchemaSQL(String schema) {
+        if (schema == null || schema.isBlank()) {
+            return "";
+        }
         return "ALTER SESSION SET CURRENT_SCHEMA = " + JdbcIdentifiers.INSTANCE.doubleQuote(schema);
     }
 
@@ -879,9 +969,15 @@ public final class OceanBaseOracleAgent extends ConfiguredJdbcAgent {
         return result;
     }
 
+    private static String normalizeObjectName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new IllegalArgumentException("Object name must not be blank");
+        }
+        return name;
+    }
+
     private String normalizeSchema(String schema) throws SQLException {
-        String value = schema == null ? "" : schema.trim();
-        return value.isEmpty() ? currentSchema() : value;
+        return schema == null || schema.isBlank() ? currentSchema() : schema;
     }
 
     private String currentSchema() throws SQLException {

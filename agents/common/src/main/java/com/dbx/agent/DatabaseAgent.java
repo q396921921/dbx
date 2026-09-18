@@ -147,6 +147,14 @@ public interface DatabaseAgent {
 
     List<TriggerInfo> listTriggers(String schema, String table);
 
+    default List<PartitionInfo> listPartitions(String schema, String table) {
+        return Collections.emptyList();
+    }
+
+    default List<PartitionInfo> listSubpartitions(String schema, String table) {
+        return Collections.emptyList();
+    }
+
     default QueryResult executeQuery(String sql, String schema) {
         return executeQuery(sql, schema, new ExecuteQueryOptions());
     }

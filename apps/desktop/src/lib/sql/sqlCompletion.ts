@@ -16,7 +16,7 @@ import { BACKSLASH_ESCAPE_STRING_DIALECTS } from "@/lib/sql/sqlStatementRanges";
 import { requiresMysqlIdentifierQuote, requiresPostgresIdentifierQuote } from "@/lib/sql/sqlIdentifier";
 import { identifierMatchScore, matchesIdentifierSearch } from "@/lib/sql/identifierSearch";
 import { containsHan, orderedSubsequenceSpan, pinyinFirstLetters } from "@/lib/common/pinyin";
-import { quoteTableIdentifier } from "@/lib/table/tableSelectSql";
+import { quoteTableIdentifier, quoteTableIdentifierIfNeeded } from "@/lib/table/tableSelectSql";
 import { driverProfileCompletionObjects, driverProfileCompletionTableMetadata, driverProfileCompletionTables, driverProfileRoutineSignatures } from "@/lib/database/driverProfileExtensions";
 import { DORIS_FUNCTION_DOCS, DORIS_FUNCTION_SIGNATURES } from "@/lib/sql/doris/functions";
 import { rejectsAliasReferenceInHaving } from "@/lib/database/databaseFeatureSupport";
@@ -1352,6 +1352,7 @@ export interface SqlCompletionItem {
   boost: number;
   exactMatch?: boolean;
   dedupeKey?: string;
+  replaceSelectWildcard?: true;
   /** Enables the query editor's checkbox-based batch insertion for this column. */
   batchSelectionMode?: "select" | "insert";
   /** Qualifier to prepend to every batch-selected column after the first one. */
@@ -1428,6 +1429,7 @@ export interface SqlCompletionContext {
   comparisonLeftColumn?: string;
   onStar: boolean;
   selectListColumnContext: boolean;
+  selectListWildcardAfterCursor?: boolean;
   preferredKeywords: string[];
   updateTarget?: { table: string; schema?: string };
   deleteTarget?: { table: string; schema?: string };
@@ -1448,22 +1450,47 @@ const SQL_COMPLETION_CLOSING_QUOTES: Readonly<Record<string, SqlCompletionClosin
   "[": "]",
 };
 
-export function prepareSqlCompletionReplacement(sql: string, cursor: number, context: Pick<SqlCompletionContext, "prefix" | "qualifier" | "replacementRange">, items: SqlCompletionItem[]): { from: number; items: SqlCompletionItem[] } {
+const SELECT_WILDCARD_FOLLOWING_CLAUSES = new Set(["except", "fetch", "for", "from", "group", "having", "intersect", "into", "limit", "offset", "order", "qualify", "union", "where", "window"]);
+const SELECT_PROJECTION_MODIFIERS = new Set(["all", "distinct", "distinctrow"]);
+
+function isStandaloneSelectWildcard(sql: string, cursor: number, selectListColumnContext: boolean, statementKind: SqlStatementKind, dialectId?: string): boolean {
+  if (!selectListColumnContext || statementKind !== "select" || sql[cursor] !== "*") return false;
+
+  const tokens = tokenizeSqlSemantic(sql, dialectId).filter((token) => token.kind !== "comment");
+  const starIndex = tokens.findIndex((token) => token.span.start === cursor && token.text === "*");
+  if (starIndex < 0) return false;
+
+  const star = tokens[starIndex]!;
+  let previousIndex = starIndex - 1;
+  while (previousIndex >= 0 && tokens[previousIndex]!.depth === star.depth && tokens[previousIndex]!.kind === "word" && SELECT_PROJECTION_MODIFIERS.has(tokens[previousIndex]!.normalized)) previousIndex--;
+  const previous = tokens[previousIndex];
+  const startsProjection = previous?.depth === star.depth && (previous.normalized === "select" || previous.text === ",");
+  if (!startsProjection) return false;
+
+  const next = tokens.slice(starIndex + 1).find((token) => token.depth <= star.depth);
+  if (!next) return true;
+  if (next.depth !== star.depth) return false;
+  return next.text === "," || next.text === ";" || (next.kind === "word" && SELECT_WILDCARD_FOLLOWING_CLAUSES.has(next.normalized));
+}
+
+export function prepareSqlCompletionReplacement(sql: string, cursor: number, context: Pick<SqlCompletionContext, "prefix" | "qualifier" | "replacementRange" | "selectListWildcardAfterCursor">, items: SqlCompletionItem[]): { from: number; items: SqlCompletionItem[] } {
   const range = context.replacementRange;
   const from = range && range.start >= 0 && range.start <= cursor && range.end === cursor ? range.start : cursor - context.prefix.length;
   const closingQuote = from < cursor ? SQL_COMPLETION_CLOSING_QUOTES[sql[from] ?? ""] : undefined;
-  if (!closingQuote) return { from, items };
   const replaceClosingQuote = sql[cursor] === closingQuote ? closingQuote : undefined;
+  const replaceSelectWildcard = from === cursor && context.selectListWildcardAfterCursor === true;
+  if (!closingQuote && !replaceSelectWildcard) return { from, items };
   return {
     from,
     items: items.map((item) => {
       let prepared = item;
       const apply = item.apply ?? item.label;
-      if (item.type === "column" && !(apply.startsWith(sql[from] ?? "") && apply.endsWith(closingQuote)) && (context.qualifier || !apply.includes("."))) {
+      if (closingQuote && item.type === "column" && !(apply.startsWith(sql[from] ?? "") && apply.endsWith(closingQuote)) && (context.qualifier || !apply.includes("."))) {
         const escaped = apply.replaceAll(closingQuote, closingQuote + closingQuote);
         prepared = { ...prepared, apply: `${sql[from]}${escaped}${closingQuote}` };
       }
-      return replaceClosingQuote && !prepared.replaceClosingQuote ? { ...prepared, replaceClosingQuote } : prepared;
+      if (replaceClosingQuote && !prepared.replaceClosingQuote) prepared = { ...prepared, replaceClosingQuote };
+      return replaceSelectWildcard && !prepared.replaceSelectWildcard ? { ...prepared, replaceSelectWildcard: true } : prepared;
     }),
   };
 }
@@ -2134,18 +2161,93 @@ function currentSqlLikeLineBlockSpan(sql: string, cursor: number, activeStatemen
   return { start, end: blockEnd == null ? activeStatementSpan.end : Math.min(activeStatementSpan.end, blockEnd) };
 }
 
+// Equal-length masking of string/comment characters, so parenthesis depth and
+// line-start keywords can be scanned on the masked copy while offsets stay
+// valid against the original text.
+function maskSqlForStructureScan(sql: string): string {
+  let out = "";
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i]!;
+    if (ch === "'" || ch === '"' || ch === "`") {
+      const quote = ch;
+      out += ch;
+      i += 1;
+      while (i < sql.length) {
+        if (sql[i] === "\\" && i + 1 < sql.length) {
+          out += "  ";
+          i += 2;
+          continue;
+        }
+        const same = sql[i] === quote;
+        out += same ? quote : " ";
+        i += 1;
+        if (same) break;
+      }
+      continue;
+    }
+    if (ch === "-" && sql[i + 1] === "-") {
+      while (i < sql.length && sql[i] !== "\n") {
+        out += " ";
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "/" && sql[i + 1] === "*") {
+      out += "  ";
+      i += 2;
+      while (i < sql.length) {
+        if (sql[i] === "*" && sql[i + 1] === "/") {
+          out += "  ";
+          i += 2;
+          break;
+        }
+        out += sql[i] === "\n" ? "\n" : " ";
+        i += 1;
+      }
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+// Statements users type without a trailing semicolon: a line starting one of
+// these at top level begins a new statement block (t8y2/dbx#9370).
+const STATEMENT_START_LINE_PATTERN = /^(?:select|with|insert|update|delete|create|drop|alter)\b/i;
+
 function currentLineBlockEnd(sql: string, cursor: number, start: number): number | null {
+  const masked = maskSqlForStructureScan(sql);
   let lineStart = sql.lastIndexOf("\n", cursor - 1) + 1;
+  let depth = 0;
+  for (let i = start; i < lineStart; i += 1) {
+    const ch = masked[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") depth = Math.max(0, depth - 1);
+  }
+  let atCursorLine = true;
   while (lineStart < sql.length) {
     const lineEnd = sql.indexOf("\n", lineStart);
     const boundedLineEnd = lineEnd >= 0 ? lineEnd : sql.length;
-    const line = sql.slice(lineStart, boundedLineEnd);
-    const trimmed = line.trimStart();
-    if (lineStart > start && (!trimmed || /^(get|post|put|delete|patch|head)\s+\//i.test(trimmed))) {
+    const originalTrimmed = sql.slice(lineStart, boundedLineEnd).trimStart();
+    const trimmed = masked.slice(lineStart, boundedLineEnd).trimStart();
+    if (lineStart > start && (!originalTrimmed || /^(get|post|put|delete|patch|head)\s+\//i.test(originalTrimmed))) {
+      return lineStart;
+    }
+    // The cursor's own line always belongs to the block; only a following
+    // top-level statement line ends it.
+    if (!atCursorLine && lineStart > start && depth === 0 && STATEMENT_START_LINE_PATTERN.test(trimmed)) {
       return lineStart;
     }
     if (lineEnd < 0) break;
+    for (let i = lineStart; i < boundedLineEnd; i += 1) {
+      const ch = masked[i];
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth = Math.max(0, depth - 1);
+    }
     lineStart = lineEnd + 1;
+    atCursorLine = false;
   }
   return null;
 }
@@ -2360,6 +2462,7 @@ export function getSqlCompletionContext(sql: string, cursor: number, options: Sq
   const suggestRoutines = inCallRoutineContext || oracleTableFunctionContext || inPotentialPackageMemberContext || (!exclusiveTableSuggestions && !exclusiveColumnSuggestions && !insertInfo && !updateInfo?.inSetClause && prefix.length >= 2);
 
   const statementKind = detectStatementKind(beforeCursor || fullStatement);
+  const selectListWildcardAfterCursor = isStandaloneSelectWildcard(rawStatement, cursor - statementSpan.start, selectListColumnContext, statementKind, resolveSqlDialectId(options));
   const dataTypeContext = isCreateTableColumnTypeContext(beforeToken, options.databaseType);
   const preferredValueKeywords = sqlServerDatepartCompletionValues(beforeCursor, options.databaseType);
   const preferredKeywords = qualifier ? [] : preferredKeywordsForCompletion(beforeCursor, beforeToken, selectListColumnContext, exclusiveTableSuggestions, updateInfo, deleteInfo, options.databaseType);
@@ -2405,6 +2508,7 @@ export function getSqlCompletionContext(sql: string, cursor: number, options: Sq
     comparisonLeftColumn: detectComparisonLeftColumn(beforeCursor),
     onStar: detectOnStar(beforeCursor),
     selectListColumnContext,
+    selectListWildcardAfterCursor,
     preferredKeywords,
     updateTarget: updateInfo?.target,
     deleteTarget: deleteInfo?.target,
@@ -3685,6 +3789,7 @@ function quoteCompletionRoutineName(applyName: string, dialect?: SqlCompletionAp
 }
 
 function quoteSelectStarColumnIdentifier(identifier: string, dialect?: SqlCompletionApplyDialect, databaseType?: DatabaseType): string {
+  if (databaseType === "oracle" || (databaseType === undefined && dialect === "oracle")) return quoteTableIdentifierIfNeeded("oracle", identifier);
   if (!requiresPostgresIdentifierQuote(identifier, POSTGRES_IDENTIFIER_KEYWORDS)) return identifier;
   if (databaseType) return quoteTableIdentifier(databaseType, identifier);
   if (dialect === "mysql") return `\`${identifier.replaceAll("`", "``")}\``;

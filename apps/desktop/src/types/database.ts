@@ -1499,6 +1499,9 @@ export interface TableStructureEditorDraft {
   activeTab: TableInfoTab;
   /** DDL as loaded from the database — the baseline `ddlDraft` is compared against. */
   ddlContent?: string;
+  /** Original DDL and display preference retained so restoring a draft cannot change its baseline. */
+  rawDdlContent?: string;
+  excludeDdlStorage?: boolean;
   /** Edited DDL script, or null/undefined when the DDL tab was left untouched. */
   ddlDraft?: string | null;
   newTableName: string;
@@ -1786,6 +1789,8 @@ export interface QueryTab {
     database?: string;
     columns: ColumnInfo[];
     primaryKeys: string[];
+    /** Physical primary keys used for table-open default sorting; excludes unique and synthetic row identifiers. */
+    physicalPrimaryKeys?: string[];
   };
   tableMetaUpdatedAt?: number;
   /** 该 tab 的 tableMeta 是哪个连接元数据代次下写入的：disconnect / 关闭数据库 /

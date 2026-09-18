@@ -29,6 +29,7 @@ export const showBatchTruncateConfirm = ref(false);
 export const showStructurePreviewDialog = ref(false);
 export const showStructureDocCopyDialog = ref(false);
 export const structurePreviewSql = ref("");
+export const structurePreviewHasOceanBase = ref(false);
 export const structurePreviewTitle = ref("");
 export const structurePreviewDefaultFileName = ref("structure.sql");
 export const structurePreviewError = ref("");
