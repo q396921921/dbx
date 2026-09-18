@@ -334,7 +334,7 @@ describe("SELECT star expansion", () => {
         qualifierSql,
         databaseType,
       ),
-    ).toBe(`id, ${qualifierSql}.${quotedColumn}`);
+    ).toBe(`${databaseType === "oracle" ? '"id"' : "id"}, ${qualifierSql}.${quotedColumn}`);
   });
 
   it("does not quote all-uppercase Oracle columns when expanding alias.* (regression #9163)", () => {
@@ -384,6 +384,26 @@ describe("SELECT star expansion", () => {
         "oracle",
       ),
     ).toBe("AGENT_NAME, SPARE1");
+  });
+
+  it.each([
+    ["oracle", "mysql"],
+    ["oracle", undefined],
+    [undefined, "oracle"],
+  ] as const)("preserves required Oracle column quotes with databaseType %s and dialect %s", (databaseType, dialect) => {
+    const columnsByTable = new Map([["orders", ["OrderId", "order_id", "AGENT_NAME", "SELECT", "created at", "ACCOUNT$SYS"].map((name) => ({ name, table: "orders" }))]]);
+    const contextOptions = { databaseType, dialect: "mysql" as const };
+
+    for (const [sql, expected] of [
+      ["SELECT o.* FROM orders o", '"OrderId", o."order_id", o.AGENT_NAME, o."SELECT", o."created at", o.ACCOUNT$SYS'],
+      ["SELECT * FROM orders", '"OrderId", "order_id", AGENT_NAME, "SELECT", "created at", ACCOUNT$SYS'],
+    ]) {
+      const cursor = sql.indexOf("*") + 1;
+      const context = sqlCompletionContextFromSemantic(buildSqlSemanticModel(sql, cursor, contextOptions), getSqlCompletionContext(sql, cursor, contextOptions));
+
+      expect(buildSelectStarExpansion(context, columnsByTable, dialect, context.qualifier, databaseType)).toBe(expected);
+      expect(buildSelectStarExpansion(context, new Map(), dialect, context.qualifier, databaseType)).toBeNull();
+    }
   });
 
   it("expands an unqualified star from result columns when the table has an alias", () => {
