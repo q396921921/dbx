@@ -6483,6 +6483,8 @@ export default withEnglishFallback({
     previewStatementRunButton: "預覽語句執行按鈕",
     wordWrap: "自動換行",
     wordWrapDescription: "長內容在編輯器寬度內自動折行顯示",
+    showWhitespace: "顯示空白字元",
+    showWhitespaceDescription: "在 SQL 編輯器中將空格顯示為 ·，定位字元顯示為 →。僅影響顯示，不改變 SQL 文字。",
     vimMode: "Vim 模式",
     vimModeDescription: "在 SQL 編輯器中使用 Vim 風格的模態編輯",
     autoCloseBrackets: "自動成對補全",

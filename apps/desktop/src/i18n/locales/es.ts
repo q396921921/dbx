@@ -7159,6 +7159,8 @@ export default withEnglishFallback({
     previewStatementRunButton: "Botón de ejecución de sentencia en vista previa",
     wordWrap: "Ajuste de línea",
     wordWrapDescription: "Ajustar las líneas largas al ancho del editor",
+    showWhitespace: "Mostrar espacios en blanco",
+    showWhitespaceDescription: "Mostrar espacios como · y tabulaciones como → en el editor SQL. Solo cambia la visualización, no el texto SQL.",
     vimMode: "Modo Vim",
     vimModeDescription: "Usar edición modal estilo Vim en el editor SQL",
     autoCloseBrackets: "Cerrar paréntesis automáticamente",

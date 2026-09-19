@@ -7183,6 +7183,8 @@ export default withEnglishFallback({
     previewStatementRunButton: "文の実行ボタンのプレビュー",
     wordWrap: "折り返し",
     wordWrapDescription: "長い行をエディタ幅内で折り返します",
+    showWhitespace: "空白文字を表示",
+    showWhitespaceDescription: "SQL エディタでスペースを ·、タブを → で表示します。表示のみ変わり、SQL テキストは変わりません。",
     vimMode: "Vimモード",
     vimModeDescription: "SQLエディタでVim形式のモーダル編集を使用します",
     autoCloseBrackets: "自動括弧補完",

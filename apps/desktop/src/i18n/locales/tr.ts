@@ -7296,6 +7296,8 @@ export default withEnglishFallback({
     previewStatementRunButton: "İfade çalıştırma düğmesini önizle",
     wordWrap: "Sözcük kaydırma",
     wordWrapDescription: "Uzun satırları düzenleyici genişliğinde kaydır",
+    showWhitespace: "Boşluk karakterlerini göster",
+    showWhitespaceDescription: "SQL düzenleyicide boşlukları ·, sekmeleri → olarak gösterir. Yalnızca görünüm değişir, SQL metni değişmez.",
     vimMode: "Vim modu",
     vimModeDescription: "SQL düzenleyicisinde Vim biçemli kipli düzenleme kullan",
     autoCloseBrackets: "Parantezleri otomatik kapat",

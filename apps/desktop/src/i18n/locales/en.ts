@@ -7643,6 +7643,8 @@ export default {
     previewStatementRunButton: "Preview statement run button",
     wordWrap: "Word wrap",
     wordWrapDescription: "Wrap long lines within the editor width",
+    showWhitespace: "Show whitespace",
+    showWhitespaceDescription: "Show spaces as · and tabs as → in the SQL editor. Only the display changes, not the SQL text.",
     vimMode: "Vim mode",
     vimModeDescription: "Use Vim-style modal editing in the SQL editor",
     autoCloseBrackets: "Auto-close brackets",

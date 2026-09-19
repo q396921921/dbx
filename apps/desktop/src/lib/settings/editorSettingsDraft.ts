@@ -30,6 +30,7 @@ export const EDITOR_SETTINGS_DRAFT_KEYS = [
   "sortCompletionColumnsAlphabetically",
   "selectFirstCompletionOnOpen",
   "wordWrap",
+  "showWhitespace",
   "vimModeEnabled",
   "autoCloseBrackets",
   "sqlSemanticDiagnosticsMode",
