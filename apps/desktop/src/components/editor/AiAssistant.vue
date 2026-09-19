@@ -2447,7 +2447,7 @@ function refreshMentionState() {
   commandOpen.value = false;
 
   const mention = activeMentionAtCursor();
-  if (!mention || !props.connection || !props.tab?.database) {
+  if (!mention || !props.connection || !mentionTargetDatabase()) {
     mentionOpen.value = false;
     return;
   }
@@ -2458,6 +2458,10 @@ function refreshMentionState() {
     loadMentionCandidates(mention.query).catch(() => {});
   }, 120);
 }
+
+watch(selectedDatabases, () => {
+  if (mentionOpen.value) refreshMentionState();
+});
 
 function onPromptKeyup(event: KeyboardEvent) {
   if (["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(event.key)) return;
