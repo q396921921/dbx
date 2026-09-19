@@ -93,6 +93,14 @@ async function commitPathInput() {
   pathInput.value = previews.value.length > 0 ? filePathDisplay.value : typed;
 }
 
+// Ignore the Enter that confirms an IME composition (e.g. Chinese paths) so it
+// does not commit a half-typed path; only a real Enter commits.
+function commitPathInputOnEnter(event: KeyboardEvent) {
+  if (event.isComposing) return;
+  event.preventDefault();
+  void commitPathInput();
+}
+
 // Desktop tooltip shows the real file path; Web tooltip shows the user-facing
 // label only — never the server temp path (which contains a meaningless UUID).
 function tooltipText(item: SqlFilePreview): string {
@@ -692,7 +700,7 @@ watch(
 
           <div class="flex items-center gap-2">
             <input ref="fileInput" type="file" accept=".sql,.sql.gz,.zip,text/sql,application/gzip,application/zip" multiple class="hidden" @change="handleFileInputChange" />
-            <Input v-if="isDesktopRuntime" v-model="pathInput" :disabled="running" class="h-8 text-xs font-mono" :placeholder="t('sqlFile.selectSqlFile')" @keydown.enter.prevent="commitPathInput" @blur="commitPathInput" />
+            <Input v-if="isDesktopRuntime" v-model="pathInput" :disabled="running" class="h-8 text-xs font-mono" :placeholder="t('sqlFile.selectSqlFile')" @keydown.enter="commitPathInputOnEnter" @blur="commitPathInput" />
             <Input v-else :model-value="filePathDisplay" readonly class="h-8 text-xs font-mono" :placeholder="t('sqlFile.selectSqlFile')" />
             <Button variant="outline" size="sm" class="h-8 shrink-0" :disabled="running || selectingFile" @click="selectFile">
               <Loader2 v-if="selectingFile || loadingPreview" class="w-3.5 h-3.5 mr-1.5 animate-spin" />
