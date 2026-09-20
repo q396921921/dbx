@@ -3927,6 +3927,16 @@ pub fn fix_potential_double_encoding(s: &str) -> String {
     }
 }
 
+/// MySQL allows leading/trailing spaces in column names, so keep the name verbatim
+/// and only drop rows whose name is blank.
+fn mysql_column_name(raw: String) -> Option<String> {
+    if raw.trim().is_empty() {
+        None
+    } else {
+        Some(raw)
+    }
+}
+
 fn parse_mysql_enum_values(column_type: &str) -> Option<Vec<String>> {
     let trimmed = column_type.trim();
     if !trimmed.get(..5)?.eq_ignore_ascii_case("enum(") || !trimmed.ends_with(')') {
@@ -4006,10 +4016,7 @@ where
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .filter_map(|row| {
-            let name = get_str_by_name(row, "COLUMN_NAME").trim().to_string();
-            if name.is_empty() {
-                return None;
-            }
+            let name = mysql_column_name(get_str_by_name(row, "COLUMN_NAME"))?;
             let column_key = get_str_by_name(row, "COLUMN_KEY");
             let data_type = get_str_by_name(row, "DATA_TYPE");
             let column_type = get_str_by_name(row, "COLUMN_TYPE");
@@ -4070,10 +4077,7 @@ where
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .filter_map(|row| {
-            let name = get_str_by_name(row, "Field").trim().to_string();
-            if name.is_empty() {
-                return None;
-            }
+            let name = mysql_column_name(get_str_by_name(row, "Field"))?;
             let key = get_str_by_name(row, "Key");
             let collation = get_opt_str(row, "Collation").filter(|s| !s.is_empty());
             Some(ColumnInfo {
@@ -7345,6 +7349,15 @@ mod tests {
             .expect("Option<String> must accept NULL MySQL metadata values");
 
         assert_eq!(collation, None);
+    }
+
+    #[test]
+    fn mysql_column_name_preserves_surrounding_spaces() {
+        assert_eq!(mysql_column_name("  content1".to_string()).as_deref(), Some("  content1"));
+        assert_eq!(mysql_column_name("name ".to_string()).as_deref(), Some("name "));
+        assert_eq!(mysql_column_name("id".to_string()).as_deref(), Some("id"));
+        assert_eq!(mysql_column_name("   ".to_string()), None);
+        assert_eq!(mysql_column_name(String::new()), None);
     }
 
     #[test]
