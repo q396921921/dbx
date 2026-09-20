@@ -2539,7 +2539,8 @@ impl OraclePlSqlBlock {
                 && matches!(scopes.last(), Some(OraclePlSqlScope::Declaration | OraclePlSqlScope::Routine))
             {
                 scopes.push(OraclePlSqlScope::RoutineHeader);
-            } else if token.is_any_word(&["IS", "AS"]) && matches!(scopes.last(), Some(OraclePlSqlScope::RoutineHeader)) {
+            } else if token.is_any_word(&["IS", "AS"]) && matches!(scopes.last(), Some(OraclePlSqlScope::RoutineHeader))
+            {
                 *scopes.last_mut().unwrap() = OraclePlSqlScope::Routine;
             } else if token.is_word("BEGIN") {
                 // A local routine's BEGIN belongs to that routine, not to the outer block.
