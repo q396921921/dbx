@@ -708,7 +708,7 @@ onBeforeUnmount(() => {
 
       <!-- Grid view -->
       <div v-else class="grid grid-cols-2 gap-4 lg:grid-cols-3">
-        <div v-for="(hit, idx) in hits" :key="documentId(hit) || idx" class="group relative rounded-lg border bg-card px-4 py-3.5">
+        <div v-for="(hit, idx) in hits" :key="documentId(hit) || idx" class="group relative rounded-lg border bg-card px-4 pb-3.5 pt-9">
           <Badge v-if="rankingScore(hit) != null" variant="secondary" class="absolute right-2 bottom-2 tabular-nums" :title="t('meilisearch.showRankingScore')">
             {{ rankingScore(hit)!.toFixed(2) }}
           </Badge>
