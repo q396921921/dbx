@@ -1,4 +1,5 @@
 import { joinedSaveOptions } from "@/lib/dataGrid/joinedRowChanges";
+import { isAiPromptImeCompositionEvent } from "@/lib/ai/aiPromptKeyboard";
 import { ref, shallowRef, triggerRef, computed, nextTick, watch, getCurrentInstance, onActivated, onBeforeUnmount, onDeactivated, onMounted, toRaw, type ComputedRef, type Ref } from "vue";
 import * as api from "@/lib/backend/api";
 import type { DataGridSaveGuard } from "@/lib/backend/tauri";
@@ -1248,7 +1249,11 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
     restoreScrollAcrossFrames(restoreScroll);
   }
 
-  function onEditKeydown(e: KeyboardEvent) {
+  function onEditKeydown(e: KeyboardEvent, compositionActive = false) {
+    // Enter/Escape can also be the key that commits an IME candidate. Never
+    // treat that key as the grid shortcut; otherwise a Chinese/Japanese input
+    // commits the cell before the composition is inserted (#12470).
+    if (isAiPromptImeCompositionEvent(e, compositionActive)) return;
     const isExpandedTextarea = typeof HTMLTextAreaElement !== "undefined" && e.target instanceof HTMLTextAreaElement && e.target.dataset.expandedCellEditor === "true";
     if (e.key === "Enter" && (!isExpandedTextarea || e.metaKey || e.ctrlKey)) {
       e.preventDefault();
@@ -1444,7 +1449,11 @@ export function useDataGridEditor(options: UseDataGridEditorOptions) {
           continue;
         }
         const value = pastedRow[valueIndex];
-        nextRow[columnIndex] = value === null ? null : coerceCellValue(value, nextRow[columnIndex], columnIndex);
+        // A pasted cell is literal text, never a "clear this cell" gesture, so an
+        // empty field has to stay an empty string instead of collapsing to NULL
+        // (issue #12727). Without this the coercion below reads the blank draft
+        // row's `null` as the previous value and rewrites '' as NULL on save.
+        nextRow[columnIndex] = value === null ? null : coerceCellValue(value, nextRow[columnIndex], columnIndex, { preserveEmptyString: true });
       }
       mappedRows.push(nextRow);
       mappedMeta.push(rowIndex < reusableNewRowCount && sourceMeta[targetNewIndex! + rowIndex] ? cloneNewRowMeta([sourceMeta[targetNewIndex! + rowIndex]!])[0]! : allocateNewRowMeta(targetPlacement));

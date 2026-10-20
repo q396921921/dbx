@@ -104,6 +104,7 @@ import {
   type SavedSqlOpenTargetMode,
   type AiSqlApplyTargetMode,
   type TabGroupMode,
+  type TabGroupRowMode,
   type TabPlacement,
   type TabSortMode,
   type WelcomePageMode,
@@ -387,6 +388,7 @@ import {
 } from "@/lib/settings/settingsSearch";
 import { findSettingsSearchHighlightTarget } from "@/lib/settings/settingsSearchHighlight";
 import { LOCALE_OPTIONS } from "@/lib/app/localeOptions";
+import LocaleFlag from "@/components/icons/LocaleFlag.vue";
 import {
   DEFAULT_WEB_DAV_AUTO_UPLOAD_INTERVAL_MINUTES,
   DEFAULT_WEB_DAV_REMOTE_PATH,
@@ -799,6 +801,7 @@ const editColorizeConnectionTabs = ref(settingsStore.editorSettings.colorizeConn
 const editTabGroupMode = ref<TabGroupMode>(settingsStore.editorSettings.tabGroupMode);
 const editTabSortMode = ref<TabSortMode>(settingsStore.editorSettings.tabSortMode);
 const editTabMaxWidth = ref<number>(settingsStore.editorSettings.tabMaxWidth);
+const editTabGroupRows = ref<TabGroupRowMode>(settingsStore.editorSettings.tabGroupRows);
 const editShowTrayIcon = ref(settingsStore.desktopSettings.show_tray_icon);
 const editQuitOnClose = ref(settingsStore.desktopSettings.quit_on_close);
 const desktopCloseBehaviorResetPending = ref(false);
@@ -1197,6 +1200,7 @@ function currentEditorSettingsDraft(): EditorSettingsDraft {
     tabGroupMode: editTabGroupMode.value,
     tabSortMode: editTabSortMode.value,
     tabMaxWidth: editTabMaxWidth.value,
+    tabGroupRows: editTabGroupRows.value,
     showColumnCommentsInHeader: editShowColumnCommentsInHeader.value,
     dataGridColumnCommentsInInfoArea: editDataGridColumnCommentsInInfoArea.value,
     showColumnTypesInHeader: editShowColumnTypesInHeader.value,
@@ -1894,6 +1898,7 @@ function syncEditorSettingsDraftFromStore() {
   editTabGroupMode.value = settingsStore.editorSettings.tabGroupMode;
   editTabSortMode.value = settingsStore.editorSettings.tabSortMode;
   editTabMaxWidth.value = settingsStore.editorSettings.tabMaxWidth;
+  editTabGroupRows.value = settingsStore.editorSettings.tabGroupRows;
   editShowColumnCommentsInHeader.value = settingsStore.editorSettings.showColumnCommentsInHeader;
   editDataGridColumnCommentsInInfoArea.value = settingsStore.editorSettings.dataGridColumnCommentsInInfoArea;
   editShowColumnTypesInHeader.value = settingsStore.editorSettings.showColumnTypesInHeader;
@@ -2065,6 +2070,7 @@ const editorSettingsDraftRefs: EditorSettingsDraftRefMap = {
   tabGroupMode: editTabGroupMode,
   tabSortMode: editTabSortMode,
   tabMaxWidth: editTabMaxWidth,
+  tabGroupRows: editTabGroupRows,
   showColumnCommentsInHeader: editShowColumnCommentsInHeader,
   dataGridColumnCommentsInInfoArea: editDataGridColumnCommentsInInfoArea,
   showColumnTypesInHeader: editShowColumnTypesInHeader,
@@ -2669,6 +2675,7 @@ function resetDefaultsForTab(tab: SettingsCategory) {
     editTabGroupMode.value = DEFAULT_EDITOR_SETTINGS.tabGroupMode;
     editTabSortMode.value = DEFAULT_EDITOR_SETTINGS.tabSortMode;
     editTabMaxWidth.value = DEFAULT_EDITOR_SETTINGS.tabMaxWidth;
+    editTabGroupRows.value = DEFAULT_EDITOR_SETTINGS.tabGroupRows;
     editShowTrayIcon.value = DEFAULT_DESKTOP_SETTINGS.show_tray_icon;
     editQuitOnClose.value = DEFAULT_DESKTOP_SETTINGS.quit_on_close;
     desktopCloseBehaviorResetPending.value = true;
@@ -3511,6 +3518,10 @@ function setTabMaxWidth(value: number) {
   editTabMaxWidth.value = normalizeTabMaxWidth(value);
 }
 
+function setTabGroupRows(value: TabGroupRowMode) {
+  editTabGroupRows.value = value;
+}
+
 function setSidebarActivation(value: "single" | "double") {
   editSidebarActivation.value = value;
 }
@@ -3653,7 +3664,7 @@ const settingsSearchEntries = computed(() =>
     settingsSearchCategoryLabels.value,
   ),
 );
-const settingsSearchResults = computed(() => searchSettings(settingsSearchEntries.value, settingsSearchQuery.value, currentLocale()));
+const settingsSearchResults = computed(() => searchSettings(settingsSearchEntries.value, settingsSearchQuery.value, currentLocale(), Infinity));
 const settingsSearchActive = computed(() => Boolean(settingsSearchQuery.value.trim()));
 const settingsSearchVisible = computed(() => settingsSearchOpen.value && settingsSearchActive.value);
 const settingsSearchResultGroups = computed(() => {
@@ -3712,6 +3723,10 @@ function onSettingsCategoryClick(category: SettingsCategory) {
 
 function applySettingsSearchRoute(result: SettingsSearchEntry) {
   if (result.route?.syncMethodTab) syncMethodTab.value = result.route.syncMethodTab;
+  if (result.route?.mcpManagementTab) mcpManagementTab.value = result.route.mcpManagementTab;
+  if (result.route?.mcpTransportTab) mcpTransportTab.value = result.route.mcpTransportTab;
+  if (result.route?.mcpAuthorizationTab) mcpAuthorizationTab.value = result.route.mcpAuthorizationTab;
+  if (result.route?.formatterMode) formatterMode.value = result.route.formatterMode;
 }
 
 async function revealSettingsSearchTarget(result: SettingsSearchEntry) {
@@ -3766,6 +3781,10 @@ function onSettingsSearchKeydown(event: KeyboardEvent) {
     settingsSearchOpen.value = true;
     const direction = event.key === "ArrowDown" ? 1 : -1;
     settingsSearchActiveIndex.value = (settingsSearchActiveIndex.value + direction + results.length) % results.length;
+    void nextTick(() => {
+      const activeResult = settingsSearchResults.value[settingsSearchActiveIndex.value];
+      if (activeResult) document.getElementById(`settings-search-result-${activeResult.id}`)?.scrollIntoView({ block: "nearest" });
+    });
     return;
   }
   if (event.key === "Enter") {
@@ -3941,6 +3960,8 @@ const mcpCopied = ref<"" | McpCopyKind>("");
 const mcpConfigTab = ref<McpConfigTab>("claude");
 const mcpTransportTab = ref<McpTransportTab>("stdio");
 const mcpManagementTab = ref<McpManagementTab>("access");
+const mcpAuthorizationTab = ref<"overrides" | "connections" | "databases" | "capabilities">("overrides");
+const formatterMode = ref<"form" | "json">("form");
 const mcpHttpSettings = ref<McpHttpServerSettings>({
   enabled: false,
   host: "127.0.0.1",
@@ -7567,7 +7588,7 @@ onUnmounted(() => {
                 </div>
 
                 <!-- Theme + Custom Theme Button -->
-                <div class="flex gap-2 items-end">
+                <div data-settings-search-id="editor-theme" class="flex gap-2 items-end">
                   <div class="space-y-2">
                     <Label>{{ t("settings.theme") }}</Label>
                     <Select :model-value="themeSelectValue" @update:model-value="onThemeChange">
@@ -8283,7 +8304,7 @@ onUnmounted(() => {
                   </div>
                 </div>
               </div>
-              <SqlFormatterSettingsPanel v-model="editSqlFormatter" @validity-change="(value: boolean) => (sqlFormatterConfigValid = value)" />
+              <SqlFormatterSettingsPanel v-model="editSqlFormatter" v-model:mode="formatterMode" @validity-change="(value: boolean) => (sqlFormatterConfigValid = value)" />
             </section>
 
             <section v-else-if="activeSettingsTab === 'appearance'" class="settings-appearance-section flex flex-col gap-4 py-2" data-settings-search-id="appearance" :class="settingsSearchTargetClass('appearance')">
@@ -8293,22 +8314,18 @@ onUnmounted(() => {
                     <Label class="whitespace-normal leading-tight">{{ t("settings.languageTitle") }}</Label>
                   </div>
                   <Select :model-value="currentLocale()" @update:model-value="onLocaleChange" @update:open="onLocaleOpenChange">
-                    <SelectTrigger class="h-8 w-full gap-0.5 px-0.5">
+                    <SelectTrigger class="h-8 w-full gap-0.5 px-0.5" :aria-label="t('settings.languageTitle')">
                       <SelectValue>
                         <span v-if="selectedLocaleOption" class="flex min-w-0 items-center gap-0.5">
-                          <span class="inline-flex h-5 shrink-0 items-center justify-center text-sm font-medium leading-none">
-                            {{ selectedLocaleOption.flag }}
-                          </span>
+                          <LocaleFlag :option="selectedLocaleOption" />
                           <span class="truncate">{{ selectedLocaleOption.label }}</span>
                         </span>
                       </SelectValue>
                     </SelectTrigger>
                     <SelectContent class="w-[150px]" @pointerleave="restoreLocaleOptionPreview">
-                      <SelectItem v-for="locale in LOCALE_OPTIONS" :key="locale.value" :value="locale.value" @pointerenter="scheduleLocaleOptionPreview(locale.value)" @focus="previewLocaleOption(locale.value)">
+                      <SelectItem v-for="locale in LOCALE_OPTIONS" :key="locale.value" :value="locale.value" :text-value="locale.label" @pointerenter="scheduleLocaleOptionPreview(locale.value)" @focus="previewLocaleOption(locale.value)">
                         <div class="flex items-center gap-1">
-                          <span class="inline-flex h-5 w-6 shrink-0 items-center justify-center text-sm font-medium leading-none">
-                            {{ locale.flag }}
-                          </span>
+                          <LocaleFlag :option="locale" />
                           <span>{{ locale.label }}</span>
                         </div>
                       </SelectItem>
@@ -8592,7 +8609,7 @@ onUnmounted(() => {
               </div>
 
               <div class="settings-appearance-group">
-                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
                   <div class="space-y-2">
                     <Label>{{ t("settings.tabPlacement") }}</Label>
                     <Select :model-value="editTabPlacement" @update:model-value="setTabPlacement($event as TabPlacement)">
@@ -8615,6 +8632,16 @@ onUnmounted(() => {
                         <SelectItem value="database">{{ t("settings.tabGroupDatabase") }}</SelectItem>
                         <SelectItem value="connection">{{ t("settings.tabGroupConnection") }}</SelectItem>
                         <SelectItem value="sidebar">{{ t("settings.tabGroupSidebar") }}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div class="space-y-2">
+                    <Label>{{ t("settings.tabGroupRows") }}</Label>
+                    <Select :model-value="editTabGroupRows" @update:model-value="setTabGroupRows($event as TabGroupRowMode)">
+                      <SelectTrigger class="w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="single">{{ t("settings.tabGroupRowsSingle") }}</SelectItem>
+                        <SelectItem value="two-row">{{ t("settings.tabGroupRowsTwoRow") }}</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -8646,6 +8673,7 @@ onUnmounted(() => {
                 <div class="space-y-1 text-xs text-muted-foreground">
                   <p>{{ t("settings.tabPlacementDescription") }}</p>
                   <p>{{ t("settings.tabOrganizationDescription") }}</p>
+                  <p>{{ t("settings.tabGroupRowsDescription") }}</p>
                   <p>{{ t("settings.tabMaxWidthDescription") }}</p>
                 </div>
               </div>
@@ -9705,7 +9733,7 @@ onUnmounted(() => {
                     </SelectContent>
                   </Select>
                 </div>
-                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div data-settings-search-id="query-result-max-rows" class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
                     <Label for="query-result-max-rows-enabled">
                       {{ t("settings.queryResultMaxRows") }}
@@ -9925,7 +9953,7 @@ onUnmounted(() => {
                   </div>
                   <Switch id="data-grid-cell-detail-dialog-default" v-model="editDataGridCellDetailDialogDefault" />
                 </div>
-                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div data-settings-search-id="data-grid-crosshair" class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
                     <Label for="data-grid-crosshair-highlight">
                       {{ t("settings.dataGridCrosshairHighlight") }}
@@ -9966,7 +9994,7 @@ onUnmounted(() => {
                     <Switch id="data-grid-crosshair-highlight" v-model="editDataGridCrosshairHighlight" />
                   </div>
                 </div>
-                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                <div data-settings-search-id="data-grid-striped-rows" class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
                   <div class="space-y-1">
                     <Label for="data-grid-striped-rows">
                       {{ t("settings.dataGridStripedRows") }}
@@ -10130,7 +10158,7 @@ onUnmounted(() => {
 
               <Separator />
 
-              <div id="redis-key-templates" class="space-y-3">
+              <div id="redis-key-templates" data-settings-search-id="redis-key-templates" class="space-y-3">
                 <div class="text-sm font-medium text-muted-foreground">
                   {{ t("settings.redisKeyTemplatesSection") }}
                 </div>
@@ -11009,7 +11037,7 @@ LIMIT 100;</pre>
                     </div>
                     <div class="space-y-2 md:col-span-2">
                       <Label for="snippet-sync-passphrase">{{ t("settings.syncSnippetPassphrase") }}</Label>
-                      <PasswordInput id="snippet-sync-passphrase" v-model="snippetPassphrase" :placeholder="snippetHasSavedPassphrase ? '••••••••' : ''" autocomplete="new-password" />
+                      <PasswordInput id="snippet-sync-passphrase" v-model="snippetPassphrase" :placeholder="snippetHasSavedPassphrase ? '••••••••' : ''" :show-toggle="!snippetHasSavedPassphrase || !!snippetPassphrase" autocomplete="new-password" />
                       <div class="flex items-center justify-between gap-3">
                         <label class="flex items-center gap-2 text-xs text-muted-foreground">
                           <input v-model="snippetRememberPassphrase" type="checkbox" class="h-4 w-4 shrink-0 accent-primary" />
@@ -11415,6 +11443,22 @@ LIMIT 100;</pre>
                     </p>
                   </div>
                   <Switch id="ai-restore-last-conversation" :model-value="settingsStore.restoreLastConversation" @update:model-value="(value) => settingsStore.setRestoreLastConversation(Boolean(value))" />
+                </div>
+              </div>
+
+              <!-- Send query results to AI (list mode, global) -->
+              <div v-if="aiConfigListMode === 'list'" class="space-y-3">
+                <Separator />
+                <div class="settings-item flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2">
+                  <div class="space-y-1">
+                    <Label for="ai-include-query-result">
+                      {{ t("ai.includeQueryResult") }}
+                    </Label>
+                    <p class="text-xs text-muted-foreground">
+                      {{ t("ai.includeQueryResultDescription") }}
+                    </p>
+                  </div>
+                  <Switch id="ai-include-query-result" :model-value="settingsStore.includeQueryResult" @update:model-value="(value) => settingsStore.setIncludeQueryResult(Boolean(value))" />
                 </div>
               </div>
 
@@ -12079,7 +12123,7 @@ LIMIT 100;</pre>
                         <TabsTrigger value="stdio" class="flex-none px-3">{{ t("settings.mcpTransportLocalStdio") }}</TabsTrigger>
                         <TabsTrigger value="http" class="flex-none px-3">{{ t("settings.mcpTransportHttpService") }}</TabsTrigger>
                       </TabsList>
-                      <TabsContent value="http" class="m-0 space-y-4">
+                      <TabsContent value="http" data-settings-search-id="mcp-http" class="m-0 space-y-4">
                         <div v-if="isWeb" class="space-y-4">
                           <div class="space-y-3 border-t border-border/60 pt-3">
                             <div class="flex items-center justify-between gap-3">
@@ -12291,7 +12335,7 @@ LIMIT 100;</pre>
                         </div>
                       </TabsContent>
 
-                      <TabsContent value="stdio" class="m-0 space-y-4">
+                      <TabsContent value="stdio" data-settings-search-id="mcp-stdio" class="m-0 space-y-4">
                         <div
                           v-if="!isWeb && (mcpKeychainNeedsAuthorization || mcpKeychainMessage)"
                           class="space-y-2 rounded-md border px-3 py-2.5 text-xs"
@@ -12417,7 +12461,7 @@ LIMIT 100;</pre>
                 </TabsContent>
 
                 <TabsContent value="permissions" class="m-0 space-y-4">
-                  <McpAuthorizationTabs>
+                  <McpAuthorizationTabs v-model="mcpAuthorizationTab">
                     <template #connections>
                       <div class="space-y-3">
                         <p v-if="mcpPolicyLoadError" class="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
@@ -12588,7 +12632,7 @@ LIMIT 100;</pre>
                   </McpAuthorizationTabs>
                 </TabsContent>
                 <div v-if="mcpManagementTab === 'access'" class="space-y-5 border-t border-border/60 pt-5 sm:ml-1">
-                  <div class="space-y-3">
+                  <div data-settings-search-id="mcp-query-timeout" class="space-y-3">
                     <div>
                       <p class="text-sm font-semibold text-foreground">{{ t("settings.mcpRuntimeSettings") }}</p>
                       <p class="mt-1 text-xs text-muted-foreground">{{ t("settings.mcpQueryTimeoutDescription") }}</p>
@@ -12600,7 +12644,7 @@ LIMIT 100;</pre>
                       </div>
                     </div>
                   </div>
-                  <div v-if="mcpTransportTab === 'stdio'" class="space-y-3">
+                  <div v-if="mcpTransportTab === 'stdio'" data-settings-search-id="mcp-client-config" class="space-y-3">
                     <div>
                       <Label>{{ t("settings.mcpConfig") }}</Label>
                       <p class="mt-1 text-xs text-muted-foreground">{{ t("settings.mcpConfigOptionsHint") }}</p>

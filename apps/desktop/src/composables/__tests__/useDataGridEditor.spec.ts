@@ -1219,6 +1219,26 @@ describe("useDataGridEditor appendPastedRowsToNewRow", () => {
     ]);
   });
 
+  it("keeps a pasted empty string as an empty string instead of NULL", () => {
+    const editor = createEditor();
+    editor.newRows.value = [];
+
+    const result = editor.appendPastedRowsAsNewRows([["", null, "Lovelace"]], [0, 1, 2]);
+
+    expect(result).toEqual({ ok: true, rowCount: 1 });
+    expect(editor.newRows.value).toEqual([["", null, "Lovelace"]]);
+  });
+
+  it("keeps a pasted empty string when filling a blank target row", () => {
+    const editor = createEditor();
+    editor.newRows.value = [[null, null, null]];
+
+    const result = editor.appendPastedRowsToNewRow(-1, [["", "Lovelace"]], [0, 2]);
+
+    expect(result).toEqual({ ok: true, rowCount: 1 });
+    expect(editor.newRows.value).toEqual([["", null, "Lovelace"]]);
+  });
+
   it("rejects a non-empty terminal new-row draft", () => {
     const editor = createEditor();
     editor.newRows.value = [];
@@ -2336,6 +2356,46 @@ describe("useDataGridEditor saveChanges reload", () => {
     expect(confirmSaveRequest).not.toHaveBeenCalled();
     expect(mocks.executeBatch).not.toHaveBeenCalled();
     expect(editor.dirtyRows.value.get(0)?.get(1)).toBe("shipped");
+  });
+});
+
+describe("useDataGridEditor IME composition", () => {
+  it("does not commit or cancel the cell while Enter/Escape belongs to an IME composition", () => {
+    const editor = createEditor(undefined, true, undefined, undefined, [["Ada", "hidden", "Lovelace"]]);
+    editor.startEdit(0, 0);
+    editor.editValue.value = "中";
+
+    const composing = { key: "Enter", isComposing: true, keyCode: 229, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+    editor.onEditKeydown(composing);
+    expect(composing.preventDefault).not.toHaveBeenCalled();
+    expect(editor.editingCell.value).not.toBeNull();
+
+    const escape = { key: "Escape", isComposing: true, keyCode: 229, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+    editor.onEditKeydown(escape);
+    expect(escape.preventDefault).not.toHaveBeenCalled();
+    expect(editor.editingCell.value).not.toBeNull();
+  });
+
+  it("keeps the guard for the Process key without keyCode 229", () => {
+    const editor = createEditor(undefined, true, undefined, undefined, [["Ada", "hidden", "Lovelace"]]);
+    editor.startEdit(0, 0);
+    const process = { key: "Process", isComposing: false, keyCode: 13, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+    editor.onEditKeydown(process);
+    expect(process.preventDefault).not.toHaveBeenCalled();
+    expect(editor.editingCell.value).not.toBeNull();
+  });
+
+  it("defers to the composition tracking flag when the keydown itself carries no composition signal", () => {
+    const editor = createEditor(undefined, true, undefined, undefined, [["Ada", "hidden", "Lovelace"]]);
+    editor.startEdit(0, 0);
+    // WebKit fires compositionend before the committing keydown, so the input's
+    // composition tracking ref is the only reliable signal in that window.
+    const enter = { key: "Enter", isComposing: false, keyCode: 13, preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as KeyboardEvent;
+    editor.onEditKeydown(enter, true);
+    expect(enter.preventDefault).not.toHaveBeenCalled();
+    expect(editor.editingCell.value).not.toBeNull();
+    editor.onEditKeydown(enter, false);
+    expect(enter.preventDefault).toHaveBeenCalled();
   });
 });
 

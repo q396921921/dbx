@@ -1,7 +1,7 @@
 import { computed, nextTick, ref } from "vue";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { isDangerousSql, requiresDatabaseSelection, snapshotResultForMerge, supportsSqlTemplateParameters, useSqlExecution } from "../useSqlExecution";
+import { isDangerousSql, requiresConnectionSelection, requiresDatabaseSelection, snapshotResultForMerge, supportsSqlTemplateParameters, useSqlExecution } from "../useSqlExecution";
 import { useConnectionStore } from "@/stores/connectionStore";
 import { useHistoryStore } from "@/stores/historyStore";
 import { useQueryStore } from "@/stores/queryStore";
@@ -127,6 +127,29 @@ describe("requiresDatabaseSelection", () => {
   });
 });
 
+describe("requiresConnectionSelection", () => {
+  beforeEach(() => {
+    installLocalStorage();
+    setActivePinia(createPinia());
+  });
+
+  it("requires a connection for a query tab without one", () => {
+    const tab = queryTab();
+    tab.connectionId = "";
+    expect(requiresConnectionSelection(tab, undefined)).toBe(true);
+  });
+
+  it("does not require a connection when one is resolved", () => {
+    expect(requiresConnectionSelection(queryTab(), connection("mysql"))).toBe(false);
+  });
+
+  it("never requires a connection for non-query tabs", () => {
+    const tab = queryTab();
+    tab.mode = "databases";
+    expect(requiresConnectionSelection(tab, undefined)).toBe(false);
+  });
+});
+
 describe("supportsSqlTemplateParameters", () => {
   it("disables SQL parameter prompts for Meilisearch input", () => {
     expect(supportsSqlTemplateParameters(connection("meilisearch"), "GET /indexes/:uid")).toBe(false);
@@ -139,6 +162,22 @@ describe("useSqlExecution", () => {
     installLocalStorage();
     setActivePinia(createPinia());
     vi.mocked(objectMetadataCache.invalidateObjectMetadataCache).mockClear();
+  });
+
+  it.each([
+    ["pg", "SELECT data ? 'name' FROM events"],
+    ["oracle", "SELECT 1 FROM DUAL@remote_db"],
+    ["mysql", "CREATE PROCEDURE p() BEGIN label_1: LOOP LEAVE label_1; END LOOP; END"],
+    ["sqlserver", "DECLARE @id int; SET @id = 1; SELECT @id;"],
+  ])("does not mistake Kingbase %s server syntax for template parameters", async (mode, sql) => {
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql });
+    const activeConnection = ref<ConnectionConfig | undefined>({ ...connection("kingbase"), database_info: { compatibilityMode: mode } });
+    const execute = vi.spyOn(useQueryStore(), "executeCurrentSql").mockResolvedValue(undefined);
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+    const execution = useSqlExecution({ activeTab: computed(() => activeTab.value), activeConnection: computed(() => activeConnection.value), executableSql: computed(() => sql), activeOutputView: ref("result") });
+    await execution.tryExecute();
+    expect(execution.showSqlParameterDialog.value).toBe(false);
+    expect(execute).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
   });
 
   it("executes Neo4j graph patterns without a SQL parameter dialog", async () => {
@@ -163,6 +202,30 @@ describe("useSqlExecution", () => {
 
     expect(execution.showSqlParameterDialog.value).toBe(false);
     expect(executeCurrentSql).toHaveBeenCalledWith(sql, { tabId: "tab-1" });
+  });
+
+  it("prompts for a connection instead of executing when no connection is selected", async () => {
+    const sql = "SELECT 1";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab(), connectionId: "", sql });
+    const activeConnection = ref<ConnectionConfig | undefined>(undefined);
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    const executeCurrentSql = vi.spyOn(queryStore, "executeCurrentSql").mockResolvedValue(undefined);
+    vi.spyOn(useHistoryStore(), "add").mockResolvedValue(undefined);
+    const onMissingConnection = vi.fn();
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+      onMissingConnection,
+    });
+
+    await execution.tryExecute();
+
+    expect(onMissingConnection).toHaveBeenCalledWith("tab-1");
+    expect(executeCurrentSql).not.toHaveBeenCalled();
   });
 
   it("invalidates object metadata after successful connection-level DDL", async () => {
@@ -219,6 +282,30 @@ describe("useSqlExecution", () => {
 
     expect(invalidateObjectMetadata).toHaveBeenCalledWith({ connectionId: "conn-1", database: "app", schema: "public" });
     expect(refreshObjects).toHaveBeenCalledWith("conn-1", "app", "public");
+  });
+
+  it("rejects execution when the target tab is already executing", async () => {
+    const sql = "SELECT 1;";
+    const activeTab = ref<QueryTab | undefined>({ ...queryTab("app"), sql, isExecuting: true });
+    const activeConnection = ref<ConnectionConfig | undefined>(connection("mysql"));
+    const activeOutputView = ref<"result" | "summary" | "explain" | "chart">("result");
+    const queryStore = useQueryStore();
+    const executeCurrentSql = vi.spyOn(queryStore, "executeCurrentSql");
+    const onExecutionCancelled = vi.fn();
+
+    const execution = useSqlExecution({
+      activeTab: computed(() => activeTab.value),
+      activeConnection: computed(() => activeConnection.value),
+      executableSql: computed(() => sql),
+      activeOutputView,
+      onExecutionCancelled,
+    });
+
+    const outcome = await execution.tryExecute(undefined, { editorViewportRequestId: 123 });
+
+    expect(outcome).toEqual({ status: "not-started", reason: "busy", tabId: "tab-1" });
+    expect(executeCurrentSql).not.toHaveBeenCalled();
+    expect(onExecutionCancelled).toHaveBeenCalledWith(123);
   });
 
   it("sends every placeholder syntax and @set unchanged when substitution is disabled", async () => {
