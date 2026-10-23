@@ -48,6 +48,7 @@ import { parseSqlFilePathInput } from "./sqlFilePathInput";
 import { orderConnectionsForSidebarDisplay } from "@/lib/sidebar/connectionListSort";
 import SqlFileProgressIndicator from "./SqlFileProgressIndicator.vue";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
+import { readSqlFileCloseOnSuccess, writeSqlFileCloseOnSuccess } from "@/lib/sql/sqlFileExecutionOptions";
 import { translateBackendError } from "@/i18n/backend-errors";
 import { Check, CheckSquare, FileCode, FolderOpen, Loader2, Play, Square, X } from "@lucide/vue";
 
@@ -148,6 +149,10 @@ const loadingDatabases = ref(false);
 const preferredTarget = ref<ExternalSqlFileTarget>();
 const continueOnError = ref(false);
 const skipRelationalConstraints = ref(false);
+const closeOnSuccess = ref(readSqlFileCloseOnSuccess());
+watch(closeOnSuccess, (enabled) => {
+  writeSqlFileCloseOnSuccess(enabled);
+});
 const manualTransaction = ref(false);
 const txnSessionId = ref<string>();
 const commitUncertain = ref(false);
@@ -258,7 +263,9 @@ async function finishTransaction(commit: boolean) {
         toast(t("sqlFile.completedWithErrors", { succeeded: progress.value?.successCount ?? 0, failed: failureCount }), 5000);
       } else {
         toast(t("sqlFile.executeSuccess"), 3000);
-        open.value = false;
+        if (closeOnSuccess.value) {
+          open.value = false;
+        }
       }
     }
     return true;
@@ -525,6 +532,7 @@ function resetState() {
   continueOnError.value = false;
   skipRelationalConstraints.value = false;
   manualTransaction.value = false;
+  closeOnSuccess.value = readSqlFileCloseOnSuccess();
   restoreSelectedTables.value = false;
   resetExecution();
 }
@@ -664,7 +672,7 @@ async function selectFile() {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const selected = await open({
       multiple: true,
-      filters: [{ name: "SQL package", extensions: ["sql", "gz", "zip"] }],
+      filters: [{ name: "SQL package", extensions: ["sql", "gz", "zip", "nb3"] }],
     });
     const paths = Array.isArray(selected) ? selected : selected ? [selected] : [];
     if (paths.length > 0) {
@@ -892,7 +900,9 @@ async function startExecution() {
           toast(t("sqlFile.completedWithErrors", { succeeded: finalProgress?.successCount ?? 0, failed: failureCount }), 5000);
         } else {
           toast(t("sqlFile.executeSuccess"), 3000);
-          open.value = false;
+          if (closeOnSuccess.value) {
+            open.value = false;
+          }
         }
       }
     }
@@ -1008,7 +1018,7 @@ watch(
           </div>
 
           <div class="flex items-center gap-2">
-            <input ref="fileInput" type="file" accept=".sql,.sql.gz,.zip,text/sql,application/gzip,application/zip" multiple class="hidden" @change="handleFileInputChange" />
+            <input ref="fileInput" type="file" accept=".sql,.sql.gz,.zip,.nb3,text/sql,application/gzip,application/zip" multiple class="hidden" @change="handleFileInputChange" />
             <Input v-if="isDesktopRuntime" v-model="pathInput" :disabled="executionLocked" class="h-8 text-xs font-mono" :placeholder="t('sqlFile.selectSqlFile')" @keydown.enter="commitPathInputOnEnter" @blur="commitPathInput" />
             <Input v-else :model-value="filePathDisplay" readonly class="h-8 text-xs font-mono" :placeholder="t('sqlFile.selectSqlFile')" />
             <Button variant="outline" size="sm" class="h-8 shrink-0" :disabled="executionLocked || selectingFile" @click="selectFile">
@@ -1166,6 +1176,11 @@ watch(
             <CheckSquare v-if="skipRelationalConstraints" class="w-3.5 h-3.5 text-primary shrink-0" />
             <Square v-else class="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
             {{ t("sqlFile.skipRelationalConstraints") }}
+          </button>
+          <button type="button" class="flex items-center gap-2 text-xs text-left" :disabled="executionLocked" @click="closeOnSuccess = !closeOnSuccess">
+            <CheckSquare v-if="closeOnSuccess" class="w-3.5 h-3.5 text-primary shrink-0" />
+            <Square v-else class="w-3.5 h-3.5 text-muted-foreground/40 shrink-0" />
+            {{ t("sqlFile.closeOnSuccess") }}
           </button>
         </div>
 

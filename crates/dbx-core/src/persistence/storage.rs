@@ -3,6 +3,9 @@ pub use dbx_drivers::runtime_config::{
     DUCKDB_WORKER_MAX_PROCESSES_MIN,
 };
 
+mod type_execution_receipts;
+pub use type_execution_receipts::{TypeExecutionBinding, TypeRecoveryContext};
+
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -452,6 +455,8 @@ pub struct TabRuntimeCachePruneResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesktopSettings {
     pub show_tray_icon: bool,
+    #[serde(default = "default_linux_floating_frame_enabled")]
+    pub linux_floating_frame_enabled: bool,
     pub icon_theme: DesktopIconTheme,
     #[serde(default)]
     pub quit_on_close: bool,
@@ -1000,10 +1005,15 @@ pub fn default_duckdb_worker_max_processes() -> usize {
     DUCKDB_WORKER_MAX_PROCESSES_DEFAULT
 }
 
+fn default_linux_floating_frame_enabled() -> bool {
+    true
+}
+
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
             show_tray_icon: true,
+            linux_floating_frame_enabled: true,
             icon_theme: DesktopIconTheme::Default,
             quit_on_close: false,
             close_action_prompted: false,
@@ -5393,6 +5403,10 @@ impl Storage {
 
     pub async fn save_desktop_settings(&self, desktop_settings: &DesktopSettings) -> Result<(), String> {
         let mut settings = self.load_app_settings_json().await?;
+        settings.insert(
+            "linux_floating_frame_enabled".to_string(),
+            serde_json::Value::Bool(desktop_settings.linux_floating_frame_enabled),
+        );
         settings.remove("run_in_background");
         settings.insert("show_tray_icon".to_string(), serde_json::Value::Bool(desktop_settings.show_tray_icon));
         settings.insert(
@@ -5482,6 +5496,10 @@ impl Storage {
     pub async fn load_desktop_settings(&self) -> Result<DesktopSettings, String> {
         let settings = self.load_app_settings_json().await?;
         Ok(DesktopSettings {
+            linux_floating_frame_enabled: settings
+                .get("linux_floating_frame_enabled")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(true),
             show_tray_icon: settings
                 .get("show_tray_icon")
                 .and_then(|value| value.as_bool())
@@ -7095,6 +7113,11 @@ impl Storage {
             let mut copy: ConnectionConfig = serde_json::from_str(&source_json).map_err(|error| error.to_string())?;
             copy.id = copy_id.clone();
             copy.name = copy_name;
+            for layer in &mut copy.transport_layers {
+                if let TransportLayerConfig::Ssh(ssh) = layer {
+                    ssh.local_port = None;
+                }
+            }
             let copy_json = serde_json::to_string(&copy).map_err(|error| error.to_string())?;
             tx.execute("INSERT INTO connections (id, config_json) VALUES (?1, ?2)", params![copy_id, copy_json])
                 .map_err(|error| error.to_string())?;
@@ -9434,6 +9457,10 @@ fn apply_desktop_settings_in_tx(
     selected_keys: Option<&[String]>,
 ) -> Result<(), String> {
     let mut values = serde_json::Map::new();
+    values.insert(
+        "linux_floating_frame_enabled".to_string(),
+        serde_json::Value::Bool(settings.linux_floating_frame_enabled),
+    );
     values.insert("show_tray_icon".to_string(), serde_json::Value::Bool(settings.show_tray_icon));
     values.insert("icon_theme".to_string(), serde_json::to_value(settings.icon_theme).map_err(|e| e.to_string())?);
     values.insert("quit_on_close".to_string(), serde_json::Value::Bool(settings.quit_on_close));
@@ -11714,8 +11741,10 @@ mod tests {
             key_passphrase: String::new(),
             connect_timeout_secs: 5,
             expose_lan: false,
+            local_port: None,
             use_ssh_agent: false,
             ssh_agent_sock_path: String::new(),
+            ssh_agent_key_fingerprint: String::new(),
             auth_method: "password".to_string(),
             allow_exec_channel_proxy: false,
             proxy_command: String::new(),
@@ -13444,6 +13473,7 @@ mod tests {
         storage
             .save_desktop_settings(&DesktopSettings {
                 show_tray_icon: false,
+                linux_floating_frame_enabled: true,
                 icon_theme: DesktopIconTheme::Black,
                 quit_on_close: true,
                 close_action_prompted: false,
@@ -13468,6 +13498,7 @@ mod tests {
             storage.load_desktop_settings().await.unwrap(),
             DesktopSettings {
                 show_tray_icon: false,
+                linux_floating_frame_enabled: true,
                 icon_theme: DesktopIconTheme::Black,
                 quit_on_close: true,
                 close_action_prompted: false,
@@ -13588,6 +13619,21 @@ mod tests {
             settings.get("sidebar_table_page_size").and_then(|value| value.as_u64()),
             Some(DesktopSettings::default().sidebar_table_page_size as u64)
         );
+    }
+
+    #[tokio::test]
+    async fn desktop_settings_persist_linux_floating_frame_preference() {
+        let path = temp_db_path("desktop-settings-linux-floating-frame");
+        let storage = crate::persistence::test_storage::open(&path).await.unwrap();
+        assert!(storage.load_desktop_settings().await.unwrap().linux_floating_frame_enabled);
+        for enabled in [false, true] {
+            let settings = DesktopSettings { linux_floating_frame_enabled: enabled, ..DesktopSettings::default() };
+            storage.save_desktop_settings(&settings).await.unwrap();
+            assert_eq!(storage.load_desktop_settings().await.unwrap().linux_floating_frame_enabled, enabled);
+        }
+        let mut legacy = serde_json::to_value(DesktopSettings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("linux_floating_frame_enabled");
+        assert!(serde_json::from_value::<DesktopSettings>(legacy).unwrap().linux_floating_frame_enabled);
     }
 
     #[tokio::test]
@@ -13745,6 +13791,7 @@ mod tests {
         storage
             .save_desktop_settings(&DesktopSettings {
                 show_tray_icon: false,
+                linux_floating_frame_enabled: true,
                 icon_theme: DesktopIconTheme::Black,
                 ..DesktopSettings::default()
             })
@@ -13757,6 +13804,7 @@ mod tests {
             storage.load_desktop_settings().await.unwrap(),
             DesktopSettings {
                 show_tray_icon: false,
+                linux_floating_frame_enabled: true,
                 icon_theme: DesktopIconTheme::Black,
                 ..DesktopSettings::default()
             }
@@ -13885,6 +13933,70 @@ mod tests {
 
         assert_eq!(storage.load_ai_chat_selection().await.unwrap(), Some(selection));
         assert_eq!(storage.load_app_settings_json().await.unwrap().get("ai_chat_selection_v1"), None);
+    }
+
+    #[tokio::test]
+    async fn type_management_recovery_manifest_survives_sqlite_storage_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dbx.db");
+        let storage = crate::persistence::test_storage::open(&path).await.unwrap();
+        let key = |name: &str| crate::db::OracleTypeDataRelationKey { owner: "Mixed Owner".into(), name: name.into() };
+        let baseline = |name: &str, row_count, read_only| crate::db::OracleTypeDataBaseline {
+            relation: crate::db::OracleTypeDataRelation {
+                relation: key(name),
+                object_id: "9007199254740993".into(),
+                read_only: Some(read_only),
+                structure: format!("{name}-definition"),
+                projection: vec![crate::db::OracleTypeDataProjection {
+                    path: vec!["ID".into()],
+                    object_null: false,
+                    data_type: "NUMBER(38,0)".into(),
+                }],
+            },
+            row_count,
+            fingerprint: "d".repeat(64),
+        };
+        let manifest = crate::db::OracleTypeDataManifest {
+            mapping: crate::db::OracleTypeDataMappingInput {
+                id: "same-original-baseline".into(),
+                source: key("SRC"),
+                old: key("OLD"),
+                expected: key("EXPECTED"),
+                target: key("RESULT"),
+                fields: vec![crate::db::OracleTypeDataField {
+                    source_path: vec!["ID".into()],
+                    object_null: false,
+                    old_column: "ID".into(),
+                    expected_column: "ID".into(),
+                    target_path: vec!["ID".into()],
+                    target_object_null: false,
+                    unchanged: true,
+                }],
+            },
+            original: baseline("SRC", 3, false),
+            old: baseline("OLD", 3, true),
+            expected: baseline("EXPECTED", 3, true),
+            prepared_target: Some(baseline("RESULT", 0, false)),
+            verified_target: None,
+        };
+        let state = serde_json::json!({
+            "tabs": [{
+                "id": "source-type", "title": "TYPE", "connectionId": "fixture", "database": "APP", "sql": "TYPE draft",
+                "typeManagementDraft": {
+                    "version": 1, "planId": "type-recovery-1", "revision": 9,
+                    "target": {"connectionId": "fixture", "database": "APP", "owner": "Mixed Owner", "name": "Type' Name", "databaseType": "oracle"},
+                    "operation": "save-spec", "requiresReverify": true, "state": "stopped",
+                    "drafts": [{"owner": "Mixed Owner", "name": "Type' Name", "objectType": "TYPE BODY", "source": "TYPE BODY draft"}],
+                    "steps": [{"id": "root", "state": "confirmed"}, {"id": "body", "state": "unknown"}],
+                    "dataMappings": [{"manifest": manifest, "insertSql": "bounded INSERT preview", "insertDraft": "bounded INSERT preview", "insertState": "unknown"}]
+                }
+            }], "activeTabId": "source-type"
+        });
+        storage.save_open_tabs_state(&state).await.unwrap();
+        assert_eq!(storage.load_open_tabs_state().await.unwrap(), Some(state.clone()));
+        drop(storage);
+        let reopened = crate::persistence::test_storage::open(&path).await.unwrap();
+        assert_eq!(reopened.load_open_tabs_state().await.unwrap(), Some(state));
     }
 
     // Selection JSON written before per-db-type prompt template defaults existed

@@ -32,6 +32,7 @@ import type {
   PluginFormField,
   PluginFormFieldValue,
   ProxyTunnelConfig,
+  SshAgentIdentity,
   SshConfigHostEntry,
   SshTunnelConfig,
   TransportLayerConfig,
@@ -50,6 +51,7 @@ import { detachTunnelProfileLayer, tunnelProfileReferenceLayer, tunnelProfileSum
 import { insertSqliteRemoteTransportLayer, isSqliteRemoteTransportLayerType, sqliteRemoteTransportError } from "@/lib/connection/sqliteRemoteTransport";
 import { sanitizeConnectionCredentials } from "@/lib/connection/credentialSanitizer";
 import { applySshAuthMethod, inferSshAuthMethod } from "@/lib/connection/sshAuthMethod";
+import { editableSshLocalPort, normalizeSshLocalPort, sshLocalPortState, sshLocalPortSupportedForConnection } from "@/lib/connection/sshLocalPort";
 import { applySshConfigHostAliasPrefill as prefillSshConfigHostAlias } from "@/lib/connection/sshConfigHosts";
 import { canPersistConnectionTestResult, connectionEditDraftSyncAction } from "./connectionEditDraftSync";
 import { createConnectionNoteVisibilityDraft, persistConnectionNoteVisibilityDraft as persistConnectionNoteVisibilityDraftState, resetConnectionNoteVisibilityDraft, setConnectionNoteVisibilityDraft, syncConnectionNoteVisibilityDraft } from "./connectionNoteVisibilityDraft";
@@ -174,7 +176,7 @@ import { buildDraftVisibleDatabasesConnectionId, connectionCanChooseVisibleDatab
 import { resolveVisibleDatabaseSaveAction, visibleDatabasePatternsWithoutMatchAll } from "@/components/sidebar/visibleDatabasesDialogState";
 import { MATCH_ALL_VISIBLE_DATABASE_PATTERN, canSaveVisibleDatabaseSelection, connectionUsesVisibleSchemaFilter, filterDatabaseNamesForVisiblePicker, filterSchemaNamesForVisiblePicker, buildDraftVisibleSchemasConnectionId, normalizeVisibleSchemaSelection } from "@/lib/database/visibleDatabases";
 import { isSchemaAware, isSingleDatabase, supportsDataDictionary, supportsTransaction } from "@/lib/database/databaseFeatureSupport";
-import { normalizeConnectionScope, normalizeConnectionTimeouts } from "@/lib/connection/connectionSubmitNormalization";
+import { normalizeConnectionIdentityFields, normalizeConnectionScope, normalizeConnectionTimeouts } from "@/lib/connection/connectionSubmitNormalization";
 import { databaseConnectionFormKind, databaseManifestEntry } from "@/lib/database/databaseDriverManifest";
 import VisibleSchemasDialog from "@/components/sidebar/VisibleSchemasDialog.vue";
 import CloudflareD1ConnectionFields from "@/components/connection/CloudflareD1ConnectionFields.vue";
@@ -186,6 +188,8 @@ import { hasCloudflareD1Credentials, isCloudflareD1Connection, normalizeCloudfla
 import { hasSpannerResourcePath, isSpannerConnection, normalizeSpannerConnection } from "@/lib/connection/spannerResourcePath";
 import {
   buildElasticsearchExternalConfig,
+  elasticsearchAuthTypeFromConfig,
+  type ElasticsearchAuthType,
   elasticsearchConnectionModeFromConfig,
   elasticsearchConnectivityCheckDisabledFromConfig,
   elasticsearchConnectivityCheckPathFromConfig,
@@ -489,6 +493,7 @@ function resetCassandraTlsFields(externalConfig: unknown) {
   Object.assign(cassandraTls, cassandraTlsConfigFromExternalConfig(externalConfig));
 }
 
+const elasticsearchAuthType = ref<ElasticsearchAuthType>("basic");
 const elasticsearchConnectionMode = ref<ElasticsearchConnectionMode>("direct");
 const elasticsearchKibanaBasePath = ref("");
 const elasticsearchConnectivityCheckPath = ref("");
@@ -498,7 +503,15 @@ const elasticsearchConnectionPorts = ref<Record<ElasticsearchConnectionMode, num
   direct: 9200,
   kibana: 5601,
 });
+function switchElasticsearchAuthType(authType: ElasticsearchAuthType) {
+  if (authType === elasticsearchAuthType.value) return;
+  elasticsearchAuthType.value = authType;
+  form.value.password = "";
+  resetTestState();
+}
+
 function resetElasticsearchProxyFields(externalConfig?: unknown) {
+  elasticsearchAuthType.value = elasticsearchAuthTypeFromConfig(externalConfig);
   const mode = elasticsearchConnectionModeFromConfig(externalConfig);
   elasticsearchConnectionMode.value = mode;
   elasticsearchKibanaBasePath.value = elasticsearchKibanaBasePathFromConfig(externalConfig);
@@ -534,6 +547,7 @@ function defaultSshTunnel(): SshTunnelConfig {
     expose_lan: false,
     use_ssh_agent: false,
     ssh_agent_sock_path: "",
+    ssh_agent_key_fingerprint: "",
     auth_method: "password",
     allow_exec_channel_proxy: false,
     proxy_command: "",
@@ -553,8 +567,10 @@ function normalizeSshTunnel(hop: Partial<SshTunnelConfig>): SshTunnelConfig {
     key_passphrase: hop.key_passphrase || "",
     connect_timeout_secs: Number(hop.connect_timeout_secs) || 5,
     expose_lan: !!hop.expose_lan,
+    local_port: hop.enabled === false ? normalizeSshLocalPort(hop.local_port) : editableSshLocalPort(hop.local_port),
     use_ssh_agent: !!hop.use_ssh_agent,
     ssh_agent_sock_path: hop.ssh_agent_sock_path || "",
+    ssh_agent_key_fingerprint: hop.ssh_agent_key_fingerprint || "",
     auth_method: hop.auth_method || inferSshAuthMethod(hop),
     allow_exec_channel_proxy: !!hop.allow_exec_channel_proxy,
     proxy_command: hop.proxy_command || "",
@@ -4888,6 +4904,7 @@ function connectionConfigForSshTunnelTest(id: string): ConnectionConfig {
 
 function connectionConfigForSubmit(id: string, generatedName = "", validatePluginRequired = true): ConnectionConfig {
   let config: LegacyConnectionConfig;
+  let preserveExistingShowDatabaseLinks = false;
   if (isPluginConnection.value) {
     const entry = selectedPluginProvider.value;
     if (!entry) throw new Error(pluginLoadError.value || t("connection.pluginProviderUnavailable"));
@@ -4947,6 +4964,9 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
   }
   config.database_info = undefined;
   config.database = normalizeStoredConnectionDatabase(config.db_type, config.database);
+  // Plugin providers own their field semantics; trim only the built-in form where a
+  // hostname/user name/database can never carry meaningful surrounding whitespace.
+  if (!isPluginConnection.value) normalizeConnectionIdentityFields(config);
   config.note = config.note?.trim() || undefined;
   if (selectedType.value === "oceanbase" && (config.driver_profile === "oceanbase" || config.driver_profile === "oceanbase-oracle")) {
     Object.assign(config, oceanbaseModeConnectionPatch(oceanbaseSubMode.value));
@@ -4986,6 +5006,18 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.host = serialized.host;
     config.port = serialized.port;
   }
+  // Hostnames and usernames cannot contain leading/trailing whitespace, so a
+  // stray space (typically from copy-pasting) can only be a mistake — but it
+  // still reaches the driver and fails in a way the error message does not
+  // make visible. Passwords are left untouched because surrounding spaces can
+  // be significant, and file-path hosts (SQLite/DuckDB/H2 file mode) keep
+  // their exact value for the same reason.
+  const usesLocalFilePathHost = isLocalFileTypeDb(config.db_type) && (config.db_type !== "h2" || h2ConnectionModeForConfig(config) === "file");
+  if (!usesLocalFilePathHost) {
+    config.host = config.host.trim();
+  }
+  config.username = config.username.trim();
+  config.database = config.database?.trim() || undefined;
   if (isCloudflareD1Connection(config)) {
     normalizeCloudflareD1Connection(config);
     if (!hasCloudflareD1Credentials(config)) {
@@ -5199,7 +5231,11 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
       config.external_config = { ...existing, auth };
     }
   } else if (config.db_type === "elasticsearch") {
-    config.external_config = buildElasticsearchExternalConfig(elasticsearchConnectionMode.value, elasticsearchKibanaBasePath.value, elasticsearchConnectivityCheckPath.value, elasticsearchIndexGroupingPattern.value, elasticsearchConnectivityCheckDisabled.value);
+    config.external_config = buildElasticsearchExternalConfig(elasticsearchConnectionMode.value, elasticsearchKibanaBasePath.value, elasticsearchConnectivityCheckPath.value, elasticsearchIndexGroupingPattern.value, elasticsearchConnectivityCheckDisabled.value, elasticsearchAuthType.value);
+    if (elasticsearchAuthType.value === "apiKey") {
+      config.username = "";
+      config.password = config.password.trim();
+    }
   } else if (config.db_type === "meilisearch") {
     config.username = "";
     config.password = config.password.trim();
@@ -5446,8 +5482,18 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
         config.connection_string = config.connection_string?.trim() || JDBCX_DEFAULT_URL;
         config.jdbc_driver_class = config.jdbc_driver_class?.trim() || JDBCX_JDBC_DRIVER_CLASS;
       } else {
-        config.host = "";
-        config.port = 0;
+        const keepsExistingTarget = editingId.value === id && props.editConfig?.id === id && config.db_type === props.editConfig.db_type && config.driver_profile === props.editConfig.driver_profile && config.connection_string === props.editConfig.connection_string;
+        if (!keepsExistingTarget) {
+          config.host = "";
+          config.port = 0;
+        } else if (props.editConfig.production_badge_scope == null && config.production_badge_scope === sidebarProductionBadgeScope(props.editConfig)) {
+          config.production_badge_scope = undefined;
+        }
+        preserveExistingShowDatabaseLinks = keepsExistingTarget && !supportsOracleDatabaseLinks(config.db_type);
+        if (preserveExistingShowDatabaseLinks) {
+          // Generic JDBC has no DB-link toggle; retain the saved target setting.
+          config.show_database_links = props.editConfig?.show_database_links;
+        }
         config.connection_string = config.connection_string?.trim() || "";
       }
     } else if (config.db_type === "prestosql") {
@@ -5521,7 +5567,7 @@ function connectionConfigForSubmit(id: string, generatedName = "", validatePlugi
     config.visible_databases = Array.isArray(config.visible_databases) && config.visible_databases.length > 0 ? config.visible_databases : undefined;
   }
   if (!config.show_system_schemas) config.show_system_schemas = undefined;
-  if (config.show_database_links !== false) config.show_database_links = undefined;
+  if (config.show_database_links !== false && !preserveExistingShowDatabaseLinks) config.show_database_links = undefined;
   if (!config.sidebar_auto_load_all_tables) config.sidebar_auto_load_all_tables = undefined;
   if (config.visible_schemas && Object.keys(config.visible_schemas).length === 0) config.visible_schemas = undefined;
   if (config.agent_java_options && config.agent_java_options.length === 0) config.agent_java_options = undefined;
@@ -6616,6 +6662,7 @@ function addHttpTunnel() {
 function duplicateTransportLayer(layer: TransportLayerConfig) {
   if (sqliteRemoteTransportRestricted.value && !isSqliteRemoteTransportLayerType(layer.type)) return;
   const next = normalizeTransportLayer({ ...layer, id: uuid(), name: layer.name ? `${layer.name} copy` : "" });
+  if (next.type === "ssh") delete next.local_port;
   form.value.transport_layers = sqliteRemoteTransportRestricted.value ? insertSqliteRemoteTransportLayer(transportLayers.value, next) : [...transportLayers.value, next];
   selectedTransportLayerId.value = next.id;
   resetTestState();
@@ -6701,11 +6748,19 @@ function updateSelectedSshAuthMethod(value: unknown) {
   resetTestState();
 }
 
+function updateSelectedSshLocalPort(value: unknown) {
+  const layer = selectedSshLayer.value;
+  if (!layer) return;
+  layer.local_port = editableSshLocalPort(value);
+  resetTestState();
+}
+
 function validateTransportLayers(config: LegacyConnectionConfig) {
   const layers = config.transport_layers || [];
   if (config.db_type === "sqlite" && sqliteRemoteTransportError(layers)) {
     throw new Error(t("connection.sqliteTransportSshOnly"));
   }
+  const lastEnabledIndex = layers.reduce((last, layer, index) => (layer.enabled === false ? last : index), -1);
   layers.forEach((layer, index) => {
     if (layer.enabled === false) return;
     // Profile-referencing layers are stubs: the shared profile supplies the
@@ -6735,6 +6790,10 @@ function validateTransportLayers(config: LegacyConnectionConfig) {
       if (!Number.isFinite(timeout) || timeout < 1 || timeout > 300) {
         throw new Error(t("connection.sshHopInvalidTimeout", { hop: label }));
       }
+      const localPortState = sshLocalPortState(layer.local_port);
+      if (localPortState === "invalid") throw new Error(t("connection.sshHopInvalidLocalPort", { hop: label }));
+      if (localPortState === "valid" && index !== lastEnabledIndex) throw new Error(t("connection.sshHopLocalPortNotLast", { hop: label }));
+      if (localPortState === "valid" && !sshLocalPortSupportedForConnection(config, mqSystemKind.value)) throw new Error(t("connection.sshHopLocalPortUnsupported", { hop: label }));
     }
   });
 }
@@ -6917,6 +6976,58 @@ async function browseSshKeyPath(target?: SshTunnelConfig | null) {
     }
   }
 }
+
+const SSH_AGENT_ALL_IDENTITIES = "__all__";
+const sshAgentIdentities = ref<SshAgentIdentity[]>([]);
+const sshAgentIdentitiesLoading = ref(false);
+const sshAgentIdentitiesError = ref("");
+let sshAgentIdentitiesTimer: ReturnType<typeof setTimeout> | undefined;
+let sshAgentIdentitiesRequest = 0;
+
+const sshAgentIdentityOptions = computed(() => {
+  const fingerprint = selectedSshLayer.value?.ssh_agent_key_fingerprint || "";
+  if (!fingerprint || sshAgentIdentities.value.some((identity) => identity.fingerprint === fingerprint)) {
+    return sshAgentIdentities.value;
+  }
+  return [{ fingerprint, algorithm: "", comment: "" }, ...sshAgentIdentities.value];
+});
+
+function sshAgentIdentityLabel(identity: SshAgentIdentity) {
+  if (!identity.comment) return identity.fingerprint;
+  return identity.algorithm ? `${identity.comment} (${identity.algorithm})` : identity.comment;
+}
+
+function updateSelectedSshAgentKeyFingerprint(value: unknown) {
+  if (!selectedSshLayer.value) return;
+  const fingerprint = String(value);
+  selectedSshLayer.value.ssh_agent_key_fingerprint = fingerprint === SSH_AGENT_ALL_IDENTITIES ? "" : fingerprint;
+}
+
+async function loadSshAgentIdentities(sshAgentSockPath: string) {
+  const request = ++sshAgentIdentitiesRequest;
+  sshAgentIdentitiesLoading.value = true;
+  sshAgentIdentitiesError.value = "";
+  try {
+    const identities = await api.listSshAgentIdentities(sshAgentSockPath);
+    if (request === sshAgentIdentitiesRequest) sshAgentIdentities.value = identities;
+  } catch (cause) {
+    if (request === sshAgentIdentitiesRequest) {
+      sshAgentIdentitiesError.value = t("connection.sshAgentKeyLoadFailed", { error: cause instanceof Error ? cause.message : String(cause) });
+    }
+  } finally {
+    if (request === sshAgentIdentitiesRequest) sshAgentIdentitiesLoading.value = false;
+  }
+}
+
+watch(
+  () => (selectedSshLayer.value?.auth_method === "agent" ? selectedSshLayer.value.ssh_agent_sock_path || "" : null),
+  (sshAgentSockPath) => {
+    if (sshAgentSockPath === null) return;
+    clearTimeout(sshAgentIdentitiesTimer);
+    sshAgentIdentitiesTimer = setTimeout(() => void loadSshAgentIdentities(sshAgentSockPath), 400);
+  },
+  { immediate: true },
+);
 
 async function browseCaCertPath() {
   if (isTauriRuntime()) {
@@ -9381,14 +9492,22 @@ function openExternalUrl(url: string) {
                       <Input v-model="form.informix_server" class="col-span-3" placeholder="ol_informix1170" />
                     </div>
 
-                    <div v-if="form.db_type !== 'meilisearch' && form.db_type !== 'spanner'" class="grid grid-cols-4 items-center gap-4">
+                    <div v-if="form.db_type === 'elasticsearch'" class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelClass">{{ t("connection.mqAuth") }}</Label>
+                      <div class="col-span-3 flex items-center gap-2">
+                        <Button type="button" size="sm" :variant="elasticsearchAuthType === 'basic' ? 'default' : 'outline'" :aria-pressed="elasticsearchAuthType === 'basic'" @click="switchElasticsearchAuthType('basic')">{{ t("connection.mqAuthBasic") }}</Button>
+                        <Button type="button" size="sm" :variant="elasticsearchAuthType === 'apiKey' ? 'default' : 'outline'" :aria-pressed="elasticsearchAuthType === 'apiKey'" @click="switchElasticsearchAuthType('apiKey')">{{ t("connection.mqAuthApiKey") }}</Button>
+                      </div>
+                    </div>
+
+                    <div v-if="form.db_type !== 'meilisearch' && form.db_type !== 'spanner' && !(form.db_type === 'elasticsearch' && elasticsearchAuthType === 'apiKey')" class="grid grid-cols-4 items-center gap-4">
                       <Label :class="connectionLabelClass">{{ t("connection.user") }}</Label>
                       <Input v-model="form.username" class="col-span-3" />
                     </div>
 
                     <div v-if="form.db_type !== 'spanner'" class="grid grid-cols-4 items-center gap-4">
-                      <Label :class="connectionLabelClass">{{ form.db_type === "meilisearch" ? t("connection.mqAuthApiKey") : t("connection.password") }}</Label>
-                      <PasswordInput v-model="form.password" class="col-span-3" />
+                      <Label :class="connectionLabelClass">{{ form.db_type === "meilisearch" || (form.db_type === "elasticsearch" && elasticsearchAuthType === "apiKey") ? t("connection.mqAuthApiKey") : t("connection.password") }}</Label>
+                      <PasswordInput v-model="form.password" class="col-span-3" :placeholder="form.db_type === 'elasticsearch' && elasticsearchAuthType === 'apiKey' ? 'Base64(id:api_key)' : undefined" />
                     </div>
 
                     <SavePasswordCheckbox v-if="form.db_type !== 'spanner'" v-model="form.save_password" />
@@ -10916,12 +11035,48 @@ function openExternalUrl(url: string) {
                       <Label :class="connectionLabelSmallClass">{{ t("connection.sshAgentSockPath") }}</Label>
                       <Input v-model="selectedSshLayer.ssh_agent_sock_path" class="col-span-3" :placeholder="t('connection.sshAgentSockPathPlaceholder')" :disabled="selectedSshLayer.enabled === false" />
                     </div>
+                    <div v-if="selectedSshLayer.auth_method === 'agent'" class="grid grid-cols-4 items-center gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.sshAgentKey") }}</Label>
+                      <div class="col-span-3 flex min-w-0 items-center gap-1">
+                        <div class="min-w-0 flex-1">
+                          <Select :model-value="selectedSshLayer.ssh_agent_key_fingerprint || SSH_AGENT_ALL_IDENTITIES" :disabled="selectedSshLayer.enabled === false" @update:model-value="updateSelectedSshAgentKeyFingerprint">
+                            <SelectTrigger class="h-9 w-full min-w-0">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem :value="SSH_AGENT_ALL_IDENTITIES">{{ t("connection.sshAgentKeyAll") }}</SelectItem>
+                              <SelectItem v-for="identity in sshAgentIdentityOptions" :key="identity.fingerprint" :value="identity.fingerprint" :title="identity.fingerprint">
+                                {{ sshAgentIdentityLabel(identity) }}
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <Button variant="outline" size="icon" class="h-9 w-9 shrink-0" :title="t('connection.sshAgentKeyRefresh')" :disabled="selectedSshLayer.enabled === false || sshAgentIdentitiesLoading" @click="loadSshAgentIdentities(selectedSshLayer.ssh_agent_sock_path || '')">
+                          <Loader2 v-if="sshAgentIdentitiesLoading" class="h-4 w-4 animate-spin" />
+                          <RefreshCw v-else class="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </div>
+                    <div v-if="selectedSshLayer.auth_method === 'agent'" class="grid grid-cols-4 items-start gap-4">
+                      <span />
+                      <div class="col-span-3 text-xs text-muted-foreground">
+                        <p>{{ t("connection.sshAgentKeyHint") }}</p>
+                        <p v-if="sshAgentIdentitiesError" class="mt-1">{{ sshAgentIdentitiesError }}</p>
+                      </div>
+                    </div>
                     <div class="grid grid-cols-4 items-center gap-4">
                       <span />
                       <label class="col-span-3 flex items-center gap-2 cursor-pointer">
                         <input type="checkbox" v-model="selectedSshLayer.expose_lan" class="mr-0" :disabled="selectedSshLayer.enabled === false" />
                         <span class="text-xs text-muted-foreground">{{ t("connection.sshExposeLan") }}</span>
                       </label>
+                    </div>
+                    <div class="grid grid-cols-4 items-start gap-4">
+                      <Label :class="connectionLabelSmallClass">{{ t("connection.sshLocalPort") }}</Label>
+                      <div class="col-span-3 space-y-1">
+                        <Input :model-value="selectedSshLayer.local_port ?? ''" type="number" min="1" max="65535" step="1" :placeholder="t('connection.sshLocalPortPlaceholder')" :disabled="selectedSshLayer.enabled === false" @update:model-value="updateSelectedSshLocalPort" />
+                        <p class="text-xs text-muted-foreground">{{ t("connection.sshLocalPortHint") }}</p>
+                      </div>
                     </div>
                     <div class="grid grid-cols-4 items-start gap-4">
                       <span />

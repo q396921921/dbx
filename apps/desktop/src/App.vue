@@ -74,7 +74,7 @@ import { useVisibilityChange } from "@/composables/useVisibilityChange";
 import { useExternalSqlFileChanges } from "@/composables/useExternalSqlFileChanges";
 import { useWebDavAutoUpload } from "@/composables/useWebDavAutoUpload";
 import { useSnippetAutoUpload } from "@/composables/useSnippetAutoUpload";
-import { readSyncMethod, readWebDavAutoUploadConfig, readWebDavBackupSelection, recordWebDavSyncSuccess } from "@/lib/webdav/webdavAutoUploadConfig";
+import { readSyncMethod, readWebDavAutoUploadConfig, readWebDavBackupSelection, recordWebDavSyncSuccess, writeWebDavLastUploadAt, webDavSyncTarget } from "@/lib/webdav/webdavAutoUploadConfig";
 import { useScheduledDatabaseBackups } from "@/composables/useScheduledDatabaseBackups";
 import { appShellMinSizeStyleForScale, shouldDrawDesktopWindowFrame, shouldDrawLinuxFloatingFrame, useWindowControls } from "@/composables/useWindowControls";
 import { createOpenTabsRestorationBarrier, initializeDesktopOpenTabs, initializeOpenTabs, type OpenTabsRestorationBarrier } from "@/lib/app/openTabsStartup";
@@ -101,11 +101,13 @@ import {
   type SqlObjectNavigationTarget,
 } from "@/lib/sql/sqlNavigation";
 import { isObjectDependencySection, type ObjectDependencyTarget } from "@/lib/database/objectDependencyDetails";
-import { buildEditableObjectSource, buildExecutableObjectSourceStatements, executeObjectSourceSave } from "@/lib/table/objectSourceEditor";
-import { assertSourceIdentity, beginSourceSave } from "@/lib/table/objectSourceIdentity";
+import { buildEditableObjectSource } from "@/lib/table/objectSourceEditor";
+import { isOracleFamilyTypeSource } from "@/lib/database/databaseObjectCapabilities";
+import { oracleTypeManagementRequest } from "@/lib/table/oracleTypeManagementRequest";
+import { saveObjectSourceTab } from "@/lib/table/objectSourceTabSave";
 import { loadEditableObjectSourceForEditor } from "@/lib/table/objectSourceLoad";
 import { schemaAfterConnectionSwitch } from "@/lib/schema/connectionSchemaInitialization";
-import { resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
+import { canReuseTabForHistoryRestore, resolveHistorySqlRestoreTarget } from "@/lib/history/historyRestoreTarget";
 import { resolveExecutableSql, resolveExecutableSqlWithBackend, type SqlExecutionOverride, type SqlExecutionSnapshot } from "@/lib/sql/sqlExecutionTarget";
 import { uuid } from "@/lib/common/utils";
 import { getPlatform, isMacOS, isWindows } from "@/lib/backend/platform";
@@ -140,6 +142,7 @@ import {
   isDisconnectAllActiveConnectionsShortcut,
   isEditTableStructureShortcut,
   isExecuteSqlInNewResultTabShortcut,
+  isExecuteAllSqlShortcut,
   isExecuteSqlShortcut,
   isDefaultQueryShortcutTarget,
   isFocusSearchShortcut,
@@ -168,9 +171,11 @@ import {
   isToggleZenModeShortcut,
   isZoomInShortcut,
   isZoomOutShortcut,
+  saveShortcutSurface,
   switchToTabIndexFromShortcut,
   tabSwitcherDirectionFromShortcut,
 } from "@/lib/editor/keyboardShortcuts";
+import { DBX_VIM_ACTION_EVENT, type DbxVimActionEvent } from "@/lib/editor/vimDbxActions";
 import { canSaveSqlTab } from "@/lib/tabs/sqlTabSaveTarget";
 import { initialTabSwitcherSelection, moveTabSwitcherSelection, tabSwitcherOrder } from "@/lib/tabs/tabSwitcher";
 import { createModifierDoubleTapShortcutController, isModifierDoubleTapShortcut, matchesModifierDoubleTapShortcut } from "@/lib/editor/modifierDoubleTapShortcut";
@@ -186,7 +191,6 @@ import { buildAppendedEditorSql, buildDeduplicatedAppendedEditorSql } from "@/li
 import { resolveAiSqlTargetTabId, type AiSqlApplyTargetMode } from "@/lib/ai/aiSqlTargetTab";
 import { assessProductionSql } from "@/lib/database/productionSafety";
 import { normalizeSqlExecutionTarget, sqlExecutionTargetCapabilities } from "@/lib/database/sqlExecutionTargetCapabilities";
-import { executeWithProductionSqlGuard } from "@/lib/database/productionExecutionGuard";
 import { buildHistoryAiAnalysisPrompt } from "@/lib/history/historyAiAnalysis";
 import { countAvailableAgentDriverUpdates } from "@/lib/connection/agentDriverUpdateBadge";
 import type { DriverStoreFocus, DriverStoreTab } from "@/lib/connection/agentDriverInstallHint";
@@ -248,6 +252,7 @@ const QuickOpenDialog = defineAsyncComponent(() => import("@/components/quick-op
 const TabSwitcherDialog = defineAsyncComponent(() => import("@/components/tabs/TabSwitcherDialog.vue"));
 const QueryEditorDdlViewDialog = defineAsyncComponent(() => import("@/components/objects/DdlViewDialog.vue"));
 const QueryEditorObjectSourceDialog = defineAsyncComponent(() => import("@/components/objects/ObjectSourceDialog.vue"));
+const OracleTypeManagementDialog = defineAsyncComponent(() => import("@/components/objects/OracleTypeManagementDialog.vue"));
 
 type AiAssistantHandle = {
   openPluginConversation: (request: AiPluginConversationRequest) => void;
@@ -990,21 +995,26 @@ async function refreshAgentDriverUpdateCount() {
 }
 
 function restoreHistorySql(sql: string, entry: HistoryEntry) {
-  const tab = activeTab.value;
-  if (tab?.mode === "query") {
-    queryStore.updateSql(tab.id, sql);
-    return;
-  }
-
   const target = resolveHistorySqlRestoreTarget({
     entry,
-    activeTab: tab,
+    activeTab: activeTab.value,
     firstConnectionId: connectionStore.connections[0]?.id,
+    connections: connectionStore.connections,
     getConfig: (connectionId) => connectionStore.getConfig(connectionId),
   });
   if (!target) return;
-  const tabId = queryStore.createTab(target.connectionId, target.database, t("tabs.sql"), "query", target.schema);
-  queryStore.updateSql(tabId, sql);
+
+  const tab = activeTab.value;
+  if (tab && canReuseTabForHistoryRestore(tab, target)) {
+    queryStore.updateSql(tab.id, sql);
+  } else {
+    queryStore.createTab(target.connectionId, target.database, undefined, "query", target.schema, sql, undefined, { forceNew: true });
+  }
+
+  if (target.connectionId) {
+    connectionStore.activeConnectionId = target.connectionId;
+    connectionStore.ensureConnected(target.connectionId).catch(() => {});
+  }
 }
 
 const executableSql = computed(() => {
@@ -1113,6 +1123,14 @@ function requestActiveEditorExecute(source?: "pointer" | "keyboard", tabId?: str
   void tryExecute(undefined, targetTabId ? { tabId: targetTabId } : undefined);
 }
 
+function requestActiveEditorExecuteAll(_source?: "pointer" | "keyboard", tabId?: string) {
+  pendingToolbarExecutionSnapshot.value = undefined;
+  const targetTabId = tabId ?? activeTab.value?.id;
+  if (contentAreaRef.value?.requestQueryEditorExecuteAll?.(targetTabId)) return;
+  const tab = targetTabId ? queryStore.tabs.find((t) => t.id === targetTabId) : activeTab.value;
+  void tryExecute(tab?.sql ?? undefined, targetTabId ? { tabId: targetTabId } : undefined);
+}
+
 function requestActiveEditorExecuteInNewResultTab(source?: "pointer" | "keyboard", tabId?: string) {
   const snapshot = pendingToolbarExecutionSnapshot.value;
   pendingToolbarExecutionSnapshot.value = undefined;
@@ -1184,6 +1202,7 @@ provide(EDITOR_TOOLBAR_ACTIONS, {
   connectionRequiredSignalFor: (tabId: string) => (connectionRequiredTabId.value === tabId ? connectionRequiredSignal.value : 0),
   captureExecutionSnapshot: captureActiveEditorExecutionSnapshot,
   toolbarExecute: requestActiveEditorExecute,
+  toolbarExecuteAll: requestActiveEditorExecuteAll,
   toolbarExecuteInNewResultTab: requestActiveEditorExecuteInNewResultTab,
   toolbarExecuteMongoScript: requestActiveEditorExecuteMongoScript,
   cancelExecution: (tabId: string) => cancelActiveExecution(tabId),
@@ -1359,6 +1378,9 @@ async function openImmediateSync() {
     const includeSecrets = Boolean((selection?.includeSecrets ?? secretsStatus.enabled) && secretsStatus.enabled && secretsStatus.hasSavedPassphrase);
     const summary = await api.webdavSyncUpload(webDavConfig, settingsStore.editorSettings, undefined, includeSecrets, selection);
     recordWebDavSyncSuccess(webDavConfig);
+    const currentConfig = readWebDavAutoUploadConfig();
+    const isCurrent = Boolean(currentConfig.enabled && currentConfig.webDavConfig && webDavSyncTarget(currentConfig.webDavConfig) === webDavSyncTarget(webDavConfig));
+    writeWebDavLastUploadAt(webDavConfig, Date.now(), isCurrent);
     toast(t("settings.syncUploadSuccess", { bytes: summary.bytes, path: summary.remotePath }), 3000);
   } catch (error: any) {
     toast(error?.message || String(error), 5000);
@@ -2727,54 +2749,7 @@ async function openSaveSqlDialog(tabId?: string) {
 }
 
 async function saveActiveObjectSource(tab: QueryTab): Promise<boolean> {
-  const connection = connectionStore.getConfig(tab.connectionId);
-  const source = tab.objectSource;
-  if (!connection || !source) return false;
-
-  try {
-    const identity = queryStore.getObjectSourceIdentitySnapshot(tab)!;
-    assertSourceIdentity(identity);
-    const { connectionId, database } = tab;
-    const schema = source.schema || tab.schema || database;
-    const sql = tab.sql;
-    const databaseType = effectiveDatabaseTypeForConnection(connection) ?? connection.db_type;
-    const statements = await buildExecutableObjectSourceStatements({
-      databaseType,
-      objectType: source.objectType,
-      schema,
-      name: source.name,
-      source: sql,
-    });
-    const execute = async () => {
-      if (!queryStore.tabs.includes(tab) || tab.objectSource !== source || tab.connectionId !== connectionId || tab.database !== database || (source.schema || tab.schema || database) !== schema) return false;
-      const release = beginSourceSave(identity);
-      try {
-        await executeObjectSourceSave(connectionId, database, databaseType, statements, schema);
-        return true;
-      } finally {
-        release();
-      }
-    };
-    const executableSql = statements.filter((sql) => sql.trim()).join(";\n");
-    if (executableSql.trim()) {
-      const saved = await executeWithProductionSqlGuard({
-        connection,
-        database,
-        sql: executableSql,
-        source: t("production.sourceObjectSource"),
-        execute,
-      });
-      if (!saved) return false;
-    } else {
-      if (!(await execute())) return false;
-    }
-    if (tab.sql === sql) queryStore.markTabClean(tab);
-    toast(t("objects.sourceSaved"), 2000);
-    return true;
-  } catch (e: any) {
-    toast(t("objects.sourceSaveFailed", { message: e?.message || String(e) }), 5000);
-    return false;
-  }
+  return saveObjectSourceTab(tab, { connection: connectionStore.getConfig(tab.connectionId), queryStore, t, toast });
 }
 
 function saveSqlFolderDisplayName(id: string) {
@@ -3344,6 +3319,7 @@ async function newQuery(options: NewQueryOptions = {}) {
     identifierQuote: connectionStore.connectionIdentifierQuote?.(target.connectionId),
     includeDatabaseName: settingsStore.editorSettings.generateSqlIncludeDatabaseName,
     quoteIdentifiers: settingsStore.editorSettings.generateSqlQuoteIdentifiers,
+    keywordCase: settingsStore.editorSettings.sqlFormatter.keywordCase,
   });
   const tabId = queryStore.createTab(conn.id, target.database, undefined, "query", target.schema, initialSql, target.catalog, { schemaQualifiesSql: target.schemaQualifiesSql === true });
   if (initialSql) {
@@ -3485,6 +3461,12 @@ function tableTargetFromActiveTab(table: string | SqlObjectNavigationTarget, con
 }
 
 async function onClickTable(table: SqlObjectNavigationTarget, context?: SqlObjectNavigationContext) {
+  if (table.type === "index") {
+    const origin = context ?? activeTab.value;
+    if (!origin || !table.parentName || !table.parentSchema || !table.schema) return;
+    queryStore.openObjectProperties({ connectionId: origin.connectionId, database: origin.database, catalog: origin.catalog, schema: table.parentSchema, name: table.parentName, objectType: "TABLE", initialTab: "indexes", focusObject: { owner: table.schema, name: table.name, type: "INDEX" } });
+    return;
+  }
   // Procedures/functions/packages open source (same as sidebar view-source), not table data/DDL.
   if (isSqlObjectNavigationRoutineType(table.type)) {
     await onOpenObjectSource(table, false, context);
@@ -4171,6 +4153,10 @@ async function handleQuickOpenSelect(item: any) {
       const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(item.connectionId));
       if (!databaseType) throw new Error("Connection type is unavailable.");
       const objectName = item.objectName || item.tableName;
+      if (isOracleFamilyTypeSource(databaseType, objectType)) {
+        queryStore.openObjectSourceTabPending({ connectionId: item.connectionId, database: item.database, schema, title: `Source - ${objectName}`, initialEditing: false, request: { name: objectName, objectType, signature: item.signature } });
+        return;
+      }
       const { editableSource, objectType: resolvedType } = await loadEditableObjectSourceForEditor(api.getObjectSource, buildEditableObjectSource, {
         connectionId: item.connectionId,
         database: item.database,
@@ -4585,6 +4571,35 @@ async function closeActiveSurface() {
     queryStore.closeTab(queryStore.activeTabId);
   }
 }
+// App-scoped `:dbx` actions. Editor-scoped ones are handled (and stopped) in
+// QueryEditor before the event bubbles up to window.
+function handleVimDbxAppAction(event: Event) {
+  const { action } = (event as DbxVimActionEvent).detail;
+  switch (action) {
+    case "newQuery":
+      void newQuery();
+      break;
+    case "closeTab":
+      void closeActiveSurface();
+      break;
+    case "closeOtherTabs":
+      appTabBarRef.value?.closeOtherActiveTabs();
+      break;
+    case "closeAllTabs":
+      appTabBarRef.value?.closeAllTabs();
+      break;
+    case "reopenClosedTab":
+      queryStore.reopenClosedTab();
+      break;
+    case "openSettings":
+      openSettings();
+      break;
+    default:
+      return;
+  }
+  event.preventDefault();
+}
+
 async function handleKeydown(e: KeyboardEvent) {
   if (e.defaultPrevented) return;
 
@@ -4789,11 +4804,30 @@ async function handleKeydown(e: KeyboardEvent) {
   if (isSaveShortcut(e, shortcuts) && e.target instanceof Element && isObjectSourceSaveShortcutTarget(e.target)) {
     return;
   }
-  if (activeTab.value?.mode === "query" && !showSaveSqlDialog.value && isSaveShortcut(e, shortcuts)) {
-    e.preventDefault();
-    e.stopPropagation();
-    void openSaveSqlDialog();
-    return;
+  if (isSaveShortcut(e, shortcuts)) {
+    // The settings page, plugin center and driver store keep the previously active
+    // query tab activated, so the active tab alone cannot decide who Ctrl+S belongs
+    // to. Without the surface check the shortcut popped the save-SQL dialog on top of
+    // the settings page and silently dropped the edited draft (#13020).
+    const saveShortcutTarget = saveShortcutSurface({
+      settingsPageOpen: showSettingsPage.value,
+      pluginCenterOpen: showPluginCenter.value,
+      driverStoreOpen: showDriverStore.value,
+      activeTabMode: activeTab.value?.mode ?? null,
+      saveSqlDialogOpen: showSaveSqlDialog.value,
+    });
+    if (saveShortcutTarget === "settings") {
+      e.preventDefault();
+      e.stopPropagation();
+      void settingsPageRef.value?.applySettingsFromShortcut();
+      return;
+    }
+    if (saveShortcutTarget === "query") {
+      e.preventDefault();
+      e.stopPropagation();
+      void openSaveSqlDialog();
+      return;
+    }
   }
   // CodeMirror ignores keydown events after an IME composition changes the
   // document, so this app-level fallback must share the editor shortcut guard.
@@ -4808,6 +4842,12 @@ async function handleKeydown(e: KeyboardEvent) {
     e.preventDefault();
     e.stopPropagation();
     if (!e.repeat && !activeTab.value.isExecuting && !contentAreaRef.value?.shouldBlockQueryEditorExecutionShortcut?.(e)) requestActiveEditorExecuteInNewResultTab();
+    return;
+  }
+  if (activeTab.value?.mode === "query" && isExecuteAllSqlShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!e.repeat && !activeTab.value.isExecuting && !contentAreaRef.value?.shouldBlockQueryEditorExecutionShortcut?.(e)) requestActiveEditorExecuteAll();
     return;
   }
   if (activeTab.value?.mode === "query" && isExecuteSqlShortcut(e, shortcuts) && e.target instanceof Element && e.target.closest("[data-query-editor-root]")) {
@@ -5136,6 +5176,7 @@ onMounted(async () => {
   window.addEventListener("keydown", handleTabSwitcherKeydownCapture, true);
   window.addEventListener("keydown", handleAuxiliarySearchKeydownCapture, true);
   window.addEventListener("keydown", handleKeydown);
+  window.addEventListener(DBX_VIM_ACTION_EVENT, handleVimDbxAppAction);
   window.addEventListener("keyup", handleKeyup, true);
   window.addEventListener("blur", handleTabSwitcherWindowBlur);
   document.addEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
@@ -5232,6 +5273,7 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleTabSwitcherKeydownCapture, true);
   window.removeEventListener("keydown", handleAuxiliarySearchKeydownCapture, true);
   window.removeEventListener("keydown", handleKeydown);
+  window.removeEventListener(DBX_VIM_ACTION_EVENT, handleVimDbxAppAction);
   window.removeEventListener("keyup", handleKeyup, true);
   window.removeEventListener("blur", handleTabSwitcherWindowBlur);
   document.removeEventListener("visibilitychange", handleTabSwitcherVisibilityChange);
@@ -5576,6 +5618,7 @@ onUnmounted(() => {
                             schema: tab.schema,
                             catalog: tab.catalog,
                             tableName: tab.structureTableName || '',
+                            exactIdentity: tab.structureExactIdentity,
                           },
                           commentChanged,
                           !!createdTableName,
@@ -5813,6 +5856,7 @@ onUnmounted(() => {
         <CloseActionPromptDialog v-if="isDesktop && showCloseActionPrompt" :open="showCloseActionPrompt" @update:open="handleCloseActionPromptOpenChange" @quit="chooseQuit" @minimize="chooseMinimize" />
         <AiRunsClosePromptDialog v-if="isDesktop && showAiRunsClosePrompt" v-model:open="showAiRunsClosePrompt" :count="blockingAiRunCount" @cancel="cancelPendingAppClose" @quit="confirmQuitWithActiveAiRuns" />
         <QuickOpenDialog :open="showQuickOpen" :initial-content-mode="quickOpenForceContent" @update:open="showQuickOpen = $event" @select="handleQuickOpenSelect" />
+        <OracleTypeManagementDialog v-if="oracleTypeManagementRequest" />
         <TabSwitcherDialog :open="showTabSwitcher" :tabs="tabSwitcherTabs" :selected-index="tabSwitcherIndex" :shortcut-hint="tabSwitcherShortcutHint" @update:open="handleTabSwitcherOpenChange" @update:selected-index="tabSwitcherIndex = $event" @select="handleTabSwitcherSelect" />
       </div>
       <Teleport to="body">

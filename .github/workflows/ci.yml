@@ -213,7 +213,7 @@ jobs:
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
             update
-          sudo timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s 20m apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
@@ -323,6 +323,21 @@ jobs:
 
       - name: Setup Rust for standard Windows
         uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: MCP replacement temporary file cleanup tests
+        shell: pwsh
+        run: |
+          @'
+          #[path = "src-tauri/src/commands/mcp_cleanup.rs"]
+          mod cleanup;
+          '@ | rustc --edition 2021 --test -o "$env:RUNNER_TEMP/mcp-cleanup-tests.exe" -
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & "$env:RUNNER_TEMP/mcp-cleanup-tests.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: PowerShell MCP installer tests
+        shell: pwsh
+        run: ./.github/scripts/install-mcp-powershell.test.ps1
 
       - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
         with:
@@ -897,7 +912,7 @@ jobs:
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
             update
-          sudo timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s 20m apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
@@ -998,8 +1013,17 @@ jobs:
           [[ "$ID" == ubuntu ]] || exit 0
           sudo python3 .github/scripts/configure-docker-mirror.py /etc/docker/daemon.json --validate
           timeout 30s sudo systemctl restart docker
-          timeout 15s docker info --format '{{json .RegistryConfig.Mirrors}}' \
-            | python3 -c 'import json, sys; assert any(x.rstrip("/") == "https://mirror.gcr.io" for x in json.load(sys.stdin))'
+          for attempt in {1..12}; do
+            if mirrors="$(timeout 5s docker info --format '{{json .RegistryConfig.Mirrors}}')"; then
+              printf '%s\n' "$mirrors" | python3 -c 'import json, sys; assert any(x.rstrip("/") == "https://mirror.gcr.io" for x in json.load(sys.stdin))'
+              break
+            fi
+            if ((attempt == 12)); then
+              echo '::error::Docker did not become ready after restart' >&2
+              exit 1
+            fi
+            sleep 2
+          done
 
       - name: Install system dependencies
         run: |
@@ -1008,7 +1032,7 @@ jobs:
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
             update
-          sudo timeout --kill-after=30s 10m apt-get \
+          sudo timeout --kill-after=30s 20m apt-get \
             -o Acquire::Retries=3 \
             -o Acquire::http::Timeout=30 \
             -o Acquire::https::Timeout=30 \
@@ -1627,8 +1651,17 @@ jobs:
           [[ "$ID" == ubuntu ]] || exit 0
           sudo python3 .github/scripts/configure-docker-mirror.py /etc/docker/daemon.json --validate
           timeout 30s sudo systemctl restart docker
-          timeout 15s docker info --format '{{json .RegistryConfig.Mirrors}}' \
-            | python3 -c 'import json, sys; assert any(x.rstrip("/") == "https://mirror.gcr.io" for x in json.load(sys.stdin))'
+          for attempt in {1..12}; do
+            if mirrors="$(timeout 5s docker info --format '{{json .RegistryConfig.Mirrors}}')"; then
+              printf '%s\n' "$mirrors" | python3 -c 'import json, sys; assert any(x.rstrip("/") == "https://mirror.gcr.io" for x in json.load(sys.stdin))'
+              break
+            fi
+            if ((attempt == 12)); then
+              echo '::error::Docker did not become ready after restart' >&2
+              exit 1
+            fi
+            sleep 2
+          done
       - name: Setup RocketMQ server Java
         if: matrix.scenario == 'rocketmq'
         uses: actions/setup-java@v6

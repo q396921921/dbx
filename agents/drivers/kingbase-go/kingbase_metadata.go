@@ -126,6 +126,7 @@ type objectInfo struct {
 	ParentSchema   *string `json:"parent_schema,omitempty"`
 	ParentName     *string `json:"parent_name,omitempty"`
 	Comment        *string `json:"comment"`
+	Signature      *string `json:"signature,omitempty"`
 	Valid          *bool   `json:"valid,omitempty"`
 	CustomTypeKind *string `json:"custom_type_kind,omitempty"`
 	HasMembers     *bool   `json:"has_members,omitempty"`
@@ -1671,34 +1672,11 @@ func (s *server) listObjects(schema string, constraints metadataListConstraints)
 		}
 	}
 	if constraintsAllowRoutines(constraints) {
-		var query string
-		if s.mode.mysqlCompat {
-			query = fmt.Sprintf(`SELECT ROUTINE_NAME, ROUTINE_TYPE, ROUTINE_COMMENT
-FROM information_schema.routines
-WHERE ROUTINE_SCHEMA = %s
-ORDER BY ROUTINE_NAME`, quoteLiteral(effective))
-		} else {
-			catalog := "sys_catalog"
-			function := "sys"
-			if s.mode.postgresCatalog {
-				catalog, function = "pg_catalog", "pg"
-			}
-			query = fmt.Sprintf(`SELECT p.proname, CASE WHEN p.prorettype = 2278 THEN 'PROCEDURE' ELSE 'FUNCTION' END, d.description
-FROM %s.%s_proc p JOIN %s.%s_namespace n ON n.oid = p.pronamespace
-LEFT JOIN %s.%s_description d ON d.objoid = p.oid AND d.objsubid = 0
-WHERE n.nspname = %s ORDER BY p.proname`, catalog, function, catalog, function, catalog, function, quoteLiteral(effective))
+		routines, routineErr := s.listRoutineObjects(effective)
+		if routineErr != nil {
+			return nil, fmt.Errorf("list routines in schema %q: %w", effective, routineErr)
 		}
-		rows, queryErr := s.metadataQuery(query)
-		if queryErr == nil {
-			for rows.Next() {
-				var name, kind string
-				var comment sql.NullString
-				if rows.Scan(&name, &kind, &comment) == nil {
-					result = append(result, objectInfo{Name: name, ObjectType: kind, Schema: effective, Comment: nullStringPtr(comment)})
-				}
-			}
-			_ = rows.Close()
-		}
+		result = append(result, routines...)
 	}
 	if constraintsAllowTriggers(constraints) {
 		triggers, triggerErr := s.listTriggerObjects(effective)
@@ -1980,10 +1958,7 @@ func (s *server) cacheMissingColumnGenerationCapability(err error) bool {
 func applyColumnGenerationMetadata(column *columnInfo, identity, generated string, expression sql.NullString) error {
 	identity = strings.ToLower(strings.TrimSpace(identity))
 	generated = strings.ToLower(strings.TrimSpace(generated))
-	if generated != "" {
-		if generated != "s" || identity != "" {
-			return fmt.Errorf("column %q has unsupported generation metadata (identity=%q, generated=%q)", column.Name, identity, generated)
-		}
+	if generated == "s" {
 		if !expression.Valid || strings.TrimSpace(expression.String) == "" {
 			return fmt.Errorf("generated column %q has no generation expression", column.Name)
 		}
@@ -1991,11 +1966,12 @@ func applyColumnGenerationMetadata(column *columnInfo, identity, generated strin
 		// in the established extra clause, never in column_default.
 		column.Extra = stringPtr("GENERATED ALWAYS AS (" + expression.String + ") STORED")
 		column.ColumnDefault = nil
-	} else if identity != "" {
-		column.Extra = kingbaseIdentityClause(identity)
-		if column.Extra == nil {
-			return fmt.Errorf("column %q has unsupported identity metadata %q", column.Name, identity)
-		}
+		return nil
+	}
+	// Unrecognised identity codes (KingbaseES reports e.g. "i") keep the plain
+	// column default instead of failing the whole table load.
+	if clause := kingbaseIdentityClause(identity); clause != nil {
+		column.Extra = clause
 		column.ColumnDefault = nil
 	}
 	return nil
@@ -2780,6 +2756,10 @@ func (s *server) getObjectSource(schema, name, objectType string) (map[string]an
 }
 
 func (s *server) getObjectSourceForRelation(schema, name, objectType, relationName string) (map[string]any, error) {
+	return s.getObjectSourceWithSignature(schema, name, objectType, relationName, nil)
+}
+
+func (s *server) getObjectSourceWithSignature(schema, name, objectType, relationName string, signature *string) (map[string]any, error) {
 	effective, err := s.effectiveSchema(schema)
 	if err != nil {
 		return nil, err
@@ -2787,60 +2767,11 @@ func (s *server) getObjectSourceForRelation(schema, name, objectType, relationNa
 	source := ""
 	kind := strings.ToUpper(objectType)
 	if kind == "VIEW" {
-		if s.mode.mysqlCompat {
-			err = s.requireDBQueryRow("SELECT view_definition FROM information_schema.views WHERE table_schema = "+quoteLiteral(effective)+" AND table_name = "+quoteLiteral(name), &source)
-		} else {
-			catalog, prefix, function := "sys_catalog", "sys", "sys_get_viewdef"
-			if s.mode.postgresCatalog {
-				catalog, prefix, function = "pg_catalog", "pg", "pg_get_viewdef"
-			} else if s.usePgViewDefinition {
-				function = "pg_get_viewdef"
-			}
-			querySource := func(definitionFunction string) error {
-				query := fmt.Sprintf("SELECT %s(c.oid) FROM %s.%s_class c JOIN %s.%s_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s LIMIT 1", definitionFunction, catalog, prefix, catalog, prefix, quoteLiteral(effective), quoteLiteral(name))
-				return s.requireDBQueryRow(query, &source)
-			}
-			err = querySource(function)
-			if err != nil && function == "sys_get_viewdef" && isUndefinedFunction(err, function) {
-				s.usePgViewDefinition = true
-				err = querySource("pg_get_viewdef")
-			}
-		}
+		source, err = s.getViewSource(effective, name)
 	} else if kind == "MATERIALIZED_VIEW" {
 		source, err = s.getMaterializedViewSource(effective, name)
 	} else if kind == "FUNCTION" || kind == "PROCEDURE" {
-		catalog, prefix, function := "sys_catalog", "sys", "sys_get_functiondef"
-		if s.mode.postgresCatalog {
-			catalog, prefix, function = "pg_catalog", "pg", "pg_get_functiondef"
-		} else if s.usePgFunctionDefinition {
-			function = "pg_get_functiondef"
-		}
-		querySource := func(definitionFunction string) error {
-			query := fmt.Sprintf("SELECT %s(p.oid) FROM %s.%s_proc p JOIN %s.%s_namespace n ON n.oid=p.pronamespace WHERE n.nspname=%s AND p.proname=%s ORDER BY CASE WHEN p.prorettype=2278 THEN 0 ELSE 1 END LIMIT 1", definitionFunction, catalog, prefix, catalog, prefix, quoteLiteral(effective), quoteLiteral(name))
-			return s.requireDBQueryRow(query, &source)
-		}
-		queryLegacySource := func() error {
-			legacyFunction := "GET_FUNC_DDL"
-			if kind == "PROCEDURE" {
-				legacyFunction = "GET_PROCEDURE_DDL"
-			}
-			query := fmt.Sprintf("SELECT DBMS_METADATA.%s(CAST(%s AS varchar(128)), CAST(%s AS varchar(128)))", legacyFunction, quoteLiteral(name), quoteLiteral(effective))
-			return s.requireDBQueryRow(query, &source)
-		}
-		if s.useLegacyRoutineDefinition {
-			err = queryLegacySource()
-		} else {
-			err = querySource(function)
-			if err != nil && function == "sys_get_functiondef" && isUndefinedFunction(err, function) {
-				s.usePgFunctionDefinition = true
-				function = "pg_get_functiondef"
-				err = querySource(function)
-			}
-			if err != nil && !s.mode.postgresCatalog && function == "pg_get_functiondef" && isUndefinedFunction(err, function) {
-				s.useLegacyRoutineDefinition = true
-				err = queryLegacySource()
-			}
-		}
+		source, err = s.getRoutineSource(effective, name, kind, signature)
 	} else if kind == "TRIGGER" {
 		definitions, triggerErr := s.listTriggerDefinitionsFor(effective, relationName, name)
 		if triggerErr != nil {
@@ -2861,6 +2792,60 @@ func (s *server) getObjectSourceForRelation(schema, name, objectType, relationNa
 		result["editable"] = false
 	}
 	return result, nil
+}
+
+func (s *server) getViewSource(schema, name string) (string, error) {
+	querySource := func(query string) (string, error) {
+		var source sql.NullString
+		if err := s.requireDBQueryRow(query, &source); err != nil {
+			return "", err
+		}
+		if !source.Valid || strings.TrimSpace(source.String) == "" {
+			return "", sql.ErrNoRows
+		}
+		return source.String, nil
+	}
+	if s.mode.mysqlCompat {
+		// information_schema can expose a view while hiding its definition from
+		// a non-owner with SELECT privileges. Try the catalogs as the same user.
+		source, err := querySource("SELECT view_definition FROM information_schema.views WHERE table_schema = " + quoteLiteral(schema) + " AND table_name = " + quoteLiteral(name))
+		if err == nil {
+			return source, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+	}
+
+	catalog, prefix, function := "sys_catalog", "sys", "sys_get_viewdef"
+	if s.mode.postgresCatalog {
+		catalog, prefix, function = "pg_catalog", "pg", "pg_get_viewdef"
+	} else if s.usePgViewDefinition {
+		function = "pg_get_viewdef"
+	}
+	queryCatalog := func(definitionFunction string) (string, error) {
+		query := fmt.Sprintf("SELECT %s(c.oid) FROM %s.%s_class c JOIN %s.%s_namespace n ON n.oid=c.relnamespace WHERE n.nspname=%s AND c.relname=%s AND c.relkind = 'v' LIMIT 1", definitionFunction, catalog, prefix, catalog, prefix, quoteLiteral(schema), quoteLiteral(name))
+		return querySource(query)
+	}
+	source, err := queryCatalog(function)
+	if err == nil {
+		return source, nil
+	}
+	if function == "sys_get_viewdef" {
+		if isUndefinedFunction(err, function) {
+			s.usePgViewDefinition = true
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return "", err
+		}
+		source, err = queryCatalog("pg_get_viewdef")
+		if err == nil {
+			return source, nil
+		}
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("view %q.%q does not exist or its source definition is unavailable to the current user", schema, name)
+	}
+	return "", err
 }
 
 func (s *server) getMaterializedViewSource(schema, name string) (string, error) {

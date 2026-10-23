@@ -14,6 +14,7 @@ import { createContentSurfaceEventForwarders } from "@/lib/tabs/contentSurfaceEv
 import { isPreviewTab } from "@/lib/tabs/tabPresentation";
 import { resolveExecutableSql } from "@/lib/sql/sqlExecutionTarget";
 import { effectiveDatabaseTypeForConnection } from "@/lib/database/jdbcDialect";
+import { isOracleFamilyTypeSource } from "@/lib/database/databaseObjectCapabilities";
 import { usesProvenReadOnlyStickyTransactionState } from "@/lib/database/databaseFeatureSupport";
 import * as api from "@/lib/backend/api";
 import { externalSqlEditorMaxBytes, externalSqlFileOpenErrorMessage } from "@/lib/sql/sqlFileOpen";
@@ -87,6 +88,7 @@ defineExpose({
   refreshQueryEditorCompletionCache: () => activeSurfaceRef.value?.refreshQueryEditorCompletionCache() ?? false,
   handleModRTarget: (target: Element) => activeSurfaceRef.value?.handleModRTarget(target) ?? false,
   requestQueryEditorExecute: () => activeSurfaceRef.value?.requestQueryEditorExecute() ?? false,
+  requestQueryEditorExecuteAll: () => activeSurfaceRef.value?.requestQueryEditorExecuteAll() ?? false,
   captureQueryEditorExecutionSnapshot: () => activeSurfaceRef.value?.captureQueryEditorExecutionSnapshot(),
   requestQueryEditorExecuteInNewResultTab: () => activeSurfaceRef.value?.requestQueryEditorExecuteInNewResultTab() ?? false,
   requestQueryEditorPreviewChanges: async (stackSql?: string) => (await activeSurfaceRef.value?.requestQueryEditorPreviewChanges(stackSql)) ?? false,
@@ -121,7 +123,7 @@ const groupTabs = computed(() => {
 });
 const activeTab = computed(() => groupTabs.value.find((tab) => tab.id === props.activeTabId) ?? groupTabs.value[0] ?? null);
 const activeConnection = computed(() => (activeTab.value ? connectionStore.getConfig(activeTab.value.connectionId) : undefined));
-const showGroupToolbar = computed(() => activeTab.value?.mode === "query" && !activeTab.value.ddlViewer && !isPreviewTab(activeTab.value));
+const showGroupToolbar = computed(() => activeTab.value?.mode === "query" && !activeTab.value.ddlViewer && !isPreviewTab(activeTab.value) && !isOracleFamilyTypeSource(effectiveDatabaseTypeForConnection(activeConnection.value), activeTab.value.objectSource?.objectType));
 
 let encodingRequest = 0;
 async function changeExternalSqlEncoding(encoding: NonNullable<QueryTab["externalSqlEncoding"]>) {
@@ -242,6 +244,7 @@ const groupExecutableSql = computed(() => {
         @dismiss-auto-commit-session-txn-rolled-back="activeTab && (activeTab.autoCommitSessionTxnRolledBack = false)"
         @execute-pointer-down="toolbar.captureExecutionSnapshot(activeTab.id)"
         @toolbar-execute="toolbar.toolbarExecute($event, activeTab.id)"
+        @toolbar-execute-all="toolbar.toolbarExecuteAll($event, activeTab.id)"
         @toolbar-execute-in-new-result-tab="toolbar.toolbarExecuteInNewResultTab($event, activeTab.id)"
         @toolbar-execute-mongo-script="toolbar.toolbarExecuteMongoScript($event, activeTab.id)"
         @multi-execute="toolbar.multiExecute()"
