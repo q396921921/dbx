@@ -2500,13 +2500,14 @@ impl DbxMcpServer {
             Ok(argv) => argv,
             Err(error) => return tool_error("REDIS_COMMAND_BLOCKED", error),
         };
-        if argv[0].eq_ignore_ascii_case("SELECT") {
+        let cmd_name = String::from_utf8_lossy(&argv[0]).to_ascii_uppercase();
+        if cmd_name == "SELECT" {
             return tool_error(
                 "REDIS_DATABASE_SELECTION_REQUIRED",
                 "Redis SELECT is not available through MCP. Set the db argument to the logical database number instead; when db is omitted, DBX uses the current scoped database.",
             );
         }
-        let safety = classify_command(&argv[0]);
+        let safety = classify_command(&cmd_name);
         let policy = effective_policy_for_database_with_groups(
             &resolved.policy,
             &resolved.group_ids,
@@ -2529,10 +2530,7 @@ impl DbxMcpServer {
         if safety == RedisCommandSafety::Blocked && !permissions.allow_dangerous {
             return tool_error(
                 "REDIS_COMMAND_BLOCKED",
-                format!(
-                    "Dangerous Redis command \"{}\" is disabled in DBX MCP settings.",
-                    argv[0].to_ascii_uppercase()
-                ),
+                format!("Dangerous Redis command \"{}\" is disabled in DBX MCP settings.", cmd_name),
             );
         }
         if safety != RedisCommandSafety::Allowed && !permissions.allow_writes {
@@ -2618,6 +2616,7 @@ impl DbxMcpServer {
                 start_position: Some(start_position),
                 partition: request.partition,
                 offset: request.offset,
+                timestamp: None,
             };
             match self.backend.peek_messages(&resolved.connection, topic, count, options).await {
                 Ok(result) => text(format_peek_messages_result(result, count as usize)),
@@ -4422,6 +4421,7 @@ fn empty_query_result() -> dbx_core::db::QueryResult {
     dbx_core::db::QueryResult {
         columns: Vec::new(),
         column_types: Vec::new(),
+        deferred_large_value_cells: Vec::new(),
         column_sortables: Vec::new(),
         spatial_columns: Vec::new(),
         spatial_values: Vec::new(),
@@ -5556,6 +5556,7 @@ mod tests {
                 result: dbx_core::db::QueryResult {
                     columns: Vec::new(),
                     column_types: Vec::new(),
+                    deferred_large_value_cells: Vec::new(),
                     column_sortables: Vec::new(),
                     spatial_columns: Vec::new(),
                     spatial_values: Vec::new(),
@@ -6026,6 +6027,7 @@ mod tests {
                 result: dbx_core::db::QueryResult {
                     columns: vec![],
                     column_types: vec![],
+                    deferred_large_value_cells: Vec::new(),
                     column_sortables: vec![],
                     spatial_columns: vec![],
                     spatial_values: vec![],
@@ -9103,6 +9105,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec![],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -9136,6 +9139,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec![],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],
@@ -9170,6 +9174,7 @@ mod tests {
             result: dbx_core::db::QueryResult {
                 columns: vec!["body".to_string()],
                 column_types: vec![],
+                deferred_large_value_cells: Vec::new(),
                 column_sortables: vec![],
                 spatial_columns: vec![],
                 spatial_values: vec![],

@@ -2365,6 +2365,9 @@ func TestListObjectsSQLUsesSplitDictionaryQuery(t *testing.T) {
 	if !strings.Contains(sqlText, "'SEQUENCE'") {
 		t.Fatalf("object listing should include sequences, got: %s", query.SQL)
 	}
+	if !strings.Contains(sqlText, "'TRIGGER'") {
+		t.Fatalf("object listing must expose triggers for data transfer selection, got: %s", query.SQL)
+	}
 	if !strings.Contains(sqlText, "'TYPE BODY'") || !strings.Contains(sqlText, "TYPE_BODY") || !strings.Contains(sqlText, "'TYPE'") {
 		t.Fatalf("object listing should include TYPE and normalize TYPE BODY, got: %s", query.SQL)
 	}
@@ -2373,6 +2376,34 @@ func TestListObjectsSQLUsesSplitDictionaryQuery(t *testing.T) {
 	}
 	if !strings.Contains(sqlText, "ALL_SYNONYMS") || !strings.Contains(sqlText, "'SYNONYM' AS OBJECT_TYPE") {
 		t.Fatalf("object listing should include schema synonyms, got: %s", query.SQL)
+	}
+}
+
+func TestTableIndexDDLExclusionBindsConstraintIndexOwner(t *testing.T) {
+	for _, fromConnection := range []bool{false, true} {
+		t.Run(fmt.Sprint(fromConnection), func(t *testing.T) {
+			ddl := `CREATE INDEX OTHER.IX ON APP.T(ID)`
+			db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
+				{queryContains: "c.INDEX_OWNER = i.OWNER", args: []driver.Value{"APP", "T", "APP", "T"}, columns: []string{"DDL"}, rows: [][]driver.Value{{ddl}}},
+			})
+			var result []string
+			var err error
+			if fromConnection {
+				conn, connectErr := db.Conn(context.Background())
+				if connectErr != nil {
+					t.Fatal(connectErr)
+				}
+				defer conn.Close()
+				result, err = loadTableIndexDDLsFromConn(conn, "APP", "T")
+			} else {
+				s := newServer()
+				s.db = db
+				result, err = s.loadTableIndexDDLs("APP", "T")
+			}
+			if err != nil || len(result) != 1 || result[0] != ddl || scripted.next != len(scripted.steps) {
+				t.Fatalf("exact owner query failed: result=%v error=%v queries=%d", result, err, scripted.next)
+			}
+		})
 	}
 }
 
@@ -2462,10 +2493,13 @@ func TestExactTableDDLDoesNotBuildAnotherTargetAfterMetadataFailure(t *testing.T
 	}
 }
 
-func TestListSessionUserObjectsSQLIncludesSequences(t *testing.T) {
+func TestListSessionUserObjectsSQLIncludesSequencesAndTriggers(t *testing.T) {
 	sqlText := strings.ToUpper(oracleListObjectsSessionUserBaseSQL)
 	if !strings.Contains(sqlText, "FROM USER_OBJECTS") || !strings.Contains(sqlText, "'SEQUENCE'") || !strings.Contains(sqlText, "'TYPE BODY'") || !strings.Contains(sqlText, "'TYPE'") {
 		t.Fatalf("session-user object listing should include sequences, got: %s", oracleListObjectsSessionUserBaseSQL)
+	}
+	if !strings.Contains(sqlText, "'TRIGGER'") {
+		t.Fatalf("session-user object listing must expose triggers for data transfer selection, got: %s", oracleListObjectsSessionUserBaseSQL)
 	}
 }
 
@@ -3668,6 +3702,39 @@ func TestGetObjectSourceAggregatesProcedureSourceInOracle(t *testing.T) {
 	}
 }
 
+func TestStrictPackageSourceReportsDictionaryOriginAndUsesExactDictionaryKind(t *testing.T) {
+	for _, kind := range []string{"PACKAGE", "PACKAGE_BODY"} {
+		for _, strict := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/strict=%t", kind, strict), func(t *testing.T) {
+				dictionaryKind := strings.ReplaceAll(kind, "_", " ")
+				source := dictionaryKind + " \"Pkg.With.Dot\" AS END;"
+				db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{{
+					queryContains: "DBMS_XMLGEN.CONVERT",
+					args:          []driver.Value{"DBX_TEST", "Pkg.With.Dot", dictionaryKind},
+					rows:          [][]driver.Value{{source}},
+				}})
+				s := newServer()
+				s.db = db
+				response, shutdown := s.handleLine(fmt.Sprintf(`{"id":1,"method":"get_object_source","params":{"schema":"DBX_TEST","name":"Pkg.With.Dot","object_type":%q,"include_source_origin":%t}}`, kind, strict))
+				if shutdown || response.Error != nil {
+					t.Fatalf("unexpected source response: %#v", response)
+				}
+				result := response.Result.(map[string]any)
+				if result["source"] != source || result["object_type"] != kind {
+					t.Fatalf("wrong exact source: %#v", result)
+				}
+				origin, exists := result["source_origin"]
+				if exists != strict || (strict && origin != "oracle-dictionary") {
+					t.Fatalf("wrong source provenance: %#v", result)
+				}
+				if scripted.next != len(scripted.steps) {
+					t.Fatalf("unexpected queries: %d", scripted.next)
+				}
+			})
+		}
+	}
+}
+
 func TestGetObjectSourceReturnsEmptyWhenAggregatedSourceIsNull(t *testing.T) {
 	db, scripted := openOracleViewSourceTestDB(t, []oracleViewSourceQueryStep{
 		{
@@ -3837,6 +3904,7 @@ type oracleViewSourceQueryStep struct {
 	nextPanicText    string
 	columnsPanicText string
 	columnsPanicCall int
+	nextError        error
 }
 
 type oracleViewSourceDriver struct {
@@ -3904,6 +3972,7 @@ func (c *oracleViewSourceConn) QueryContext(
 		nextPanicText:    step.nextPanicText,
 		columnsPanicText: step.columnsPanicText,
 		columnsPanicCall: step.columnsPanicCall,
+		nextError:        step.nextError,
 	}, nil
 }
 
@@ -3912,6 +3981,9 @@ func (c *oracleViewSourceConn) ExecContext(
 	query string,
 	args []driver.NamedValue,
 ) (driver.Result, error) {
+	if query == dbmsOutputEnableSQL || query == dbmsOutputDisableSQL {
+		return driver.RowsAffected(0), nil
+	}
 	if c.driver.next >= len(c.driver.steps) {
 		return nil, errors.New("unexpected extra exec: " + query)
 	}
@@ -3942,6 +4014,7 @@ type oracleViewSourceRows struct {
 	columnsPanicText string
 	columnsPanicCall int
 	columnsCalls     int
+	nextError        error
 }
 
 func (r *oracleViewSourceRows) Columns() []string {
@@ -3964,6 +4037,9 @@ func (r *oracleViewSourceRows) Next(dest []driver.Value) error {
 		return r.nextErr
 	}
 	if r.next >= len(r.values) {
+		if r.nextError != nil {
+			return r.nextError
+		}
 		return io.EOF
 	}
 	copy(dest, r.values[r.next])
@@ -4953,6 +5029,22 @@ func TestRewriteOracleOpaqueObjectInDeferredProjection(t *testing.T) {
 	}
 	if !strings.Contains(sqlText, `"DOC"`) {
 		t.Fatalf("deferred rewrite dropped the LOB column: %s", sqlText)
+	}
+}
+
+func TestDeferLobsForQueryDefersToSQLPreviewMarkers(t *testing.T) {
+	plain := `SELECT "ID", "BODY" FROM "MESPRD"."DOCUMENTS"`
+	if !deferLobsForQuery(plain, true) {
+		t.Fatal("defer should engage for plain projections")
+	}
+	if deferLobsForQuery(plain, false) {
+		t.Fatal("defer must honor the request flag")
+	}
+	preview := `SELECT "ID", "BODY", "__DBX_LARGE_VALUE_BYTES_T_1" FROM (SELECT "ID", ` +
+		`DBMS_LOB.SUBSTR("BODY", 201, 1) AS "BODY", 'T:200:' || DBMS_LOB.GETLENGTH("BODY") AS "__DBX_LARGE_VALUE_BYTES_T_1" ` +
+		`FROM "MESPRD"."DOCUMENTS") WHERE ROWNUM <= 100`
+	if deferLobsForQuery(preview, true) {
+		t.Fatal("defer must not engage when SQL-level preview markers are present")
 	}
 }
 

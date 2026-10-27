@@ -84,7 +84,7 @@ vi.mock("@/stores/settingsStore", async () => {
   };
   return { ...actual, useSettingsStore: () => settingsMock.store };
 });
-vi.mock("@/lib/dataGrid/geometryPreview", () => ({ isHexGeometry: () => false, renderWktOnCanvas: mocks.renderWkt }));
+vi.mock("@/lib/dataGrid/geometryPreview", () => ({ isHexGeometry: () => false, looksLikeWkt: () => false, parseWktGeometry: () => null, renderWktOnCanvas: mocks.renderWkt }));
 vi.mock("@/lib/common/clipboard", () => ({ copyToClipboard: mocks.copyToClipboard }));
 vi.mock("@/composables/useToast", () => ({ useToast: () => ({ toast: mocks.toast }) }));
 vi.mock("@/composables/useDataGridCellDetail", async () => {
@@ -222,6 +222,34 @@ describe("DataGridPagination", () => {
     expect(summaryText).toContain("grid.selectionAverage");
     expect(summaryText).toContain("grid.selectionCells");
     expect(summaryText).toContain("grid.rows");
+  });
+
+  it("shows min, max, count and distinct beside sum and average when numbers are selected (#13286)", () => {
+    const mounted = mountComponent(DataGridPagination, {
+      selectionSummary: { cellCount: 4, rowCount: 2 },
+      selectionSummarySumText: "10",
+      selectionSummaryAverageText: "2.5",
+      selectionSummaryMinText: "1",
+      selectionSummaryMaxText: "4",
+      selectionSummaryCount: 4,
+      selectionSummaryDistinctCount: 3,
+      loading: false,
+      infiniteScrollEnabled: false,
+      infiniteScrollAllLoaded: false,
+      pageSize: 100,
+      customPageSizeInput: "",
+      pageSizeMenuItems: [],
+      exportMenuItems: [],
+      currentPage: 1,
+      canGoNextPage: false,
+      canJumpLastPage: false,
+    });
+
+    const summaryText = hostText(mounted.root);
+    expect(summaryText).toContain("grid.selectionMin");
+    expect(summaryText).toContain("grid.selectionMax");
+    expect(summaryText).toContain("grid.selectionCount");
+    expect(summaryText).toContain("grid.selectionDistinct");
   });
 
   it("keeps the loading icon mounted with a constant footprint and only animates while loading", async () => {
@@ -2112,6 +2140,57 @@ describe("cell detail surfaces", () => {
       openImagePreview: vi.fn(),
       canCopySqlCondition: () => true,
       databaseType: "oracle",
+    });
+
+    expect(hostText(dialog.root)).toContain("Hello");
+    expect(hostText(panel.root)).toContain("Hello");
+    dispatch(
+      findOne(dialog.root, (node) => node.props.title === "grid.copyValue"),
+      "click",
+    );
+    expect(copyText).toHaveBeenCalledWith("Hello");
+  });
+
+  it("presents printable PostgreSQL BYTEA bytes as text and copies the presented value (#11987)", async () => {
+    const copyText = vi.fn();
+    const byteaDetail = detail({
+      type: "BYTEA",
+      value: "0x48656c6c6f",
+      rawValue: "0x48656c6c6f",
+      rawValuePreview: "0x48656c6c6f",
+      displayValue: "Hello",
+      displayValuePreview: "Hello",
+      formattedJson: "",
+    });
+    const dialog = mountComponent(DataGridCellDetailDialog, {
+      open: true,
+      detail: byteaDetail,
+      typeColorClass: () => "",
+      openImagePreview: vi.fn(),
+      copyText,
+      canDownloadBinaryValue: () => true,
+      downloadBinaryValue: vi.fn(),
+      canImportBinaryValue: () => true,
+      importBinaryValue: vi.fn(),
+      databaseType: "postgres",
+    });
+    const panel = mountComponent(DataGridCellDetailPanel, {
+      detail: byteaDetail,
+      panelIsBottom: true,
+      metadataCollapsed: false,
+      valueFillsHeight: false,
+      editing: false,
+      sideJsonView: false,
+      showCompactJson: false,
+      canCompactJson: false,
+      typeColorClass: () => "",
+      canDownloadBinaryValue: () => true,
+      downloadBinaryValue: vi.fn(),
+      canImportBinaryValue: () => true,
+      importBinaryValue: vi.fn(),
+      openImagePreview: vi.fn(),
+      canCopySqlCondition: () => true,
+      databaseType: "postgres",
     });
 
     expect(hostText(dialog.root)).toContain("Hello");

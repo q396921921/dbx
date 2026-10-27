@@ -1,4 +1,5 @@
 pub mod exact_metadata;
+pub mod native_jobs;
 pub mod table_structure_sql;
 
 pub use dbx_drivers::metadata::sqlite_ddl;
@@ -25,7 +26,11 @@ mod agent_pg_sequences;
 mod external_table_filter_tests;
 mod kingbase;
 mod mongodb_columns;
+mod oracle_ddl_indexes;
 pub mod oracle_routines;
+mod oracle_table_triggers;
+mod oracle_triggers;
+pub use oracle_ddl_indexes::{prepare_schema_sync_oracle_ddl_core, separate_table_ddl_indexes_core};
 mod oracle_type_data;
 mod oracle_type_details;
 mod oracle_type_evolution;
@@ -37,6 +42,8 @@ pub mod plugin_metadata;
 mod plugin_metadata_tests;
 #[cfg(test)]
 mod sqlserver_temporal_ddl_tests;
+#[cfg(all(test, unix))]
+mod trigger_metadata_routing_tests;
 
 macro_rules! extract_pool {
     ($pool:expr, $variant:ident) => {
@@ -122,6 +129,7 @@ const TDENGINE_LIKE_PATTERN_MAX_BYTES: usize = 100;
 pub use dbx_types::metadata_filter::{
     sql_like_pattern_matches_case_insensitive, table_name_filter_matches, TableNameFilter,
 };
+pub use dbx_types::oracle_trigger::{MetadataIdentityMode, MetadataReadOptions};
 
 fn clickhouse_metadata_database<'a>(database: &'a str, schema: &'a str) -> &'a str {
     if schema.trim().is_empty() {
@@ -1910,6 +1918,57 @@ fn oracle_object_statistics_query_plan(schema: &str) -> Vec<ObjectStatisticsAtte
     ]
 }
 
+fn oceanbase_oracle_object_statistics_sql(schema: &str) -> String {
+    format!(
+        r#"WITH locations AS (
+  SELECT DISTINCT DATABASE_NAME, TABLE_NAME, TABLE_ID, TABLE_TYPE,
+         DATA_TABLE_ID, TABLET_ID, LS_ID, SVR_IP, SVR_PORT, ROLE
+  FROM SYS.DBA_OB_TABLE_LOCATIONS WHERE DATABASE_NAME = {owner}
+), base_tables AS (
+  SELECT DISTINCT DATABASE_NAME, TABLE_NAME, TABLE_ID FROM locations
+  WHERE TABLE_TYPE = 'USER TABLE'
+), owned_tablets AS (
+  SELECT b.DATABASE_NAME, b.TABLE_NAME, l.TABLET_ID,
+         MAX(CASE WHEN l.ROLE = 'LEADER' THEN l.LS_ID END) AS LS_ID,
+         MAX(CASE WHEN l.ROLE = 'LEADER' THEN l.SVR_IP END) AS SVR_IP,
+         MAX(CASE WHEN l.ROLE = 'LEADER' THEN l.SVR_PORT END) AS SVR_PORT,
+         SUM(CASE WHEN l.ROLE = 'LEADER' THEN 1 ELSE 0 END) AS LEADER_COUNT
+  FROM base_tables b JOIN locations l
+    ON l.DATABASE_NAME = b.DATABASE_NAME
+   AND (l.TABLE_ID = b.TABLE_ID OR (l.DATA_TABLE_ID = b.TABLE_ID
+        AND l.TABLE_TYPE IN ('INDEX', 'LOB AUX TABLE')))
+  GROUP BY b.DATABASE_NAME, b.TABLE_NAME, l.TABLET_ID
+), tablet_sizes AS (
+  SELECT o.DATABASE_NAME, o.TABLE_NAME, o.TABLET_ID,
+         CASE WHEN o.LEADER_COUNT = 1 AND COUNT(r.TABLET_ID) = 1
+                   AND COUNT(r.REQUIRED_SIZE) = 1
+              THEN MAX(r.REQUIRED_SIZE) ELSE NULL END AS TABLET_BYTES
+  FROM owned_tablets o LEFT JOIN SYS.DBA_OB_TABLET_REPLICAS r
+    ON r.TABLET_ID = o.TABLET_ID AND r.LS_ID = o.LS_ID
+   AND r.SVR_IP = o.SVR_IP AND r.SVR_PORT = o.SVR_PORT
+  GROUP BY o.DATABASE_NAME, o.TABLE_NAME, o.TABLET_ID, o.LEADER_COUNT
+), sizes AS (
+  SELECT DATABASE_NAME, TABLE_NAME,
+         CASE WHEN COUNT(*) = COUNT(TABLET_BYTES)
+              THEN SUM(TABLET_BYTES) ELSE NULL END AS TOTAL_BYTES
+  FROM tablet_sizes GROUP BY DATABASE_NAME, TABLE_NAME
+)
+SELECT t.TABLE_NAME, t.OWNER, t.NUM_ROWS, s.TOTAL_BYTES
+FROM ALL_TABLES t
+LEFT JOIN sizes s ON s.DATABASE_NAME = t.OWNER AND s.TABLE_NAME = t.TABLE_NAME
+WHERE t.OWNER = {owner} AND t.NESTED = 'NO'
+ORDER BY t.TABLE_NAME"#,
+        owner = oracle_owner_filter(schema),
+    )
+}
+
+fn oceanbase_oracle_object_statistics_query_plan(schema: &str) -> Vec<ObjectStatisticsAttempt> {
+    vec![
+        ("tablet-replicas", oceanbase_oracle_object_statistics_sql(schema), true),
+        ("rows-only", oracle_object_statistics_rows_only_sql(schema), true),
+    ]
+}
+
 fn dameng_object_statistics_query_plan(schema: &str) -> Vec<ObjectStatisticsAttempt> {
     vec![
         ("table-used-pages", dameng_object_statistics_sql(schema), true),
@@ -2213,11 +2272,18 @@ async fn agent_list_object_statistics(
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ExternalDriverStatisticsDialect {
     Oracle,
+    OceanbaseOracle,
     Dameng,
     Kingbase,
 }
 
 fn external_driver_statistics_dialect(config: &ConnectionConfig) -> Option<ExternalDriverStatisticsDialect> {
+    if config.db_type == DatabaseType::OceanbaseOracle
+        || crate::models::connection::jdbc_dialect_hint(config)
+            == Some(crate::models::connection::JdbcDialectHint::OceanbaseOracle)
+    {
+        return Some(ExternalDriverStatisticsDialect::OceanbaseOracle);
+    }
     // `is_oracle_external_driver_config` (added alongside the JDBC Oracle DDL
     // fix) checks both the `jdbc:oracle:` URL prefix and the driver class, so
     // it recognises more real-world configs than a URL-only sniff would.
@@ -2247,6 +2313,7 @@ fn external_driver_statistics_query_plan(
 ) -> Vec<ObjectStatisticsAttempt> {
     match dialect {
         ExternalDriverStatisticsDialect::Oracle => oracle_object_statistics_query_plan(schema),
+        ExternalDriverStatisticsDialect::OceanbaseOracle => oceanbase_oracle_object_statistics_query_plan(schema),
         ExternalDriverStatisticsDialect::Dameng => dameng_object_statistics_query_plan(schema),
         ExternalDriverStatisticsDialect::Kingbase => kingbase::object_statistics_query_plan(schema),
     }
@@ -2255,6 +2322,7 @@ fn external_driver_statistics_query_plan(
 fn external_driver_statistics_vendor(dialect: ExternalDriverStatisticsDialect) -> &'static str {
     match dialect {
         ExternalDriverStatisticsDialect::Oracle => "Oracle",
+        ExternalDriverStatisticsDialect::OceanbaseOracle => "OceanBase Oracle",
         ExternalDriverStatisticsDialect::Dameng => "Dameng",
         ExternalDriverStatisticsDialect::Kingbase => "Kingbase",
     }
@@ -3314,6 +3382,7 @@ mod tests {
         db::QueryResult {
             columns: columns.iter().map(|column| (*column).to_string()).collect(),
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: Vec::new(),
             spatial_values: Vec::new(),
@@ -4296,6 +4365,12 @@ done
     #[test]
     fn external_driver_statistics_dialect_matches_jdbc_url_vendor() {
         let mut config = test_connection_config(DatabaseType::Jdbc);
+        config.connection_string = Some(" JDBC:OceanBase:Oracle://localhost:2881/test ".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), Some(ExternalDriverStatisticsDialect::OceanbaseOracle));
+        config.connection_string = Some("jdbc:oceanbase:mysql://localhost:2881/test".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), None);
+        config.connection_string = Some("jdbc:oceanbase://localhost:2881/test".to_string());
+        assert_eq!(external_driver_statistics_dialect(&config), None);
         config.connection_string = Some(" JDBC:Oracle:thin:@127.0.0.1:1521:XE ".to_string());
         assert_eq!(external_driver_statistics_dialect(&config), Some(ExternalDriverStatisticsDialect::Oracle));
 
@@ -4433,6 +4508,7 @@ done
         let result = db::QueryResult {
             columns: vec!["Table".to_string(), "Extra".to_string(), "CREATE TABLE".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4463,6 +4539,7 @@ done
         let result = db::QueryResult {
             columns: vec!["Table".to_string(), "Create Table".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4492,6 +4569,7 @@ done
         let result = db::QueryResult {
             columns: vec!["name".to_string(), "definition".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4518,6 +4596,7 @@ done
         let result = db::QueryResult {
             columns: vec!["View".to_string(), "Extra".to_string(), "CREATE VIEW".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4548,6 +4627,7 @@ done
         let result = db::QueryResult {
             columns: vec!["name".to_string(), "definition".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -4618,6 +4698,7 @@ done
                 source: "CREATE EVENT event_daily_sync ON SCHEDULE EVERY 1 DAY DO SELECT 1".to_string(),
                 editable: None,
                 routine_parameters: None,
+                trigger: None,
             },
             None,
         );
@@ -4638,6 +4719,7 @@ done
                         source: "CREATE TYPE ...".to_string(),
                         editable: Some(true),
                         routine_parameters: None,
+                        trigger: None,
                     },
                     Some(&config),
                 );
@@ -4666,6 +4748,7 @@ done
                     source: "CREATE TYPE ...".into(),
                     editable: Some(true),
                     routine_parameters: None,
+                    trigger: None,
                 },
                 Some(&config),
             );
@@ -5639,6 +5722,7 @@ for line in sys.stdin:
         let result = super::db::QueryResult {
             columns: vec!["table_name".to_string(), "table_type".to_string()],
             column_types: vec![],
+            deferred_large_value_cells: Vec::new(),
             column_sortables: vec![],
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5677,6 +5761,7 @@ for line in sys.stdin:
                 "comment".to_string(),
             ],
             column_types: vec![],
+            deferred_large_value_cells: Vec::new(),
             column_sortables: vec![],
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5931,6 +6016,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5951,6 +6037,7 @@ for line in sys.stdin:
         let empty = db::QueryResult {
             columns: vec!["COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -5979,6 +6066,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["AUTO_INCREMENT".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6024,6 +6112,7 @@ for line in sys.stdin:
         let result = db::QueryResult {
             columns: vec!["TABLE_NAME".to_string(), "COMMENTS".to_string()],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6198,6 +6287,7 @@ for line in sys.stdin:
                 "COMMENTS".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6495,6 +6585,65 @@ done
     }
 
     #[test]
+    fn oceanbase_statistics_sql_requires_complete_unique_tablet_sizes() {
+        for (case, mutation, expected) in [
+            ("normal", "", Some(10_i64)),
+            ("zero", "UPDATE SYS.DBA_OB_TABLET_REPLICAS SET REQUIRED_SIZE=0", Some(0)),
+            ("missing-leader", "INSERT INTO SYS.DBA_OB_TABLE_LOCATIONS VALUES ('APP','T',1,'USER TABLE',0,2,1,'host',2882,'FOLLOWER')", None),
+            ("multiple-leaders", "INSERT INTO SYS.DBA_OB_TABLE_LOCATIONS VALUES ('APP','T',1,'USER TABLE',0,1,2,'host2',2882,'LEADER')", None),
+            ("duplicate-location", "INSERT INTO SYS.DBA_OB_TABLE_LOCATIONS SELECT * FROM SYS.DBA_OB_TABLE_LOCATIONS", Some(10)),
+            ("missing-replica", "DELETE FROM SYS.DBA_OB_TABLET_REPLICAS", None),
+            ("duplicate-replica", "INSERT INTO SYS.DBA_OB_TABLET_REPLICAS SELECT * FROM SYS.DBA_OB_TABLET_REPLICAS", None),
+            ("null-size", "UPDATE SYS.DBA_OB_TABLET_REPLICAS SET REQUIRED_SIZE=NULL", None),
+            ("index-and-lob", "INSERT INTO SYS.DBA_OB_TABLE_LOCATIONS VALUES ('APP','I',2,'INDEX',1,2,1,'host',2882,'LEADER'),('APP','L',3,'LOB AUX TABLE',1,3,1,'host',2882,'LEADER'); INSERT INTO SYS.DBA_OB_TABLET_REPLICAS VALUES (2,1,'host',2882,20),(3,1,'host',2882,30)", Some(60)),
+        ] {
+            let conn = rusqlite::Connection::open_in_memory().unwrap();
+            conn.execute_batch(
+                "ATTACH DATABASE ':memory:' AS SYS;
+                 CREATE TABLE ALL_TABLES(TABLE_NAME TEXT,OWNER TEXT,NUM_ROWS INTEGER,NESTED TEXT);
+                 INSERT INTO ALL_TABLES VALUES ('T','APP',31,'NO');
+                 CREATE TABLE SYS.DBA_OB_TABLE_LOCATIONS(DATABASE_NAME TEXT,TABLE_NAME TEXT,TABLE_ID INTEGER,TABLE_TYPE TEXT,DATA_TABLE_ID INTEGER,TABLET_ID INTEGER,LS_ID INTEGER,SVR_IP TEXT,SVR_PORT INTEGER,ROLE TEXT);
+                 INSERT INTO SYS.DBA_OB_TABLE_LOCATIONS VALUES ('APP','T',1,'USER TABLE',0,1,1,'host',2882,'LEADER');
+                 CREATE TABLE SYS.DBA_OB_TABLET_REPLICAS(TABLET_ID INTEGER,LS_ID INTEGER,SVR_IP TEXT,SVR_PORT INTEGER,REQUIRED_SIZE INTEGER);
+                 INSERT INTO SYS.DBA_OB_TABLET_REPLICAS VALUES (1,1,'host',2882,10);",
+            ).unwrap();
+            conn.execute_batch(mutation).unwrap();
+            let actual: (i64, Option<i64>) = conn.query_row(
+                &super::oceanbase_oracle_object_statistics_sql("APP"),
+                [],
+                |row| Ok((row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            assert_eq!(actual, (31, expected), "{case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn oceanbase_statistics_preserves_rows_when_capacity_is_unavailable() {
+        let stats = super::object_statistics_from_query_plan(
+            "OceanBase Oracle",
+            "APP",
+            super::oceanbase_oracle_object_statistics_query_plan("APP"),
+            |sql| async move {
+                if sql.contains("DBA_OB_TABLET_REPLICAS") {
+                    Err("insufficient privilege".to_string())
+                } else {
+                    Ok(statistics_query_result(vec![vec![
+                        serde_json::json!("T"),
+                        serde_json::json!("APP"),
+                        serde_json::json!(31),
+                        serde_json::Value::Null,
+                    ]]))
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].estimated_rows, Some(31));
+        assert_eq!(stats[0].total_bytes, None);
+    }
+
+    #[test]
     fn dameng_object_statistics_sql_uses_bounded_table_size_function() {
         let sql = dameng_object_statistics_sql("app's");
         assert!(sql.contains("TABLE_USED_PAGES(t.OWNER, t.TABLE_NAME) * PAGE"));
@@ -6517,6 +6666,7 @@ done
                 "TOTAL_BYTES".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6695,6 +6845,7 @@ done
                 "TOTAL_BYTES".to_string(),
             ],
             column_types: Vec::new(),
+            deferred_large_value_cells: Vec::new(),
             column_sortables: Vec::new(),
             spatial_columns: vec![],
             spatial_values: vec![],
@@ -6869,6 +7020,33 @@ pub async fn list_objects_core(
     object_types: Option<&[String]>,
     table_name_filter: Option<&TableNameFilter>,
 ) -> Result<Vec<db::ObjectInfo>, String> {
+    list_objects_core_with_options(
+        state,
+        connection_id,
+        database,
+        schema,
+        filter,
+        limit,
+        offset,
+        object_types,
+        table_name_filter,
+        &Default::default(),
+    )
+    .await
+}
+
+pub async fn list_objects_core_with_options(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    filter: Option<&str>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+    object_types: Option<&[String]>,
+    table_name_filter: Option<&TableNameFilter>,
+    options: &MetadataReadOptions,
+) -> Result<Vec<db::ObjectInfo>, String> {
     let db_config = connection_config(state, connection_id).await;
     if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::OceanbaseOracle) {
         validate_oceanbase_metadata_page(limit, offset)?;
@@ -6894,6 +7072,7 @@ pub async fn list_objects_core(
                 object_types,
                 table_name_filter,
                 metadata_session.client_session_id(),
+                options,
             )
             .await
             .map(|outcome| {
@@ -7406,6 +7585,22 @@ async fn list_object_statistics_once(
         if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::MongoDb) {
             return crate::mongo_ops::mongo_agent_list_object_statistics(&client, database).await;
         }
+        if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::OceanbaseOracle) {
+            let timeout_duration = agent_metadata_timeout(db_config.as_ref());
+            return object_statistics_from_query_plan(
+                "OceanBase Oracle",
+                schema,
+                oceanbase_oracle_object_statistics_query_plan(schema),
+                |sql| {
+                    let client = client.clone();
+                    async move {
+                        let mut client = client.lock().await;
+                        agent_object_statistics_query(&mut client, database, schema, &sql, timeout_duration).await
+                    }
+                },
+            )
+            .await;
+        }
         if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Oracle) {
             return oracle_agent_list_object_statistics(
                 client,
@@ -7458,7 +7653,15 @@ async fn list_object_statistics_once(
     let pool = clone_metadata_pool(state, &pool_key).await.ok_or("Pool not found")?;
     match &pool {
         PoolKind::Mysql(p, mode) => {
-            if *mode == MysqlMode::OceanBaseOracle || db_config.as_ref().is_some_and(db::manticoresearch::is_config) {
+            if *mode == MysqlMode::OceanBaseOracle {
+                object_statistics_from_query_plan(
+                    "OceanBase Oracle",
+                    schema,
+                    oceanbase_oracle_object_statistics_query_plan(schema),
+                    |sql| async move { db::mysql::execute_query(p, &sql, true).await },
+                )
+                .await
+            } else if db_config.as_ref().is_some_and(db::manticoresearch::is_config) {
                 Ok(vec![])
             } else {
                 let include_mysql_details = db_config.as_ref().is_some_and(|config| {
@@ -7498,6 +7701,7 @@ fn unpaged_object_list(objects: Vec<db::ObjectInfo>) -> ObjectListOutcome {
     ObjectListOutcome { objects, paging_applied: false }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn list_objects_once(
     state: &AppState,
     connection_id: &str,
@@ -7509,10 +7713,30 @@ async fn list_objects_once(
     object_types: Option<&[String]>,
     table_name_filter: Option<&TableNameFilter>,
     client_session_id: Option<&str>,
+    options: &MetadataReadOptions,
 ) -> Result<ObjectListOutcome, String> {
     let pool_key =
         state.get_or_create_metadata_pool_for_session(connection_id, Some(database), client_session_id).await?;
     let db_config = connection_config(state, connection_id).await;
+    if options.is_exact() {
+        if let Some(result) = oracle_triggers::list_objects(
+            state,
+            &pool_key,
+            db_config.as_ref(),
+            database,
+            schema,
+            filter,
+            limit,
+            offset,
+            object_types,
+            table_name_filter,
+            options,
+        )
+        .await?
+        {
+            return Ok(result);
+        }
+    }
     let force_local_table_name_filter = table_name_filter.is_some_and(|filter| !filter.is_empty());
     let (mysql_limit, mysql_offset) = if filter.is_none_or(|value| value.trim().is_empty())
         && table_name_filter.is_none_or(|filter| filter.is_empty())
@@ -7722,7 +7946,18 @@ async fn list_objects_once(
             } else if db_config.as_ref().is_some_and(db::starrocks::is_config) {
                 db::starrocks::list_table_objects(p, database).await.map(unpaged_object_list)
             } else if db_config.as_ref().is_some_and(db::oceanbase_mysql::is_config) {
-                db::oceanbase_mysql::list_objects(p, database).await.map(unpaged_object_list)
+                let mut objects = db::oceanbase_mysql::list_objects(p, database).await?;
+                // The OceanBase MySQL branch only lists tables/materialized views and
+                // routines; reuse the generic MySQL trigger/event queries so the object
+                // browser counts match SHOW TRIGGERS / information_schema.EVENTS.
+                let supplemental_types = vec!["TRIGGER".to_string(), "EVENT".to_string()];
+                match db::mysql::list_objects(p, database, Some(&supplemental_types), None, None).await {
+                    Ok(supplemental) => objects.extend(supplemental.objects),
+                    Err(error) => log::warn!(
+                        "Skipping triggers/events for OceanBase database `{database}` in object browser: {error}"
+                    ),
+                }
+                Ok(unpaged_object_list(objects))
             } else if db_config.as_ref().is_some_and(db::mysql_compatible::uses_show_metadata) {
                 db::mysql::list_table_objects_show(p, database).await.map(unpaged_object_list)
             } else if mysql_table_list_source_for_config(db_config.as_ref()) == MysqlTableListSource::ShowFullTables {
@@ -7926,8 +8161,20 @@ async fn list_completion_objects_once(
             db::postgres::list_objects(p, schema, true, true, false).await.map(filter_completion_objects)
         }
         PoolKind::SqlServer(_) => {
-            let outcome =
-                list_objects_once(state, connection_id, database, schema, None, None, None, None, None, None).await?;
+            let outcome = list_objects_once(
+                state,
+                connection_id,
+                database,
+                schema,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                &Default::default(),
+            )
+            .await?;
             Ok(filter_completion_objects(outcome.objects))
         }
         _ => Ok(Vec::new()),
@@ -7995,7 +8242,7 @@ where
     retry_metadata_connection_for_session(state, connection_id, database, None, operation).await
 }
 
-async fn retry_metadata_connection_for_session<T, F, Fut>(
+pub(crate) async fn retry_metadata_connection_for_session<T, F, Fut>(
     state: &AppState,
     connection_id: &str,
     database: Option<&str>,
@@ -8010,7 +8257,7 @@ where
         .await
 }
 
-async fn run_metadata_connection_for_session<T, F, Fut>(
+pub(crate) async fn run_metadata_connection_for_session<T, F, Fut>(
     state: &AppState,
     connection_id: &str,
     database: Option<&str>,
@@ -9061,6 +9308,17 @@ pub async fn list_triggers_core(
     schema: &str,
     table: &str,
 ) -> Result<Vec<db::TriggerInfo>, String> {
+    list_triggers_core_with_options(state, connection_id, database, schema, table, &Default::default()).await
+}
+
+pub async fn list_triggers_core_with_options(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    table: &str,
+    options: &MetadataReadOptions,
+) -> Result<Vec<db::TriggerInfo>, String> {
     if crate::sql_dialect::parse_sqlserver_linked_schema_ref(schema).is_some() {
         return Ok(vec![]);
     }
@@ -9070,10 +9328,36 @@ pub async fn list_triggers_core(
 
         {
             let pool_handle = state.pool_handle(&pool_key).await;
+            if let Some(PoolKind::ExternalDriver { config, session, .. }) = pool_handle.as_ref() {
+                let mut params = serde_json::json!({ "connection": config.as_ref(), "database": database, "schema": schema, "table": table });
+                options.apply_to(&mut params);
+                return match session.invoke_with_timeout("listTriggers", params, agent_metadata_timeout(Some(config.as_ref()))).await {
+                    Err(error) if !options.is_exact() && crate::query::is_external_driver_method_unsupported(&error, "listTriggers") => Ok(Vec::new()),
+                    result => result,
+                };
+            }
             try_sqlserver!(pool_handle, list_triggers, schema, table);
             if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
+                if options.is_exact() && db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Oracle && !is_default_oracle_agent_config(config)) {
+                    let mut reader = oracle_triggers::agent_reader(client, database, schema, agent_metadata_timeout(db_config.as_ref())).await;
+                    return reader.list_triggers(schema, table).await;
+                }
                 let mut client = client.lock().await;
-                return client.list_triggers(database, schema, table, agent_metadata_timeout(db_config.as_ref())).await;
+                let triggers = client
+                    .list_triggers_with_options(
+                        database,
+                        schema,
+                        table,
+                        options,
+                        agent_metadata_timeout(db_config.as_ref()),
+                    )
+                    .await?;
+                drop(client);
+                drop(pool_handle);
+                if options.is_exact() {
+                    return Ok(triggers);
+                }
+                return oracle_table_triggers::enrich(state, connection_id, database, schema, table, triggers).await;
             }
         }
 
@@ -9082,6 +9366,9 @@ pub async fn list_triggers_core(
         match &pool {
             PoolKind::Mysql(p, mode) => {
                 if *mode == MysqlMode::OceanBaseOracle {
+                    if options.is_exact() {
+                        return oracle_triggers::pool_reader(p.clone()).await.list_triggers(schema, table).await;
+                    }
                     db::ob_oracle::list_triggers(p, schema, table).await
                 } else {
                     db::mysql::list_triggers(p, mysql_table_metadata_catalog(database, schema), table).await
@@ -11882,8 +12169,33 @@ pub async fn get_object_source_core(
     signature: Option<&str>,
     relation_name: Option<&str>,
 ) -> Result<db::ObjectSource, String> {
+    get_object_source_core_with_options(
+        state,
+        connection_id,
+        database,
+        schema,
+        name,
+        object_type,
+        signature,
+        relation_name,
+        &Default::default(),
+    )
+    .await
+}
+
+pub async fn get_object_source_core_with_options(
+    state: &AppState,
+    connection_id: &str,
+    database: &str,
+    schema: &str,
+    name: &str,
+    object_type: db::ObjectSourceKind,
+    signature: Option<&str>,
+    relation_name: Option<&str>,
+    options: &MetadataReadOptions,
+) -> Result<db::ObjectSource, String> {
     let config = connection_config(state, connection_id).await;
-    let source = retry_metadata_connection(state, connection_id, Some(database), || {
+    let mut source = retry_metadata_connection(state, connection_id, Some(database), || {
         get_object_source_once(
             state,
             connection_id,
@@ -11893,9 +12205,13 @@ pub async fn get_object_source_core(
             object_type.clone(),
             signature,
             relation_name,
+            options,
         )
     })
     .await?;
+    if options.is_exact() {
+        oracle_triggers::validate_source_definition(&mut source, schema, name);
+    }
     Ok(finalize_object_source(source, config.as_ref()))
 }
 
@@ -11974,14 +12290,25 @@ async fn managed_object_source<T: serde::de::DeserializeOwned + Send + 'static>(
     object_type: &db::ObjectSourceKind,
     signature: Option<&str>,
     relation_name: Option<&str>,
+    options: &MetadataReadOptions,
+    include_source_origin: bool,
     timeout: Option<Duration>,
 ) -> Result<T, String> {
     match pool {
         PoolKind::Agent(client) => {
+            let mut client = client.lock().await;
             client
-                .lock()
-                .await
-                .get_object_source_with_identity(database, schema, name, object_type, signature, relation_name, timeout)
+                .get_object_source_with_options(
+                    database,
+                    schema,
+                    name,
+                    object_type,
+                    signature,
+                    relation_name,
+                    options,
+                    include_source_origin,
+                    timeout,
+                )
                 .await
         }
         PoolKind::ExternalDriver { config, session, .. } => {
@@ -11992,9 +12319,13 @@ async fn managed_object_source<T: serde::de::DeserializeOwned + Send + 'static>(
                 "name": name,
                 "object_type": object_type,
             });
+            options.apply_to(&mut params);
             // An empty signature identifies the zero-argument overload; absence means unknown.
             if let Some(signature) = signature {
                 params["signature"] = serde_json::Value::String(signature.to_string());
+            }
+            if include_source_origin {
+                params["include_source_origin"] = serde_json::json!(true);
             }
             session.invoke_with_timeout("getObjectSource", params, timeout).await
         }
@@ -12011,6 +12342,7 @@ async fn get_object_source_once(
     object_type: db::ObjectSourceKind,
     signature: Option<&str>,
     relation_name: Option<&str>,
+    options: &MetadataReadOptions,
 ) -> Result<db::ObjectSource, String> {
     let pool_key = state.get_or_create_metadata_pool_for_session(connection_id, Some(database), None).await?;
     let db_config = connection_config(state, connection_id).await;
@@ -12041,6 +12373,7 @@ async fn get_object_source_once(
                     source,
                     editable: None,
                     routine_parameters: None,
+                    trigger: None,
                 });
             }
             let result: db::ObjectSource = managed_object_source(
@@ -12051,6 +12384,8 @@ async fn get_object_source_once(
                 &object_type,
                 signature,
                 None,
+                options,
+                false,
                 agent_metadata_timeout(Some(config.as_ref())),
             )
             .await?;
@@ -12068,6 +12403,17 @@ async fn get_object_source_once(
             }
             first_string_cell(result?)?
         } else if let Some(client) = extract_pool!(pool_handle.as_ref(), Agent) {
+            if options.is_exact()
+                && matches!(object_type, db::ObjectSourceKind::Trigger)
+                && db_config.as_ref().is_some_and(|config| {
+                    config.db_type == DatabaseType::Oracle && !is_default_oracle_agent_config(config)
+                })
+            {
+                let mut reader =
+                    oracle_triggers::agent_reader(client, database, schema, agent_metadata_timeout(db_config.as_ref()))
+                        .await;
+                return reader.source(schema, name).await;
+            }
             if uses_oracle_metadata_object_source(db_config.as_ref(), &object_type) {
                 oracle_agent_object_source(
                     client,
@@ -12098,6 +12444,7 @@ async fn get_object_source_once(
                             source,
                             editable: None,
                             routine_parameters: None,
+                            trigger: None,
                         });
                     }
                     None => String::new(),
@@ -12111,6 +12458,8 @@ async fn get_object_source_once(
                     &object_type,
                     signature,
                     relation_name,
+                    options,
+                    false,
                     agent_metadata_timeout(db_config.as_ref()),
                 )
                 .await?;
@@ -12118,6 +12467,17 @@ async fn get_object_source_once(
             }
         } else {
             match pool_handle.as_ref().ok_or("Pool not found")? {
+                PoolKind::Mysql(pool, MysqlMode::OceanBaseOracle)
+                    if matches!(object_type, db::ObjectSourceKind::Trigger) =>
+                {
+                    if options.is_exact() {
+                        return oracle_triggers::pool_reader(pool.clone()).await.source(schema, name).await;
+                    }
+                    first_string_cell(
+                        db::mysql::execute_query(pool, &oracle_object_source_sql(schema, name, &object_type), true)
+                            .await?,
+                    )?
+                }
                 PoolKind::Mysql(pool, _) => {
                     mysql_object_source(pool, mysql_table_metadata_catalog(database, schema), name, &object_type)
                         .await?
@@ -12137,6 +12497,21 @@ async fn get_object_source_once(
                 PoolKind::Postgres(pool) if db_config.as_ref().is_some_and(is_questdb_config) => {
                     // only view
                     db::questdb::questdb_object_source(pool, name).await?
+                }
+                PoolKind::Postgres(pool)
+                    if db_config.as_ref().is_some_and(|config| config.db_type == DatabaseType::Redshift)
+                        && matches!(object_type, db::ObjectSourceKind::Procedure) =>
+                {
+                    // Redshift has no pg_proc.prokind / pg_get_functiondef
+                    // (PostgreSQL 8.0 catalog); read the full CREATE PROCEDURE
+                    // text from prosrc and use pg_proc_info for the routine
+                    // kind (issue #13293).
+                    db::postgres::execute_query(
+                        pool,
+                        &db::postgres::redshift_procedure_source_sql(schema, name, signature),
+                    )
+                    .await
+                    .and_then(first_string_cell)?
                 }
                 PoolKind::Postgres(pool) => {
                     let unwrap_opengauss_record = db_config.as_ref().is_some_and(is_opengauss_family_config);
@@ -12224,6 +12599,7 @@ async fn get_object_source_once(
         source,
         editable,
         routine_parameters: None,
+        trigger: None,
     })
 }
 
@@ -12246,9 +12622,8 @@ fn oracle_list_objects_sql_for_owner(owner: &str, type_owner: &str) -> String {
         "SELECT o.object_name, CASE o.object_type WHEN 'PACKAGE BODY' THEN 'PACKAGE_BODY' WHEN 'TYPE BODY' THEN 'TYPE_BODY' ELSE o.object_type END AS object_type, o.owner, \
          i.table_owner AS parent_schema, i.table_name AS parent_name \
          FROM all_objects o LEFT JOIN all_indexes i ON o.object_type = 'INDEX' AND i.owner = o.owner AND i.index_name = o.object_name \
-         WHERE ((o.owner = {owner} AND o.object_type IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'SEQUENCE', 'PACKAGE', 'PACKAGE BODY', 'INDEX')) \
+         WHERE ((o.owner = {owner} AND o.object_type IN ('TABLE', 'VIEW', 'PROCEDURE', 'FUNCTION', 'TRIGGER', 'SEQUENCE', 'PACKAGE', 'PACKAGE BODY', 'INDEX')) \
             OR (o.owner = {type_owner} AND o.object_type IN ('TYPE', 'TYPE BODY'))) \
-         AND (o.object_type <> 'INDEX' OR i.generated = 'N' OR i.generated IS NULL) \
          ORDER BY CASE o.object_type WHEN 'TABLE' THEN 0 WHEN 'VIEW' THEN 1 WHEN 'PROCEDURE' THEN 2 WHEN 'FUNCTION' THEN 3 WHEN 'SEQUENCE' THEN 4 WHEN 'PACKAGE' THEN 5 WHEN 'PACKAGE BODY' THEN 6 ELSE 7 END, o.object_name, o.object_type"
     )
 }
@@ -12760,19 +13135,33 @@ impl Default for PostgresCatalogCaps {
     }
 }
 
-/// Probe the catalog features once per object-source fetch. A failed probe
-/// (permissions, proxies) stays on the modern queries and lets the existing
-/// error-triggered fallbacks handle legacy servers.
-async fn postgres_object_source_catalog_caps(pool: &deadpool_postgres::Pool) -> PostgresCatalogCaps {
-    const PROBE_SQL: &str = "SELECT EXISTS ( \
+/// Catalog-feature probe for object-source queries.
+///
+/// `to_regclass` is PostgreSQL 9.4+, so it errors on legacy forks such as
+/// Redshift (8.0.2) and the failed probe would leave the modern capabilities
+/// (including `pg_proc.prokind`, PostgreSQL 11+) enabled. Probe `pg_sequence`
+/// through the PostgreSQL 8.0 catalogs instead so those servers actually take
+/// the legacy paths (issue #13293).
+const POSTGRES_OBJECT_SOURCE_CATALOG_CAPS_SQL: &str = "SELECT EXISTS ( \
        SELECT 1 \
        FROM pg_catalog.pg_attribute \
        WHERE attrelid = 'pg_catalog.pg_proc'::regclass \
          AND attname = 'prokind' \
          AND NOT attisdropped \
      ), \
-     to_regclass('pg_catalog.pg_sequence') IS NOT NULL";
-    match db::postgres::execute_query(pool, PROBE_SQL).await {
+     EXISTS ( \
+       SELECT 1 \
+       FROM pg_catalog.pg_class c \
+       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace \
+       WHERE n.nspname = 'pg_catalog' \
+         AND c.relname = 'pg_sequence' \
+     )";
+
+/// Probe the catalog features once per object-source fetch. A failed probe
+/// (permissions, proxies) stays on the modern queries and lets the existing
+/// error-triggered fallbacks handle legacy servers.
+async fn postgres_object_source_catalog_caps(pool: &deadpool_postgres::Pool) -> PostgresCatalogCaps {
+    match db::postgres::execute_query(pool, POSTGRES_OBJECT_SOURCE_CATALOG_CAPS_SQL).await {
         Ok(result) => {
             let values = result.rows.first().cloned().unwrap_or_default();
             PostgresCatalogCaps {
@@ -12860,7 +13249,7 @@ async fn postgres_object_source(
         }
         Err(primary_err)
             if postgres_missing_prokind_error(&primary_err)
-                && matches!(object_type, db::ObjectSourceKind::Function) =>
+                && matches!(object_type, db::ObjectSourceKind::Function | db::ObjectSourceKind::Procedure) =>
         {
             let fallback_sql = postgres_function_object_source_sql_without_prokind(schema, name, false);
             db::postgres::execute_query(pool, &fallback_sql)
@@ -13219,6 +13608,19 @@ mod object_source_tests {
     }
 
     #[test]
+    fn object_source_capability_probe_avoids_post_pg8_catalog_helpers() {
+        // Redshift is based on PostgreSQL 8.0.2: to_regclass (9.4+) errors,
+        // and the failed probe would keep the modern prokind / pg_sequence
+        // queries enabled (#13293).
+        let sql = super::POSTGRES_OBJECT_SOURCE_CATALOG_CAPS_SQL;
+        assert!(sql.contains("attname = 'prokind'"));
+        assert!(sql.contains("FROM pg_catalog.pg_class c"));
+        assert!(sql.contains("JOIN pg_catalog.pg_namespace n"));
+        assert!(sql.contains("c.relname = 'pg_sequence'"));
+        assert!(!sql.contains("to_regclass"));
+    }
+
+    #[test]
     fn missing_prokind_gate_matches_localized_undefined_column_errors() {
         // The exact strings from #11161: PostgreSQL reports undefined-column
         // errors in the server's language, so the gate cannot rely on the
@@ -13458,6 +13860,37 @@ mod object_source_tests {
         assert!(sql.contains("owner = 'HR'"));
         assert!(sql.contains("'INDEX'"));
         assert!(sql.contains("i.table_owner AS parent_schema, i.table_name AS parent_name"));
+    }
+
+    #[test]
+    fn oracle_object_list_returns_triggers_only_from_the_selected_owner() {
+        // Execute the dictionary query against fixture rows so a missing object
+        // kind or a widened owner predicate cannot silently empty the transfer list.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE all_objects (owner TEXT, object_name TEXT, object_type TEXT);
+             CREATE TABLE all_indexes (owner TEXT, index_name TEXT, table_owner TEXT, table_name TEXT, generated TEXT);
+             INSERT INTO all_objects VALUES
+               ('APP', 'QR_CODE_MAIL_TEMPLATE', 'TABLE'),
+               ('APP', 'SEQ_QR_CODE_MAIL_TEMPLATE', 'SEQUENCE'),
+               ('APP', 'TRIGGER_QR_CODE_MAIL_TEMPLATE', 'TRIGGER'),
+               ('OTHER', 'TRIGGER_QR_CODE_MAIL_TEMPLATE', 'TRIGGER');",
+        )
+        .unwrap();
+
+        for owner in ["APP", "OTHER"] {
+            let sql = format!(
+                "SELECT object_name, owner FROM ({}) WHERE object_type = 'TRIGGER'",
+                oracle_list_objects_sql(owner)
+            );
+            let mut statement = conn.prepare(&sql).unwrap();
+            let triggers = statement
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert_eq!(triggers, vec![("TRIGGER_QR_CODE_MAIL_TEMPLATE".to_string(), owner.to_string())]);
+        }
     }
 
     #[test]
