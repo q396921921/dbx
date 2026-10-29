@@ -44,7 +44,7 @@ const oracleDatabaseVersionProbeTimeout = 3 * time.Second
 const oracleDatabaseVersionSQL = `
 SELECT VERSION
 FROM PRODUCT_COMPONENT_VERSION
-WHERE PRODUCT LIKE 'Oracle Database%'
+WHERE PRODUCT LIKE 'Oracle%Database%'
   AND ROWNUM = 1`
 
 const oracleDisableSegmentAttributesSQL = `BEGIN DBMS_METADATA.SET_TRANSFORM_PARAM(DBMS_METADATA.SESSION_TRANSFORM, 'SEGMENT_ATTRIBUTES', FALSE); END;`
@@ -59,7 +59,7 @@ var (
 	oracleNotNullConstraintRegexp        = regexp.MustCompile(`(?i)^\s*\(*\s*(?:"((?:[^"]|"")*)"|([A-Z0-9_$#]+))\s+IS\s+NOT\s+NULL\s*\)*\s*$`)
 	oracleDatabaseVersionQueries         = []string{
 		oracleDatabaseVersionSQL,
-		`SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle Database%' AND ROWNUM = 1`,
+		`SELECT BANNER FROM V$VERSION WHERE BANNER LIKE 'Oracle%Database%' AND ROWNUM = 1`,
 	}
 	oracleStringConverters = map[int]converters.IStringConverter{
 		oracleCharsetZHS32GB18030: oracleGB18030Converter{},
@@ -660,6 +660,8 @@ type server struct {
 	statementCtx           context.Context
 	statementCancel        context.CancelFunc
 	statementConn          *sql.Conn
+	statementSchema        string
+	repinnedStatementConn  *sql.Conn
 	plDebugMu              sync.Mutex
 	plDebugSessions        map[string]*plDebugSession
 	plAllocation           *plDebugAllocation
@@ -1130,6 +1132,9 @@ func (s *server) dispatch(method string, params map[string]json.RawMessage) (any
 			return nil, false, errors.New("not connected")
 		}
 		return map[string]bool{"ok": true}, false, pingDB(s.db, 5*time.Second)
+	case "connection_info":
+		result, err := s.connectionInfo()
+		return result, false, err
 	case "list_databases":
 		result, err := s.listDatabases()
 		return result, false, err
@@ -2024,6 +2029,17 @@ func (s *server) currentSchema() (string, error) {
 	// tables against the wrong owner (#11258).
 	if s.manualTx != nil {
 		if err := s.manualTx.QueryRow(sqlText).Scan(&schema); err != nil {
+			return "", err
+		}
+		return strings.ToUpper(schema), nil
+	}
+	// The connection pinned for a statement's DBMS_OUTPUT capture carries the
+	// statement's CURRENT_SCHEMA the same way.
+	if s.statementConn != nil {
+		if err := s.repinPoisonedStatementConn(); err != nil {
+			return "", err
+		}
+		if err := s.statementConn.QueryRowContext(s.statementContext(), sqlText).Scan(&schema); err != nil {
 			return "", err
 		}
 		return strings.ToUpper(schema), nil
@@ -5054,6 +5070,10 @@ func shouldRetryOracleXMLTypeRewrite(err error) bool {
 	if err == nil {
 		return false
 	}
+	var decodeErr oracleProtocolDecodeError
+	if errors.As(err, &decodeErr) {
+		return true
+	}
 	message := err.Error()
 	return strings.Contains(message, "abnormal data representation for date") ||
 		strings.Contains(message, "TTC error: received code ")
@@ -5133,8 +5153,10 @@ func (s *server) queryRowsWithOracleValueRewriteIfNeeded(sqlText string, timeout
 	// A statement that keeps row locks while it runs is rewritten before the
 	// first attempt: when such a statement panics after the rows were locked,
 	// the locks stay behind and the retry below blocks on them until the query
-	// times out (issues #9344 / #9180).
-	if oracleSQLLocksRows(sqlText) {
+	// times out (issues #9344 / #9180). A manual transaction cannot retry at
+	// all: the panic leaves its session unusable and the transaction is rolled
+	// back (issue #13455).
+	if oracleSQLLocksRows(sqlText) || s.hasManualTransaction() {
 		rewritten, err := rewriteOracleSelectSQL(sqlText, s.loadOracleColumnMeta, deferLOBs)
 		if err == nil && rewritten != sqlText {
 			return s.queryRowsWithTimeout(rewritten, nil, timeoutSecs)
@@ -6131,6 +6153,9 @@ func (s *server) setSchema(schema string) error {
 	}
 	if s.statementConn != nil {
 		_, err := s.statementConn.ExecContext(s.statementContext(), sqlText)
+		if err == nil {
+			s.statementSchema = schema
+		}
 		return err
 	}
 	db, err := s.requireDB()
@@ -6141,12 +6166,55 @@ func (s *server) setSchema(schema string) error {
 	return err
 }
 
+// repinPoisonedStatementConn replaces the statement's pinned connection once a
+// driver panic or a response decode error has poisoned it, so the fallbacks of
+// the same statement do not fail on the dead session (issues #13455, #13667).
+// The fresh connection gets the statement's CURRENT_SCHEMA back; the
+// statement's owner closes it together with the original one.
+func (s *server) repinPoisonedStatementConn() error {
+	if s.manualTx != nil || s.statementConn == nil || !oracleConnPoisoned(s.statementConn) {
+		return nil
+	}
+	db, err := s.requireDB()
+	if err != nil {
+		return err
+	}
+	conn, err := db.Conn(s.statementContext())
+	if err != nil {
+		return err
+	}
+	if s.statementSchema != "" {
+		if _, err := conn.ExecContext(s.statementContext(), "ALTER SESSION SET CURRENT_SCHEMA = "+quoteIdentifier(s.statementSchema)); err != nil {
+			_ = conn.Close()
+			return err
+		}
+	}
+	if s.repinnedStatementConn != nil {
+		_ = s.repinnedStatementConn.Close()
+	}
+	s.repinnedStatementConn = conn
+	s.statementConn = conn
+	return nil
+}
+
+// takeRepinnedStatementConn hands a connection opened by
+// repinPoisonedStatementConn to the statement's owner.
+func (s *server) takeRepinnedStatementConn() *sql.Conn {
+	conn := s.repinnedStatementConn
+	s.repinnedStatementConn = nil
+	s.statementSchema = ""
+	return conn
+}
+
 func (s *server) queryRows(sqlText string, args []any) (*sql.Rows, error) {
 	return s.queryRowsWithTimeout(sqlText, args, 0)
 }
 
 func (s *server) queryRowsWithTimeout(sqlText string, args []any, timeoutSecs int) (rows *sql.Rows, queryErr error) {
 	if _, err := s.requireDB(); err != nil {
+		return nil, err
+	}
+	if err := s.repinPoisonedStatementConn(); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(s.statementContext())
